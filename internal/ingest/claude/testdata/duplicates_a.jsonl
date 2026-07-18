@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-18T10:00:00Z","type":"assistant","message":{"id":"msg-equal","model":"equal-first","usage":{"input_tokens":2,"output_tokens":1}}}
+{"timestamp":"2026-07-18T11:00:00Z","type":"assistant","message":{"id":"msg-replace","model":"original","usage":{"input_tokens":1,"output_tokens":1}}}
+{"timestamp":"2026-07-18T12:00:00Z","type":"assistant","message":{"id":"msg-lower","model":"winner","usage":{"input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":1}}}
