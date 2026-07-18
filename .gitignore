@@ -1,0 +1,7 @@
+.DS_Store
+/dist/
+/node_modules
+*.db
+
+# Image concept explorations stay local; the chosen hero is committed at assets/hero.png
+/assets/concepts/
