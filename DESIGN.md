@@ -26,6 +26,10 @@ bootstrap directly (folder rename, `git init` + remote, archive restructure,
 hero promotion, this document, `handoffs/`); PR numbering starts with Codex's
 scaffold PR.
 
+**Merge protocol:** Codex implements → Claude reviews and reports findings →
+**Janior approves and merges.** Claude never merges. (PR 1 was merged by Claude
+before this rule was set; every PR from 2 on follows it.)
+
 ---
 
 ## 1. Goals and non-goals
