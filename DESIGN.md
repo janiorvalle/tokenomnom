@@ -189,8 +189,13 @@ explicit rows, surfaced in `doctor` and reports, until proven.
 
 ## 6. Usage store — SQLite incremental cache
 
-Location: `os.UserCacheDir()/tokenomnom/usage.db` (e.g. `~/Library/Caches/tokenomnom/`
-on macOS, `%LocalAppData%` on Windows). `tokenomnom sync --full` rebuilds from scratch.
+Location: the **state** directory, not a cache directory — because of the
+deletion-retention rule below, `usage.db` holds history that cannot be rebuilt from
+logs and must not live somewhere users routinely wipe. Resolved by `internal/xdg`
+(bgr pattern): `TOKENOMNOM_STATE_DIR` env override, else `$XDG_STATE_HOME/tokenomnom`,
+else `~/.local/state/tokenomnom` (unix) / `%LocalAppData%\tokenomnom` (Windows).
+`tokenomnom sync --full` re-ingests from scratch but still never deletes rows for
+vanished files.
 
 ```sql
 CREATE TABLE files (            -- ingest checkpoints
@@ -213,6 +218,14 @@ Incremental logic per file: unchanged (`mtime`+`size` match) → skip; grown app
 JSONL → resume from `byte_offset`; shrunk or rewritten → re-parse file after reversing
 its prior contribution (tracked per file via a `file_daily` contribution table, or by
 full-file reparse — decided at implementation, correctness first).
+
+**Deletion is retention erosion, never reversal** (learned in PR 4 review): coding
+agents actively delete old transcripts — Claude Code's ~30-day retention erased a full
+day's usage from disk *within hours* of the frozen snapshot being taken. When a
+previously-ingested file disappears, its contribution **stays** in the store; the
+checkpoint row is marked missing (surfaced in `doctor`), never reversed. Once
+synced regularly, tokenomnom's cache preserves history the agents' own logs throw
+away — reversal applies only to files that still exist but were rewritten in place.
 
 Raw events are *not* stored — only day×model aggregates and dedupe keys. Keeps the DB
 tiny (thousands of rows, not millions).
