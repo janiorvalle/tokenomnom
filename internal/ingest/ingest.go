@@ -9,17 +9,19 @@ import (
 
 // UsageEvent is one normalized token-usage observation. Providers with a
 // single cache-write class record it in CacheWrite5m and leave CacheWrite1h
-// zero; the split matters only when a provider has distinct write rates.
+// zero; cache writes that cannot be classified by duration remain explicit in
+// CacheWriteUnclassified for later pricing decisions.
 type UsageEvent struct {
-	Timestamp    time.Time // Event time as a UTC instant.
-	Provider     discover.Provider
-	Model        string // Never empty; "unknown" when unrecoverable.
-	Input        int64  // Total input, including cache components.
-	CacheRead    int64
-	CacheWrite5m int64
-	CacheWrite1h int64
-	Output       int64 // Includes reasoning tokens.
-	Reasoning    int64 // Informational subset; zero when unavailable.
+	Timestamp              time.Time // Event time as a UTC instant.
+	Provider               discover.Provider
+	Model                  string // Never empty; "unknown" when unrecoverable.
+	Input                  int64  // Total input, including cache components.
+	CacheRead              int64
+	CacheWrite5m           int64
+	CacheWrite1h           int64
+	CacheWriteUnclassified int64 // Cache creation not identified as 5m or 1h.
+	Output                 int64 // Includes reasoning tokens.
+	Reasoning              int64 // Informational subset; zero when unavailable.
 }
 
 // Stats reports diagnostics from parsing one source file.
