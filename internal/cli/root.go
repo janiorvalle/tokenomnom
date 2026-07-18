@@ -8,6 +8,9 @@ import (
 
 // NewRootCommand creates the tokenomnom command tree.
 func NewRootCommand() *cobra.Command {
+	var codexDir string
+	var claudeDir string
+
 	cmd := &cobra.Command{
 		Use:   "tokenomnom",
 		Short: "See what your coding agents' tokens would cost at API list prices",
@@ -21,6 +24,9 @@ API list-price equivalents, not actual bills.`,
 		},
 		Version: version.Version,
 	}
+	cmd.PersistentFlags().StringVar(&codexDir, "codex-dir", "", "override the Codex data directory")
+	cmd.PersistentFlags().StringVar(&claudeDir, "claude-dir", "", "override the Claude Code data directory")
+	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir))
 
 	return cmd
 }
