@@ -71,6 +71,7 @@ API list-price equivalents, not actual bills.`,
 	cmd.AddCommand(newDailyCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newMonthlyCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newModelsCommand(&codexDir, &claudeDir, &timezone))
+	cmd.AddCommand(newHeatmapCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newPricingCommand(&timezone))
 	cmd.AddCommand(newExportCommand(&codexDir, &claudeDir, &timezone))
 
