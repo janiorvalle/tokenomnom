@@ -26,6 +26,21 @@ is always the human's act, informed by `vault status`.
 - One new dep sanctioned HERE: `github.com/klauspost/compress` (zstd,
   pure Go — CGO stays off).
 
+## Part 0 — carried-over fix: SQLITE_BUSY on concurrent opens
+
+Found in PR 15 review, pre-existing since PR 5: two concurrent tokenomnom
+processes on one store can fail with `record schema version: database is
+locked (SQLITE_BUSY)` — `store.initialize()` WRITES the schema version on
+every open (even read-only report paths) and `busy_timeout` is only
+500ms. Real-world trigger: any report command while the TUI is open.
+
+Fix: read the schema version first and write it only when absent (opens
+become read-only when the store is already initialized), and raise
+`busy_timeout` to a few seconds. Add a regression test that opens the
+store from two goroutines/processes concurrently and asserts both
+succeed (the PR 15 review reproduced the failure 3/8 runs with two
+concurrent `summary --no-sync` invocations).
+
 ## Design
 
 ### Storage layout
