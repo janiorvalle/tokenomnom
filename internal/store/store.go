@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
@@ -90,7 +91,11 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve usage store path: %w", err)
 	}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolutePath)}).String()
+	uriPath := filepath.ToSlash(absolutePath)
+	if runtime.GOOS == "windows" && len(filepath.VolumeName(absolutePath)) == 2 {
+		uriPath = "/" + uriPath
+	}
+	dsn := (&url.URL{Scheme: "file", Path: uriPath}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open usage store: %w", err)

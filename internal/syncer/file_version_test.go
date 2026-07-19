@@ -3,6 +3,7 @@ package syncer
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 )
 
 func TestParsedFileFingerprintUsesOpenDescriptor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not replace an open file")
+	}
 	path := filepath.Join(t.TempDir(), "replaced.jsonl")
 	oldContents := []byte("old-line\n")
 	newContents := []byte("new-line\nextra\n")
