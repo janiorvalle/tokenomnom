@@ -49,3 +49,10 @@ func TestRootCommandShowsVersion(t *testing.T) {
 		t.Fatalf("version output %q does not contain %q", output.String(), version.Version)
 	}
 }
+
+func TestLocalTimezoneNameUsesTZEnvironment(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	if got := localTimezoneName(); got != "America/New_York" {
+		t.Fatalf("local timezone = %q", got)
+	}
+}

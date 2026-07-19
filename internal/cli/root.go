@@ -15,6 +15,7 @@ func NewRootCommand() *cobra.Command {
 	var codexDir string
 	var claudeDir string
 	var timezone string
+	var format string
 
 	cmd := &cobra.Command{
 		Use:   "tokenomnom",
@@ -28,7 +29,19 @@ API list-price equivalents, not actual bills.`,
 			return cmd.Help()
 		},
 		Version: version.Version,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			validFormats := "pretty or json"
+			if cmd.Name() == "export" {
+				validFormats = "csv or json"
+			}
+			value, err := cmd.Flags().GetString("format")
+			if err != nil {
+				return err
+			}
+			if (cmd.Name() == "export" && value != "csv" && value != "json") ||
+				(cmd.Name() != "export" && value != "pretty" && value != "json") {
+				return fmt.Errorf("invalid --format %q (expected %s)", value, validFormats)
+			}
 			if timezone == "" {
 				return nil
 			}
@@ -41,13 +54,15 @@ API list-price equivalents, not actual bills.`,
 	cmd.PersistentFlags().StringVar(&codexDir, "codex-dir", "", "override the Codex data directory")
 	cmd.PersistentFlags().StringVar(&claudeDir, "claude-dir", "", "override the Claude Code data directory")
 	cmd.PersistentFlags().StringVar(&timezone, "tz", "", "bucket usage in an IANA timezone (default: system local)")
-	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir))
+	cmd.PersistentFlags().StringVar(&format, "format", "pretty", "output format (pretty or json)")
+	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSyncCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSummaryCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newDailyCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newMonthlyCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newModelsCommand(&codexDir, &claudeDir, &timezone))
-	cmd.AddCommand(newPricingCommand())
+	cmd.AddCommand(newPricingCommand(&timezone))
+	cmd.AddCommand(newExportCommand(&codexDir, &claudeDir, &timezone))
 
 	return cmd
 }

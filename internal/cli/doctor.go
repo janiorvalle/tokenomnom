@@ -14,7 +14,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
-func newDoctorCommand(codexDir, claudeDir *string) *cobra.Command {
+func newDoctorCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Show discovered coding-agent session data",
@@ -39,12 +39,15 @@ func newDoctorCommand(codexDir, claudeDir *string) *cobra.Command {
 				return err
 			}
 
-			return writeDoctorReport(cmd, roots, filepath.Join(stateDir, store.DatabaseName))
+			return writeDoctorReport(cmd, roots, filepath.Join(stateDir, store.DatabaseName), *timezone)
 		},
 	}
 }
 
-func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath string) error {
+func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
+	if currentFormat(cmd) == "json" {
+		return writeDoctorJSON(cmd, roots, databasePath, requestedZone)
+	}
 	found := make([]discover.Provider, 0, len(roots))
 	for index, root := range roots {
 		if index > 0 {
@@ -72,6 +75,106 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath s
 		fmt.Fprintln(cmd.OutOrStdout(), "Status: both providers found; discovery is ready to use.")
 	}
 	return nil
+}
+
+type jsonDoctorProvider struct {
+	Provider   string   `json:"provider"`
+	Path       string   `json:"path"`
+	Source     string   `json:"source"`
+	Exists     bool     `json:"exists"`
+	JSONLFiles int      `json:"jsonl_files"`
+	TotalBytes int64    `json:"total_bytes"`
+	Oldest     *string  `json:"oldest"`
+	Newest     *string  `json:"newest"`
+	WalkErrors []string `json:"walk_errors"`
+}
+
+type jsonDoctorStore struct {
+	Path           string        `json:"path"`
+	Exists         bool          `json:"exists"`
+	SizeBytes      int64         `json:"size_bytes"`
+	SchemaVersion  *int          `json:"schema_version"`
+	Timezone       *string       `json:"timezone"`
+	LastSync       *string       `json:"last_sync"`
+	UsageRows      int           `json:"usage_rows"`
+	DistinctModels int           `json:"distinct_models"`
+	DateRange      jsonDateRange `json:"date_range"`
+	MissingFiles   int           `json:"missing_files"`
+}
+
+type jsonDoctorData struct {
+	Providers []jsonDoctorProvider `json:"providers"`
+	Store     jsonDoctorStore      `json:"store"`
+}
+
+func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
+	data := jsonDoctorData{Providers: make([]jsonDoctorProvider, 0, len(roots)), Store: jsonDoctorStore{Path: databasePath, DateRange: jsonDateRange{}}}
+	warnings := []string{}
+	for _, root := range roots {
+		files, walkErrors := discover.ListSourceFiles(root)
+		provider := jsonDoctorProvider{Provider: string(root.Provider), Path: root.Path, Source: root.Source, Exists: root.Exists, JSONLFiles: len(files), WalkErrors: []string{}}
+		var oldest, newest time.Time
+		for _, file := range files {
+			provider.TotalBytes += file.Size
+			if oldest.IsZero() || file.ModTime.Before(oldest) {
+				oldest = file.ModTime
+			}
+			if newest.IsZero() || file.ModTime.After(newest) {
+				newest = file.ModTime
+			}
+		}
+		if !oldest.IsZero() {
+			value := oldest.Format(time.RFC3339)
+			provider.Oldest = &value
+		}
+		if !newest.IsZero() {
+			value := newest.Format(time.RFC3339)
+			provider.Newest = &value
+		}
+		for _, walkErr := range walkErrors {
+			message := walkErr.Error()
+			provider.WalkErrors = append(provider.WalkErrors, message)
+			warnings = append(warnings, fmt.Sprintf("%s discovery: %s", root.Provider, message))
+		}
+		data.Providers = append(data.Providers, provider)
+	}
+
+	zone := requestedTimezone(requestedZone)
+	fileInfo, err := os.Stat(databasePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat usage store: %w", err)
+	}
+	if err == nil {
+		data.Store.Exists = true
+		data.Store.SizeBytes = fileInfo.Size()
+		database, openErr := store.Open(databasePath)
+		if openErr != nil {
+			return fmt.Errorf("inspect usage store: %w", openErr)
+		}
+		defer database.Close()
+		info, infoErr := database.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		data.Store.SchemaVersion = &info.SchemaVersion
+		storeZone := info.Timezone
+		if storeZone == "Local" {
+			storeZone = localTimezoneName()
+		}
+		data.Store.Timezone = optionalString(storeZone)
+		if storeZone != "" {
+			zone = storeZone
+		}
+		if info.LastSyncUnix != 0 {
+			value := time.Unix(info.LastSyncUnix, 0).Format(time.RFC3339)
+			data.Store.LastSync = &value
+		}
+		data.Store.UsageRows = info.UsageRows
+		data.Store.DistinctModels = info.DistinctModels
+		data.Store.DateRange = jsonDateRange{FirstDate: optionalString(info.OldestDate), LastDate: optionalString(info.NewestDate)}
+		data.Store.MissingFiles = info.MissingFiles
+	}
+	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
 }
 
 func writeStoreReport(cmd *cobra.Command, databasePath string) error {

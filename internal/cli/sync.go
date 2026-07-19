@@ -50,7 +50,7 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			defer database.Close()
 
 			location := time.Local
-			name := location.String()
+			name := localTimezoneName()
 			if *timezone != "" {
 				location, err = time.LoadLocation(*timezone)
 				if err != nil {
@@ -65,12 +65,50 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("sync usage: %w", err)
 			}
+			if currentFormat(cmd) == "json" {
+				return writeSyncJSON(cmd, summary, name)
+			}
 			writeSyncSummary(cmd, summary)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&full, "full", false, "re-ingest all files while retaining vanished history")
 	return cmd
+}
+
+type jsonSyncData struct {
+	FilesScanned                 int      `json:"files_scanned"`
+	FilesSkipped                 int      `json:"files_skipped"`
+	FilesAppended                int      `json:"files_appended"`
+	FilesRewritten               int      `json:"files_rewritten"`
+	FilesMissing                 int      `json:"files_missing"`
+	EventsApplied                int      `json:"events_applied"`
+	UsageRows                    int      `json:"usage_rows"`
+	UnknownModelTokens           int64    `json:"unknown_model_tokens"`
+	UnclassifiedCacheWriteTokens int64    `json:"unclassified_cache_write_tokens"`
+	FullReingest                 bool     `json:"full_reingest"`
+	DurationMS                   int64    `json:"duration_ms"`
+	Warnings                     []string `json:"warnings"`
+}
+
+func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone string) error {
+	warnings := []string{}
+	if summary.UnknownModelTokens > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d unknown-model tokens were ingested and remain explicitly attributed to unknown.", summary.UnknownModelTokens))
+	}
+	if summary.UnclassifiedCacheWriteTokens > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d unclassified cache-write tokens were ingested and remain unclassified.", summary.UnclassifiedCacheWriteTokens))
+	}
+	data := jsonSyncData{
+		FilesScanned: summary.FilesScanned, FilesSkipped: summary.FilesSkipped,
+		FilesAppended: summary.FilesAppended, FilesRewritten: summary.FilesRewritten,
+		FilesMissing: summary.FilesMissing, EventsApplied: summary.EventsApplied,
+		UsageRows: summary.UsageRows, UnknownModelTokens: summary.UnknownModelTokens,
+		UnclassifiedCacheWriteTokens: summary.UnclassifiedCacheWriteTokens,
+		FullReingest:                 summary.FullReingest, DurationMS: summary.Duration.Milliseconds(),
+		Warnings: warnings,
+	}
+	return writeJSONEnvelope(cmd, "sync", timezone, jsonFilters{}, warnings, data)
 }
 
 func timezoneFingerprint(location *time.Location) string {

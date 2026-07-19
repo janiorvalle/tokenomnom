@@ -31,6 +31,7 @@ type reportCosts struct {
 	ByModel            map[modelCostKey]aggregateCost
 	UnpricedByModel    map[string]int64
 	UnclassifiedWrites int64
+	UnknownModelTokens int64
 }
 
 func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
@@ -58,6 +59,9 @@ func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
 			costs.UnpricedByModel[row.Model] += breakdown.UnpricedTokens
 		}
 		costs.UnclassifiedWrites += breakdown.UnclassifiedCacheWriteTokens
+		if row.Model == "unknown" {
+			costs.UnknownModelTokens += row.Input + row.Output
+		}
 	}
 	return costs
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,8 +41,8 @@ func newSummaryCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store) error {
-				return writeSummaryReport(cmd, database, filter)
+			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store, context jsonReportContext) error {
+				return writeSummaryReport(cmd, database, filter, flags, context)
 			})
 		},
 	}
@@ -68,7 +69,10 @@ func newDailyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if cmd.Flags().Changed("last") && dateRangeSet {
 				return fmt.Errorf("--last cannot be combined with --since or --until")
 			}
-			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store) error {
+			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store, context jsonReportContext) error {
+				if database == nil {
+					return writeDailyReport(cmd, nil, reportCosts{}, flags, context)
+				}
 				rows, err := database.Daily(filter)
 				if err != nil {
 					return err
@@ -84,7 +88,7 @@ func newDailyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeDailyReport(cmd, rows, costs)
+				return writeDailyReport(cmd, rows, costs, flags, context)
 			})
 		},
 	}
@@ -104,7 +108,10 @@ func newMonthlyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store) error {
+			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store, context jsonReportContext) error {
+				if database == nil {
+					return writeMonthlyReport(cmd, nil, reportCosts{}, flags, context)
+				}
 				rows, err := database.Monthly(filter)
 				if err != nil {
 					return err
@@ -113,7 +120,7 @@ func newMonthlyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeMonthlyReport(cmd, rows, costs)
+				return writeMonthlyReport(cmd, rows, costs, flags, context)
 			})
 		},
 	}
@@ -132,7 +139,10 @@ func newModelsCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store) error {
+			return runReport(cmd, codexDir, claudeDir, timezone, flags.noSync, func(database *store.Store, context jsonReportContext) error {
+				if database == nil {
+					return writeModelsReport(cmd, nil, 0, reportCosts{}, flags, context)
+				}
 				rows, err := database.ByModel(filter)
 				if err != nil {
 					return err
@@ -145,7 +155,7 @@ func newModelsCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeModelsReport(cmd, rows, totals.Total, costs)
+				return writeModelsReport(cmd, rows, totals.Total, costs, flags, context)
 			})
 		},
 	}
@@ -195,7 +205,7 @@ func validateDateFlag(name, value string) error {
 	return nil
 }
 
-func runReport(cmd *cobra.Command, codexDir, claudeDir, timezone *string, noSync bool, render func(*store.Store) error) error {
+func runReport(cmd *cobra.Command, codexDir, claudeDir, timezone *string, noSync bool, render func(*store.Store, jsonReportContext) error) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("find user home directory: %w", err)
@@ -210,43 +220,53 @@ func runReport(cmd *cobra.Command, codexDir, claudeDir, timezone *string, noSync
 	}
 	databasePath := filepath.Join(stateDir, store.DatabaseName)
 	if _, err := os.Stat(databasePath); os.IsNotExist(err) && !anyRootExists(roots) {
-		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
-		return nil
+		return render(nil, jsonReportContext{Timezone: requestedTimezone(*timezone), NoStore: true})
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("stat usage store: %w", err)
 	}
 
-	database, err := openReportStore(cmd, databasePath, roots, *timezone, noSync)
+	database, warnings, err := openReportStore(cmd, databasePath, roots, *timezone, noSync)
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	return render(database)
+	zone, err := reportTimezone(database, *timezone)
+	if err != nil {
+		return err
+	}
+	return render(database, jsonReportContext{Timezone: zone, Warnings: warnings})
 }
 
-func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.Root, timezone string, noSync bool) (*store.Store, error) {
+func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.Root, timezone string, noSync bool) (*store.Store, []string, error) {
 	if noSync {
-		return store.Open(databasePath)
+		database, err := store.Open(databasePath)
+		return database, nil, err
 	}
 	release, err := store.Lock(databasePath)
 	if err != nil {
-		writeSyncWarning(cmd, err)
-		return store.Open(databasePath)
+		warning := fmt.Sprintf("%v; showing stored data.", err)
+		if currentFormat(cmd) != "json" && cmd.Name() != "export" {
+			writeSyncWarning(cmd, err)
+		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warning)
+		}
+		database, openErr := store.Open(databasePath)
+		return database, []string{warning}, openErr
 	}
 	database, err := store.Open(databasePath)
 	if err != nil {
 		release()
-		return nil, err
+		return nil, nil, err
 	}
 
 	location := time.Local
-	name := location.String()
+	name := localTimezoneName()
 	if timezone != "" {
 		location, err = time.LoadLocation(timezone)
 		if err != nil {
 			release()
 			database.Close()
-			return nil, fmt.Errorf("load timezone %q: %w", timezone, err)
+			return nil, nil, fmt.Errorf("load timezone %q: %w", timezone, err)
 		}
 		name = timezone
 	}
@@ -255,10 +275,24 @@ func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.R
 		TimezoneFingerprint: timezoneFingerprint(location), LockHeld: true,
 	})
 	release()
+	var warnings []string
 	if syncErr != nil {
-		writeSyncWarning(cmd, fmt.Errorf("sync usage: %w", syncErr))
+		warningErr := fmt.Errorf("sync usage: %w", syncErr)
+		warnings = append(warnings, fmt.Sprintf("%v; showing stored data.", warningErr))
+		if currentFormat(cmd) != "json" && cmd.Name() != "export" {
+			writeSyncWarning(cmd, warningErr)
+		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warnings[len(warnings)-1])
+		}
 	}
-	return database, nil
+	return database, warnings, nil
+}
+
+func requestedTimezone(value string) string {
+	if value != "" {
+		return value
+	}
+	return localTimezoneName()
 }
 
 func writeSyncWarning(cmd *cobra.Command, err error) {
@@ -274,12 +308,19 @@ func anyRootExists(roots []discover.Root) bool {
 	return false
 }
 
-func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.Filter) error {
+func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.Filter, flags reportFlags, context jsonReportContext) error {
+	if database == nil {
+		if currentFormat(cmd) == "json" {
+			return writeJSONEnvelope(cmd, "summary", context.Timezone, filtersJSON(flags), context.Warnings, emptySummaryData())
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		return nil
+	}
 	totals, err := database.Totals(filter)
 	if err != nil {
 		return err
 	}
-	if totals.ActiveDays == 0 {
+	if totals.ActiveDays == 0 && currentFormat(cmd) != "json" {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
 	}
@@ -290,6 +331,9 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	costs, err := loadReportCosts(database, filter, nil)
 	if err != nil {
 		return err
+	}
+	if currentFormat(cmd) == "json" {
+		return writeSummaryJSON(cmd, totals, models, costs, flags, context)
 	}
 
 	writer := cmd.OutOrStdout()
@@ -368,7 +412,20 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	return nil
 }
 
-func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCosts) error {
+func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCosts, flags reportFlags, context jsonReportContext) error {
+	if currentFormat(cmd) == "json" {
+		result := make([]jsonDailyRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, jsonDailyRow{Date: row.Date, jsonTokenTotals: tokenTotalsJSON(row.TokenTotals, costs.ByDate[row.Date])})
+		}
+		warnings := reportWarnings(context.Warnings, costs)
+		data := jsonPeriodData{Rows: result, UnpricedTokens: costs.Grand.UnpricedTokens, UnclassifiedCacheWriteTokens: costs.UnclassifiedWrites, UnknownModelTokens: costs.UnknownModelTokens}
+		return writeJSONEnvelope(cmd, "daily", context.Timezone, filtersJSON(flags), warnings, data)
+	}
+	if context.NoStore {
+		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		return nil
+	}
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
@@ -382,7 +439,20 @@ func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCos
 	return nil
 }
 
-func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs reportCosts) error {
+func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs reportCosts, flags reportFlags, context jsonReportContext) error {
+	if currentFormat(cmd) == "json" {
+		result := make([]jsonMonthlyRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, jsonMonthlyRow{Month: row.Month, jsonTokenTotals: tokenTotalsJSON(row.TokenTotals, costs.ByMonth[row.Month])})
+		}
+		warnings := reportWarnings(context.Warnings, costs)
+		data := jsonPeriodData{Rows: result, UnpricedTokens: costs.Grand.UnpricedTokens, UnclassifiedCacheWriteTokens: costs.UnclassifiedWrites, UnknownModelTokens: costs.UnknownModelTokens}
+		return writeJSONEnvelope(cmd, "monthly", context.Timezone, filtersJSON(flags), warnings, data)
+	}
+	if context.NoStore {
+		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		return nil
+	}
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
@@ -396,7 +466,36 @@ func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs repor
 	return nil
 }
 
-func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int64, costs reportCosts) error {
+func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int64, costs reportCosts, flags reportFlags, context jsonReportContext) error {
+	if currentFormat(cmd) == "json" {
+		result := make([]jsonModelRow, 0, len(rows))
+		for _, row := range rows {
+			share := 0.0
+			if grandTotal > 0 {
+				share = math.Round(float64(row.Total)/float64(grandTotal)*1000) / 10
+			}
+			modelCost := costs.ByModel[modelCostKey{Provider: row.Provider, Model: row.Model}]
+			var costShare *float64
+			if modelCost.PricedTokens > 0 && costs.Grand.Total > 0 {
+				value := math.Round(float64(modelCost.Total)/float64(costs.Grand.Total)*1000) / 10
+				costShare = &value
+			}
+			result = append(result, jsonModelRow{
+				Provider: string(row.Provider), Model: row.Model, InputTokens: row.Input,
+				CacheReadTokens: row.CacheRead, CacheWriteTokens: row.CacheWrite,
+				OutputTokens: row.Output, TotalTokens: row.Total, Share: share,
+				ActiveDays: row.ActiveDays, FirstDate: row.FirstDate, LastDate: row.LastDate,
+				CostUSD: moneyUSD(modelCost.Total), CostShare: costShare, Priced: modelCost.UnpricedTokens == 0,
+			})
+		}
+		warnings := reportWarnings(context.Warnings, costs)
+		data := jsonModelsData{Rows: result, UnpricedTokens: costs.Grand.UnpricedTokens, UnclassifiedCacheWriteTokens: costs.UnclassifiedWrites, UnknownModelTokens: costs.UnknownModelTokens}
+		return writeJSONEnvelope(cmd, "models", context.Timezone, filtersJSON(flags), warnings, data)
+	}
+	if context.NoStore {
+		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		return nil
+	}
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
@@ -423,6 +522,49 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 	)
 	writeCostNotes(cmd, costs)
 	return nil
+}
+
+func emptySummaryData() jsonSummaryData {
+	return jsonSummaryData{
+		DateRange: jsonDateRange{},
+		Providers: []jsonProviderTotals{},
+		TopModels: []jsonTopModel{},
+	}
+}
+
+func writeSummaryJSON(cmd *cobra.Command, totals store.TotalsResult, models []store.ModelRow, costs reportCosts, flags reportFlags, context jsonReportContext) error {
+	data := emptySummaryData()
+	data.DateRange = jsonDateRange{FirstDate: optionalString(totals.FirstDate), LastDate: optionalString(totals.LastDate)}
+	data.ActiveDays = totals.ActiveDays
+	data.Totals = tokenTotalsJSON(totals.TokenTotals, costs.Grand)
+	data.UnpricedTokens = costs.Grand.UnpricedTokens
+	data.UnclassifiedCacheWriteTokens = costs.UnclassifiedWrites
+	data.UnknownModelTokens = costs.UnknownModelTokens
+	for _, provider := range totals.Providers {
+		data.Providers = append(data.Providers, jsonProviderTotals{
+			Provider:        string(provider.Provider),
+			jsonTokenTotals: tokenTotalsJSON(provider.TokenTotals, costs.ByProvider[provider.Provider]),
+		})
+	}
+	topCount := 5
+	if len(models) < topCount {
+		topCount = len(models)
+	}
+	for _, model := range models[:topCount] {
+		cost := costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
+		data.TopModels = append(data.TopModels, jsonTopModel{
+			Provider: string(model.Provider), Model: model.Model,
+			TotalTokens: model.Total, CostUSD: moneyUSD(cost.Total),
+		})
+	}
+	return writeJSONEnvelope(cmd, "summary", context.Timezone, filtersJSON(flags), reportWarnings(context.Warnings, costs), data)
+}
+
+func reportWarnings(syncWarnings []string, costs reportCosts) []string {
+	warnings := append([]string{}, syncWarnings...)
+	warnings = append(warnings, unknownWarning(costs.UnknownModelTokens)...)
+	warnings = append(warnings, costWarnings(costs)...)
+	return warnings
 }
 
 func tokenRow(period string, totals store.TokenTotals) []string {
