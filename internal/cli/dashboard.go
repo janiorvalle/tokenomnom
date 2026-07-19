@@ -74,7 +74,14 @@ func newDashboardLoader(codexDir, claudeDir, timezone string, render theme.Conte
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)
 			}
 		}
-		return dashboardSnapshot(database, request, render, location, syncSummary)
+		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
+		if err == nil && !request.Sync {
+			for _, root := range roots {
+				files, _ := discover.ListSourceFiles(root)
+				snapshot.FilesScanned += len(files)
+			}
+		}
+		return snapshot, err
 	}
 }
 

@@ -80,9 +80,9 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 
 func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil })
-	updated, command := model.Update(loadedMsg{snapshot: Snapshot{Empty: true}})
+	updated, command := model.Update(loadedMsg{snapshot: Snapshot{Empty: true, FilesScanned: 12}})
 	model = updated.(Model)
-	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude") {
+	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · 12 files scanned") {
 		t.Fatalf("empty initial transition = %+v, command %v", model, command != nil)
 	}
 

@@ -292,7 +292,7 @@ func (m Model) View() string {
 	}
 	if m.loading {
 		elapsed := time.Since(m.started).Round(time.Second)
-		return fmt.Sprintf("%s Syncing Codex + Claude · scanning files · %s\n", m.spinner.View(), elapsed)
+		return fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
 	}
 	var output strings.Builder
 	output.WriteString(m.cardsView())
