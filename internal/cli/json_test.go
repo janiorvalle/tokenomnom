@@ -34,6 +34,7 @@ func TestJSONEnvelopeForEveryCommand(t *testing.T) {
 		{"daily", []string{"daily", "--format", "json", "--no-sync"}},
 		{"monthly", []string{"monthly", "--format", "json", "--no-sync"}},
 		{"models", []string{"models", "--format", "json", "--no-sync"}},
+		{"heatmap", []string{"heatmap", "--year", "2026", "--format", "json", "--no-sync"}},
 		{"pricing", []string{"pricing", "--format", "json"}},
 		{"doctor", []string{"doctor", "--format", "json"}},
 		{"export", []string{"export", "--format", "json", "--no-sync"}},
@@ -83,7 +84,7 @@ func TestJSONEmptyResultsAreEnvelopes(t *testing.T) {
 	codexDir := filepath.Join(root, "missing-codex")
 	claudeDir := filepath.Join(root, "missing-claude")
 
-	for _, command := range []string{"summary", "daily", "monthly", "models", "export"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "export"} {
 		args := []string{command, "--format", "json"}
 		if command != "summary" {
 			args = append(args, "--no-sync")
@@ -257,7 +258,7 @@ func TestAgentAPIDocMentionsEveryCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"summary", "daily", "monthly", "models", "pricing", "doctor", "sync", "export"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export"} {
 		if !strings.Contains(string(contents), "`"+command+"`") && !strings.Contains(string(contents), " "+command+" ") {
 			t.Errorf("agent API documentation does not mention %q", command)
 		}

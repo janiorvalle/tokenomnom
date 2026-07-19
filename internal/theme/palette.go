@@ -136,3 +136,8 @@ func (p Palette) HeatmapColor(index int) lipgloss.AdaptiveColor {
 	}
 	return p.heatmap[index]
 }
+
+// Heatmap styles one contribution-intensity cell.
+func (p Palette) Heatmap(index int) lipgloss.Style {
+	return p.style().Foreground(p.adaptiveColor(p.HeatmapColor(index)))
+}

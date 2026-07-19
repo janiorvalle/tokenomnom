@@ -1,9 +1,9 @@
 # Agent API
 
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
-`--format json` with `summary`, `daily`, `monthly`, `models`, `pricing`,
-`doctor`, `sync`, and `export`. The `export` command defaults to CSV; all other
-commands default to the human-readable `pretty` format.
+`--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
+`pricing`, `doctor`, `sync`, and `export`. The `export` command defaults to CSV;
+all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
 
@@ -71,6 +71,21 @@ Each row contains `provider`, `model`, all five combined token fields,
 `priced`. Shares are percentages between 0 and 100. `cost_share` is `null` when no
 tokens in the row were priced. The data object also has the three diagnostic
 token counters used by daily and monthly.
+
+## Heatmap
+
+`tokenomnom heatmap [--year YYYY] --format json`
+
+`data.window` contains the inclusive `from` and `to` dates. Without `--year`,
+the window is the trailing 12 months ending today; `--year` selects that full
+calendar year. `data.metric` is `cost_usd`, or `tokens` when every usage row in
+the window is unpriced. `data.days` contains one item per calendar date, ordered
+oldest first, with `date`, `cost_usd`, `total_tokens`, and contribution `level`
+from 0 through 4.
+
+`data.stats` contains `active_days`, `total_cost_usd`, `busiest_day` (`date`,
+`cost_usd`, and `total_tokens`), and `longest_streak`. Active days and streaks
+use the selected nonzero metric and are bounded by `data.window`.
 
 ## Pricing
 
