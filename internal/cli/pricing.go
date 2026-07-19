@@ -13,7 +13,7 @@ import (
 
 const pricingDisclaimer = "Dollar figures are API list-price equivalents, not actual bills."
 
-func newPricingCommand() *cobra.Command {
+func newPricingCommand(timezone *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "pricing",
 		Short: "Show effective API list rates",
@@ -23,9 +23,59 @@ func newPricingCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if currentFormat(cmd) == "json" {
+				return writePricingJSON(cmd, table, requestedTimezone(*timezone))
+			}
 			return writePricingTable(cmd, table)
 		},
 	}
+}
+
+type jsonPricingEntry struct {
+	BaseInput      *float64 `json:"base_input"`
+	CacheRead      *float64 `json:"cache_read"`
+	Write5m        *float64 `json:"write_5m"`
+	Write1h        *float64 `json:"write_1h"`
+	Output         *float64 `json:"output"`
+	Status         string   `json:"status"`
+	EffectiveFrom  *string  `json:"effective_from"`
+	EffectiveUntil *string  `json:"effective_until"`
+	Source         string   `json:"source"`
+	Notes          string   `json:"notes"`
+	Overridden     bool     `json:"overridden"`
+}
+
+type jsonPricingModel struct {
+	Model   string             `json:"model"`
+	Entries []jsonPricingEntry `json:"entries"`
+}
+
+type jsonPricingData struct {
+	Models []jsonPricingModel `json:"models"`
+}
+
+func writePricingJSON(cmd *cobra.Command, table pricinglib.Table, timezone string) error {
+	models := []jsonPricingModel{}
+	for _, entry := range table.Entries() {
+		if len(models) == 0 || models[len(models)-1].Model != entry.Model {
+			models = append(models, jsonPricingModel{Model: entry.Model, Entries: []jsonPricingEntry{}})
+		}
+		models[len(models)-1].Entries = append(models[len(models)-1].Entries, jsonPricingEntry{
+			BaseInput: rateJSON(entry.BaseInput), CacheRead: rateJSON(entry.CacheRead),
+			Write5m: rateJSON(entry.Write5m), Write1h: rateJSON(entry.Write1h), Output: rateJSON(entry.Output),
+			Status: entry.Status, EffectiveFrom: optionalString(entry.EffectiveFrom), EffectiveUntil: optionalString(entry.EffectiveUntil),
+			Source: entry.Source, Notes: entry.Notes, Overridden: table.IsOverridden(entry.Model),
+		})
+	}
+	return writeJSONEnvelope(cmd, "pricing", timezone, jsonFilters{}, nil, jsonPricingData{Models: models})
+}
+
+func rateJSON(rate *pricinglib.Rate) *float64 {
+	if rate == nil {
+		return nil
+	}
+	value := float64(*rate) / 1000
+	return &value
 }
 
 func loadPricingTable() (pricinglib.Table, error) {
