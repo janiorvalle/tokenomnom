@@ -2,6 +2,7 @@
 /dist/
 /node_modules
 *.db
+walkthrough-*.html
 
 # Image concept explorations stay local; the chosen hero is committed at assets/hero.png
 /assets/concepts/
