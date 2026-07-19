@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
@@ -29,9 +30,16 @@ var runDashboardProgram = func(cmd *cobra.Command, model tui.Model) error {
 
 func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) error {
 	render := theme.FromContext(cmd.Context())
-	loader := newDashboardLoader(*codexDir, *claudeDir, *timezone, render)
+	loader := newDashboardLoader(cmd, *codexDir, *claudeDir, *timezone, render)
 	offer := newDashboardSkillOffer(*codexDir, *claudeDir)
-	return runDashboardProgram(cmd, tui.New(render, loader, offer))
+	provider := tui.AllProviders
+	switch appconfig.FromContext(cmd.Context()).Config.Reports.DefaultProvider {
+	case "codex":
+		provider = tui.CodexProvider
+	case "claude":
+		provider = tui.ClaudeProvider
+	}
+	return runDashboardProgram(cmd, tui.NewWithProvider(render, loader, offer, provider))
 }
 
 func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
@@ -103,13 +111,13 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 	}
 }
 
-func newDashboardLoader(codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
+func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return tui.Snapshot{}, fmt.Errorf("find user home directory: %w", err)
 		}
-		roots, err := discover.Resolve(discover.ResolveOptions{CodexDir: codexDir, ClaudeDir: claudeDir, Home: home, Getenv: os.Getenv})
+		roots, err := resolveRoots(cmd, codexDir, claudeDir, home)
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -137,6 +145,7 @@ func newDashboardLoader(codexDir, claudeDir, timezone string, render theme.Conte
 			return tui.Snapshot{}, err
 		}
 		var syncSummary syncer.Summary
+		var backupWarning string
 		if request.Sync {
 			syncSummary, err = syncer.Sync(syncer.Options{
 				Store: database, Roots: roots, Location: location, Timezone: timezoneName,
@@ -145,8 +154,12 @@ func newDashboardLoader(codexDir, claudeDir, timezone string, render theme.Conte
 			if err != nil {
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)
 			}
+			if err := runDueBackup(cmd, database); err != nil {
+				backupWarning = fmt.Sprintf("backup usage: %v", err)
+			}
 		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
+		snapshot.Warning = backupWarning
 		if err == nil && !request.Sync {
 			for _, root := range roots {
 				files, _ := discover.ListSourceFiles(root)

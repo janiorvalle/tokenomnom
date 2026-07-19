@@ -86,6 +86,7 @@ type Snapshot struct {
 	Empty        bool
 	FilesScanned int
 	SyncDuration time.Duration
+	Warning      string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -165,12 +166,17 @@ type Model struct {
 
 // New creates a dashboard model. The first snapshot loads in Init.
 func New(render theme.Context, loader Loader, offer SkillOffer) Model {
+	return NewWithProvider(render, loader, offer, AllProviders)
+}
+
+// NewWithProvider creates a dashboard model with an initial provider filter.
+func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = render.Palette.Emphasis()
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
-		request: Request{Provider: AllProviders, Range: Range30Days, Width: render.Width},
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width},
 		loading: true, started: time.Now(),
 	}
 }
@@ -261,7 +267,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot = msg.snapshot
 		m.loading = false
 		m.loaded = true
-		m.warning = ""
+		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
 			m.syncing = false
 			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))

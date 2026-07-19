@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
@@ -27,9 +26,7 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("find user home directory: %w", err)
 			}
-			roots, err := discover.Resolve(discover.ResolveOptions{
-				CodexDir: *codexDir, ClaudeDir: *claudeDir, Home: home, Getenv: os.Getenv,
-			})
+			roots, err := resolveRoots(cmd, *codexDir, *claudeDir, home)
 			if err != nil {
 				return err
 			}
@@ -65,10 +62,17 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("sync usage: %w", err)
 			}
+			var backupWarning string
+			if err := runDueBackup(cmd, database); err != nil {
+				backupWarning = fmt.Sprintf("backup usage: %v", err)
+			}
 			if currentFormat(cmd) == "json" {
-				return writeSyncJSON(cmd, summary, name)
+				return writeSyncJSON(cmd, summary, name, backupWarning)
 			}
 			writeSyncSummary(cmd, summary)
+			if backupWarning != "" {
+				writeWarningLine(cmd, "WARNING: "+backupWarning)
+			}
 			return nil
 		},
 	}
@@ -91,13 +95,16 @@ type jsonSyncData struct {
 	Warnings                     []string `json:"warnings"`
 }
 
-func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone string) error {
+func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupWarning string) error {
 	warnings := []string{}
 	if summary.UnknownModelTokens > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d unknown-model tokens were ingested and remain explicitly attributed to unknown.", summary.UnknownModelTokens))
 	}
 	if summary.UnclassifiedCacheWriteTokens > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d unclassified cache-write tokens were ingested and remain unclassified.", summary.UnclassifiedCacheWriteTokens))
+	}
+	if backupWarning != "" {
+		warnings = append(warnings, backupWarning)
 	}
 	data := jsonSyncData{
 		FilesScanned: summary.FilesScanned, FilesSkipped: summary.FilesSkipped,

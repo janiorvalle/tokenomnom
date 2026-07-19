@@ -100,15 +100,55 @@ a foreign `SKILL.md` unless you pass `--force`.
 
 ## Configuration
 
-Codex and Claude Code data roots are detected automatically. Override them
-with `--codex-dir` and `--claude-dir`, or with
-`TOKENOMNOM_CODEX_DIR` and `TOKENOMNOM_CLAUDE_DIR`. Native `CODEX_HOME`
-and `CLAUDE_CONFIG_DIR` are honored before the defaults `~/.codex` and
-`~/.claude`.
+User config lives at `~/.config/tokenomnom/config.toml` on macOS and Linux,
+or `%APPDATA%\tokenomnom\config.toml` on Windows. `XDG_CONFIG_HOME` and
+`TOKENOMNOM_CONFIG_DIR` are honored. Precedence is command-line flag >
+environment variable > config file > built-in default. `tokenomnom config
+path` prints the path; `tokenomnom config show` prints the effective values
+and where each one came from.
 
-Reports bucket dates in the system timezone. `--tz America/New_York` selects
-an IANA timezone. Changing the stored timezone triggers a safe rebuild from
-the source logs.
+Every supported key and its default:
+
+```toml
+[discovery]
+codex_dir = ""
+claude_dir = ""
+
+[sync]
+timezone = ""
+
+[reports]
+color = "auto"
+charts = true
+daily_last = 30
+default_provider = ""
+
+[backup]
+enabled = true
+interval = "24h"
+dir = ""
+keep = 14
+```
+
+An empty discovery directory uses automatic detection. The existing
+`TOKENOMNOM_CODEX_DIR`, `TOKENOMNOM_CLAUDE_DIR`, `CODEX_HOME`, and
+`CLAUDE_CONFIG_DIR` environment variables still work. Reports use the system
+timezone when `sync.timezone` is empty; otherwise it must be an IANA name such
+as `America/New_York`. Changing the stored timezone triggers a safe rebuild
+from the source logs.
+
+`reports.color` accepts `auto`, `always`, or `never`. Set `NO_COLOR` or pass
+`--no-color` for plain output; `--format json` is always unstyled.
+`reports.charts = false` is the config equivalent of `--no-chart`,
+`reports.daily_last` supplies Daily's default `--last`, and
+`reports.default_provider` may be empty, `codex`, or `claude`.
+
+After each successful sync, tokenomnom creates a due online SQLite backup.
+The default directory is `~/.local/share/tokenomnom/backups` on macOS and
+Linux, or the OS user-config data directory on Windows. `XDG_DATA_HOME` and
+`TOKENOMNOM_DATA_DIR` replace that base. An empty `backup.dir` uses the
+default; `backup.interval` is a Go duration; `backup.keep = 0` keeps every
+backup. Backup failures warn but never block a report.
 
 The SQLite store lives at `~/.local/state/tokenomnom/usage.db` on macOS and
 Linux, or `%LOCALAPPDATA%\tokenomnom\usage.db` on Windows. Use
@@ -136,10 +176,14 @@ replaces the complete entry list for each model it names:
 Rates are USD per million tokens. Keep secrets out of this file; pricing
 overrides are data and need no credentials.
 
-Set `NO_COLOR` or pass `--no-color` for plain output. `--format json` is
-always unstyled. `--provider`, `--model`, `--since`, and `--until` narrow
-reports; `--last` controls Daily's active-day window, `--year` selects a
-heatmap calendar year, and `--no-chart` hides Daily or Monthly charts.
+`--provider`, `--model`, `--since`, and `--until` narrow reports; `--year`
+selects a heatmap calendar year, and `--no-sync` reports stored data without a
+refresh. Flags remain authoritative when they are set.
+
+Attribution and dedupe rules, day-bucketing semantics, the store schema, the
+JSON contract, pricing math and cost formulas, and disclaimer text are
+deliberately not configurable. Those are correctness contracts, not display
+preferences.
 
 The standalone installer supports
 `TOKENOMNOM_INSTALL_REPO`, `TOKENOMNOM_INSTALL_DIR`,

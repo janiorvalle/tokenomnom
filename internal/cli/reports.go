@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
@@ -38,6 +39,7 @@ func newSummaryCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Summarize token usage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
 			filter, err := flags.filter()
 			if err != nil {
 				return err
@@ -59,6 +61,10 @@ func newDailyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Show token usage by day",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
+			if !cmd.Flags().Changed("last") {
+				last = appconfig.FromContext(cmd.Context()).Config.Reports.DailyLast
+			}
 			filter, err := flags.filter()
 			if err != nil {
 				return err
@@ -106,6 +112,7 @@ func newMonthlyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Show token usage by month",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
 			filter, err := flags.filter()
 			if err != nil {
 				return err
@@ -138,6 +145,7 @@ func newModelsCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Show token usage by model",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
 			filter, err := flags.filter()
 			if err != nil {
 				return err
@@ -172,6 +180,20 @@ func addReportFlags(cmd *cobra.Command, flags *reportFlags) {
 	cmd.Flags().StringVar(&flags.since, "since", "", "include usage on or after YYYY-MM-DD")
 	cmd.Flags().StringVar(&flags.until, "until", "", "include usage on or before YYYY-MM-DD")
 	cmd.Flags().BoolVar(&flags.noSync, "no-sync", false, "report stored data without syncing first")
+}
+
+func (flags *reportFlags) applyConfig(cmd *cobra.Command) {
+	if !cmd.Flags().Changed("provider") {
+		flags.provider = appconfig.FromContext(cmd.Context()).Config.Reports.DefaultProvider
+	}
+}
+
+func chartsEnabled(cmd *cobra.Command) bool {
+	if cmd.Flags().Changed("no-chart") {
+		noChart, _ := cmd.Flags().GetBool("no-chart")
+		return !noChart
+	}
+	return appconfig.FromContext(cmd.Context()).Config.Reports.Charts
 }
 
 func (flags reportFlags) filter() (store.Filter, error) {
@@ -213,7 +235,7 @@ func runReport(cmd *cobra.Command, codexDir, claudeDir, timezone *string, noSync
 	if err != nil {
 		return fmt.Errorf("find user home directory: %w", err)
 	}
-	roots, err := discover.Resolve(discover.ResolveOptions{CodexDir: *codexDir, ClaudeDir: *claudeDir, Home: home, Getenv: os.Getenv})
+	roots, err := resolveRoots(cmd, *codexDir, *claudeDir, home)
 	if err != nil {
 		return err
 	}
@@ -277,7 +299,6 @@ func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.R
 		Store: database, Roots: roots, Location: location, Timezone: name,
 		TimezoneFingerprint: timezoneFingerprint(location), LockHeld: true,
 	})
-	release()
 	var warnings []string
 	if syncErr != nil {
 		warningErr := fmt.Errorf("sync usage: %w", syncErr)
@@ -287,7 +308,16 @@ func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.R
 		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warnings[len(warnings)-1])
 		}
+	} else if backupErr := runDueBackup(cmd, database); backupErr != nil {
+		warning := fmt.Sprintf("backup usage: %v", backupErr)
+		warnings = append(warnings, warning)
+		if currentFormat(cmd) != "json" && cmd.Name() != "export" {
+			writeWarningLine(cmd, "WARNING: "+warning)
+		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warning)
+		}
 	}
+	release()
 	return database, warnings, nil
 }
 
@@ -439,7 +469,7 @@ func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCos
 	for _, row := range rows {
 		tableRows = append(tableRows, append(tokenRow(row.Date, row.TokenTotals), formatCost(costs.ByDate[row.Date])))
 	}
-	if noChart, _ := cmd.Flags().GetBool("no-chart"); !noChart {
+	if chartsEnabled(cmd) {
 		writeDailyChart(cmd, rows, costs)
 	}
 	writeReportTable(cmd, []string{"DATE", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true}, tableStyle{moneyColumns: map[int]bool{6: true}})
@@ -469,7 +499,7 @@ func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs repor
 	for _, row := range rows {
 		tableRows = append(tableRows, append(tokenRow(row.Month, row.TokenTotals), formatCost(costs.ByMonth[row.Month])))
 	}
-	if noChart, _ := cmd.Flags().GetBool("no-chart"); !noChart {
+	if chartsEnabled(cmd) {
 		writeMonthlyChart(cmd, rows, costs)
 	}
 	writeReportTable(cmd, []string{"MONTH", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true}, tableStyle{moneyColumns: map[int]bool{6: true}})

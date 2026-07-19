@@ -59,3 +59,30 @@ func TestConfigDir(t *testing.T) {
 		})
 	}
 }
+
+func TestDataDir(t *testing.T) {
+	t.Parallel()
+	home := filepath.Join(t.TempDir(), "home")
+	tests := []struct {
+		name string
+		goos string
+		env  map[string]string
+		want string
+	}{
+		{"explicit override", "linux", map[string]string{"TOKENOMNOM_DATA_DIR": filepath.Join(home, "data")}, filepath.Join(home, "data")},
+		{"xdg data", "linux", map[string]string{"XDG_DATA_HOME": filepath.Join(home, "xdg")}, filepath.Join(home, "xdg", "tokenomnom")},
+		{"unix default", "darwin", nil, filepath.Join(home, ".local", "share", "tokenomnom")},
+		{"windows config data", "windows", map[string]string{"APPDATA": filepath.Join(home, "Roaming")}, filepath.Join(home, "Roaming", "tokenomnom")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DataDir(Options{Home: home, GOOS: tt.goos, Getenv: func(key string) string { return tt.env[key] }})
+			if err != nil {
+				t.Fatalf("DataDir() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("DataDir() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

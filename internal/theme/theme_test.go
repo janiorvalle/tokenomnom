@@ -12,12 +12,15 @@ func TestResolveModeMatrix(t *testing.T) {
 	set := func(string) (string, bool) { return "", true }
 
 	tests := []struct {
-		name      string
-		options   ResolveOptions
-		want      Mode
-		wantWidth int
+		name            string
+		options         ResolveOptions
+		want            Mode
+		wantInteractive bool
+		wantWidth       int
 	}{
-		{name: "styled tty", options: ResolveOptions{ForceTerminal: &terminal, LookupEnv: unset, Width: 120, ForceColor: true}, want: Styled, wantWidth: 120},
+		{name: "styled tty", options: ResolveOptions{ForceTerminal: &terminal, LookupEnv: unset, Width: 120, ForceColor: true}, want: Styled, wantInteractive: true, wantWidth: 120},
+		{name: "always colors non-tty", options: ResolveOptions{Color: "always", LookupEnv: unset}, want: Styled, wantWidth: defaultWidth},
+		{name: "json overrides always", options: ResolveOptions{Color: "always", Format: "json", LookupEnv: unset}, want: Plain, wantWidth: defaultWidth},
 		{name: "no color flag", options: ResolveOptions{NoColor: true, ForceTerminal: &terminal, LookupEnv: unset}, want: Plain, wantWidth: defaultWidth},
 		{name: "no color environment even empty", options: ResolveOptions{ForceTerminal: &terminal, LookupEnv: set}, want: Plain, wantWidth: defaultWidth},
 		{name: "non tty", options: ResolveOptions{ForceTerminal: &notTerminal, LookupEnv: unset}, want: Plain, wantWidth: defaultWidth},
@@ -28,8 +31,11 @@ func TestResolveModeMatrix(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			test.options.Output = &bytes.Buffer{}
 			got := Resolve(test.options)
-			if got.Mode != test.want || got.Width != test.wantWidth {
-				t.Fatalf("Resolve() = mode %v width %d, want mode %v width %d", got.Mode, got.Width, test.want, test.wantWidth)
+			if got.Mode != test.want || got.Interactive != test.wantInteractive || got.Width != test.wantWidth {
+				t.Fatalf("Resolve() = mode %v interactive %t width %d, want mode %v interactive %t width %d", got.Mode, got.Interactive, got.Width, test.want, test.wantInteractive, test.wantWidth)
+			}
+			if test.options.Color == "always" && test.options.Format != "json" && got.Palette.Header().Render("color") == "color" {
+				t.Fatal("color=always did not force ANSI rendering")
 			}
 		})
 	}
