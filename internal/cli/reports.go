@@ -16,6 +16,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
+	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
@@ -94,6 +95,7 @@ func newDailyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 	}
 	addReportFlags(cmd, &flags)
 	cmd.Flags().IntVar(&last, "last", 30, "show the most recent N active days")
+	cmd.Flags().Bool("no-chart", false, "suppress the terminal chart")
 	return cmd
 }
 
@@ -125,6 +127,7 @@ func newMonthlyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		},
 	}
 	addReportFlags(cmd, &flags)
+	cmd.Flags().Bool("no-chart", false, "suppress the terminal chart")
 	return cmd
 }
 
@@ -296,7 +299,7 @@ func requestedTimezone(value string) string {
 }
 
 func writeSyncWarning(cmd *cobra.Command, err error) {
-	fmt.Fprintf(cmd.OutOrStdout(), "WARNING: %v; showing stored data.\n", err)
+	writeWarningLine(cmd, fmt.Sprintf("WARNING: %v; showing stored data.", err))
 }
 
 func anyRootExists(roots []discover.Root) bool {
@@ -313,7 +316,7 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 		if currentFormat(cmd) == "json" {
 			return writeJSONEnvelope(cmd, "summary", context.Timezone, filtersJSON(flags), context.Warnings, emptySummaryData())
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		writeWarningLine(cmd, noProviderHint)
 		return nil
 	}
 	totals, err := database.Totals(filter)
@@ -321,7 +324,7 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 		return err
 	}
 	if totals.ActiveDays == 0 && currentFormat(cmd) != "json" {
-		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
+		writeSubtleLine(cmd, noUsageMessage)
 		return nil
 	}
 	models, err := database.ByModel(filter)
@@ -337,25 +340,26 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	}
 
 	writer := cmd.OutOrStdout()
-	fmt.Fprintln(writer, "Summary")
+	writeHeading(cmd, "Summary")
 	fmt.Fprintf(writer, "Date range:  %s to %s\n", totals.FirstDate, totals.LastDate)
 	fmt.Fprintf(writer, "Active days: %s\n", formatNumber(int64(totals.ActiveDays)))
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Tokens")
-	writeTable(writer,
+	writeHeading(cmd, "Tokens")
+	writeReportTable(cmd,
 		[]string{"INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL"},
 		[][]string{{formatNumber(totals.Input), formatNumber(totals.CacheRead), formatNumber(totals.CacheWrite), formatNumber(totals.Output), formatNumber(totals.Total)}},
 		[]bool{true, true, true, true, true},
+		tableStyle{},
 	)
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Providers")
+	writeHeading(cmd, "Providers")
 	providerRows := make([][]string, 0, len(totals.Providers))
 	for _, provider := range totals.Providers {
 		providerRows = append(providerRows, []string{providerName(provider.Provider), formatNumber(provider.Input), formatNumber(provider.CacheRead), formatNumber(provider.CacheWrite), formatNumber(provider.Output), formatNumber(provider.Total)})
 	}
-	writeTable(writer, []string{"PROVIDER", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL"}, providerRows, []bool{false, true, true, true, true, true})
+	writeReportTable(cmd, []string{"PROVIDER", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL"}, providerRows, []bool{false, true, true, true, true, true}, tableStyle{hasProvider: true, providerCol: 0})
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Top models")
+	writeHeading(cmd, "Top models")
 	topCount := 5
 	if len(models) < topCount {
 		topCount = len(models)
@@ -370,22 +374,23 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 			modelRows = append(modelRows, []string{providerName(model.Provider), model.Model, formatNumber(model.Total)})
 		}
 	}
-	writeTable(writer, []string{"PROVIDER", "MODEL", "TOTAL"}, modelRows, []bool{false, false, true})
+	ranks := modelRanks(models)
+	writeReportTable(cmd, []string{"PROVIDER", "MODEL", "TOTAL"}, modelRows, []bool{false, false, true}, tableStyle{hasProvider: true, providerCol: 0, hasModel: true, modelCol: 1, modelRanks: ranks})
 	if unknownTokens > 0 {
-		fmt.Fprintf(writer, "Note: %s tokens are attributed to the unknown model.\n", formatNumber(unknownTokens))
+		writeWarningLine(cmd, fmt.Sprintf("Note: %s tokens are attributed to the unknown model.", formatNumber(unknownTokens)))
 	}
 
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Cost")
-	fmt.Fprintf(writer, "Total: %s\n", formatCost(costs.Grand))
+	writeHeading(cmd, "Cost")
+	writeStyledLine(cmd, fmt.Sprintf("Total: %s", formatCost(costs.Grand)), theme.FromContext(cmd.Context()).Palette.Money())
 	fmt.Fprintln(writer)
 	providerCostRows := make([][]string, 0, len(totals.Providers))
 	for _, provider := range totals.Providers {
 		providerCostRows = append(providerCostRows, []string{providerName(provider.Provider), formatCost(costs.ByProvider[provider.Provider])})
 	}
-	writeTable(writer, []string{"PROVIDER", "COST"}, providerCostRows, []bool{false, true})
+	writeReportTable(cmd, []string{"PROVIDER", "COST"}, providerCostRows, []bool{false, true}, tableStyle{hasProvider: true, providerCol: 0, moneyColumns: map[int]bool{1: true}})
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Top models by cost")
+	writeHeading(cmd, "Top models by cost")
 	keys := make([]modelCostKey, 0, len(costs.ByModel))
 	for key := range costs.ByModel {
 		keys = append(keys, key)
@@ -407,7 +412,7 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	for _, key := range keys {
 		topCostRows = append(topCostRows, []string{providerName(key.Provider), key.Model, formatCost(costs.ByModel[key])})
 	}
-	writeTable(writer, []string{"PROVIDER", "MODEL", "COST"}, topCostRows, []bool{false, false, true})
+	writeReportTable(cmd, []string{"PROVIDER", "MODEL", "COST"}, topCostRows, []bool{false, false, true}, tableStyle{hasProvider: true, providerCol: 0, hasModel: true, modelCol: 1, modelRanks: ranks, moneyColumns: map[int]bool{2: true}})
 	writeCostNotes(cmd, costs)
 	return nil
 }
@@ -423,18 +428,21 @@ func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCos
 		return writeJSONEnvelope(cmd, "daily", context.Timezone, filtersJSON(flags), warnings, data)
 	}
 	if context.NoStore {
-		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		writeWarningLine(cmd, noProviderHint)
 		return nil
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
+		writeSubtleLine(cmd, noUsageMessage)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		tableRows = append(tableRows, append(tokenRow(row.Date, row.TokenTotals), formatCost(costs.ByDate[row.Date])))
 	}
-	writeTable(cmd.OutOrStdout(), []string{"DATE", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true})
+	if noChart, _ := cmd.Flags().GetBool("no-chart"); !noChart {
+		writeDailyChart(cmd, rows, costs)
+	}
+	writeReportTable(cmd, []string{"DATE", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true}, tableStyle{moneyColumns: map[int]bool{6: true}})
 	writeCostNotes(cmd, costs)
 	return nil
 }
@@ -450,18 +458,21 @@ func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs repor
 		return writeJSONEnvelope(cmd, "monthly", context.Timezone, filtersJSON(flags), warnings, data)
 	}
 	if context.NoStore {
-		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		writeWarningLine(cmd, noProviderHint)
 		return nil
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
+		writeSubtleLine(cmd, noUsageMessage)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		tableRows = append(tableRows, append(tokenRow(row.Month, row.TokenTotals), formatCost(costs.ByMonth[row.Month])))
 	}
-	writeTable(cmd.OutOrStdout(), []string{"MONTH", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true})
+	if noChart, _ := cmd.Flags().GetBool("no-chart"); !noChart {
+		writeMonthlyChart(cmd, rows, costs)
+	}
+	writeReportTable(cmd, []string{"MONTH", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true}, tableStyle{moneyColumns: map[int]bool{6: true}})
 	writeCostNotes(cmd, costs)
 	return nil
 }
@@ -493,11 +504,11 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 		return writeJSONEnvelope(cmd, "models", context.Timezone, filtersJSON(flags), warnings, data)
 	}
 	if context.NoStore {
-		fmt.Fprintln(cmd.OutOrStdout(), noProviderHint)
+		writeWarningLine(cmd, noProviderHint)
 		return nil
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
+		writeSubtleLine(cmd, noUsageMessage)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(rows))
@@ -516,9 +527,10 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 			fmt.Sprintf("%.1f%%", share), formatNumber(int64(row.ActiveDays)), row.FirstDate + " to " + row.LastDate, formatCost(modelCost), costShare,
 		})
 	}
-	writeTable(cmd.OutOrStdout(),
+	writeReportTable(cmd,
 		[]string{"PROVIDER", "MODEL", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "SHARE", "DAYS", "DATE RANGE", "COST", "COST SHARE"},
 		tableRows, []bool{false, false, true, true, true, true, true, true, true, false, true, true},
+		tableStyle{hasProvider: true, providerCol: 0, hasModel: true, modelCol: 1, modelRanks: modelRanks(rows), moneyColumns: map[int]bool{10: true}},
 	)
 	writeCostNotes(cmd, costs)
 	return nil

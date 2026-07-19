@@ -16,7 +16,7 @@ func TestPricingCommandRendersEmbeddedAndOverrideTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"MODEL", "BASE INPUT", "WRITE 5M", "STATUS", "EFFECTIVE", "SOURCE", "OVERRIDE", "gpt-5.3-codex-spark", "proxy", "claude-sonnet-5", "through 2026-08-31", pricingDisclaimer} {
+	for _, fragment := range []string{"MODEL", "BASE INPUT", "WRITE 5M", "STATUS", "EFFECTIVE", "SOURCE", "OVERRIDE", "gpt-5.3-codex-spark", "proxy", "claude-sonnet-5", "$12.50", "$0.10", "through 2026-08-31", pricingDisclaimer} {
 		if !strings.Contains(output, fragment) {
 			t.Errorf("embedded pricing output missing %q:\n%s", fragment, output)
 		}

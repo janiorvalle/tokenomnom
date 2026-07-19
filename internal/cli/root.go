@@ -7,15 +7,21 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/version"
 )
 
 // NewRootCommand creates the tokenomnom command tree.
 func NewRootCommand() *cobra.Command {
+	return newRootCommand(theme.ResolveOptions{})
+}
+
+func newRootCommand(renderOptions theme.ResolveOptions) *cobra.Command {
 	var codexDir string
 	var claudeDir string
 	var timezone string
 	var format string
+	var noColor bool
 
 	cmd := &cobra.Command{
 		Use:   "tokenomnom",
@@ -42,12 +48,15 @@ API list-price equivalents, not actual bills.`,
 				(cmd.Name() != "export" && value != "pretty" && value != "json") {
 				return fmt.Errorf("invalid --format %q (expected %s)", value, validFormats)
 			}
-			if timezone == "" {
-				return nil
+			if timezone != "" {
+				if _, err := time.LoadLocation(timezone); err != nil {
+					return fmt.Errorf("invalid timezone %q: %w", timezone, err)
+				}
 			}
-			if _, err := time.LoadLocation(timezone); err != nil {
-				return fmt.Errorf("invalid timezone %q: %w", timezone, err)
-			}
+			renderOptions.NoColor = noColor
+			renderOptions.Format = value
+			renderOptions.Output = cmd.OutOrStdout()
+			cmd.SetContext(theme.WithContext(cmd.Context(), theme.Resolve(renderOptions)))
 			return nil
 		},
 	}
@@ -55,6 +64,7 @@ API list-price equivalents, not actual bills.`,
 	cmd.PersistentFlags().StringVar(&claudeDir, "claude-dir", "", "override the Claude Code data directory")
 	cmd.PersistentFlags().StringVar(&timezone, "tz", "", "bucket usage in an IANA timezone (default: system local)")
 	cmd.PersistentFlags().StringVar(&format, "format", "pretty", "output format (pretty or json)")
+	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable styled output")
 	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSyncCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSummaryCommand(&codexDir, &claudeDir, &timezone))

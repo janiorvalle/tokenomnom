@@ -123,11 +123,12 @@ func writePricingTable(cmd *cobra.Command, table pricinglib.Table) error {
 			override,
 		})
 	}
-	writeTable(cmd.OutOrStdout(),
+	writeReportTable(cmd,
 		[]string{"MODEL", "BASE INPUT", "CACHE READ", "WRITE 5M", "WRITE 1H", "OUTPUT", "STATUS", "EFFECTIVE", "SOURCE", "OVERRIDE"},
 		rows, []bool{false, true, true, true, true, true, false, false, false, false},
+		tableStyle{hasModel: true, modelCol: 0, moneyColumns: map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true}, badgeColumns: map[int]bool{6: true, 9: true}},
 	)
-	fmt.Fprintln(cmd.OutOrStdout(), pricingDisclaimer)
+	writeSubtleLine(cmd, pricingDisclaimer)
 	return nil
 }
 
