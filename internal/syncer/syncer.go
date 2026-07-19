@@ -114,8 +114,8 @@ func Sync(options Options) (Summary, error) {
 		return Summary{}, fmt.Errorf("incomplete timezone migration to %q; rerun with --tz %s", info.PendingTimezone, info.PendingTimezone)
 	}
 	timezoneUnset := info.Timezone == ""
-	timezoneChanged := info.Timezone != "" && (info.Timezone != options.Timezone ||
-		(info.TimezoneFingerprint != "" && info.TimezoneFingerprint != timezoneFingerprint))
+	timezoneChanged := info.Timezone != "" && ((info.TimezoneFingerprint != "" && info.TimezoneFingerprint != timezoneFingerprint) ||
+		(info.TimezoneFingerprint == "" && info.Timezone != options.Timezone))
 	migrationPending := info.PendingTimezone != ""
 	full := options.Full || timezoneChanged || migrationPending
 	summary.FullReingest = full
