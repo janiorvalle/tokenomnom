@@ -43,6 +43,10 @@ API list-price equivalents, not actual bills.`,
 	cmd.PersistentFlags().StringVar(&timezone, "tz", "", "bucket usage in an IANA timezone (default: system local)")
 	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newSyncCommand(&codexDir, &claudeDir, &timezone))
+	cmd.AddCommand(newSummaryCommand(&codexDir, &claudeDir, &timezone))
+	cmd.AddCommand(newDailyCommand(&codexDir, &claudeDir, &timezone))
+	cmd.AddCommand(newMonthlyCommand(&codexDir, &claudeDir, &timezone))
+	cmd.AddCommand(newModelsCommand(&codexDir, &claudeDir, &timezone))
 
 	return cmd
 }

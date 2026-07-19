@@ -936,6 +936,25 @@ func TestSystemTimezoneFingerprintChangeTriggersReingest(t *testing.T) {
 	}
 }
 
+func TestTimezoneNameChangeWithSameFingerprintDoesNotReingest(t *testing.T) {
+	env := newEnvironment(t)
+	write(t, env.codexPath("timezone-name.jsonl"), codexModel("same-rules")+codexUsage("2026-07-18T10:30:00Z", 2, 1), env.tick())
+	fingerprint := "matching-offset-rules"
+	first := env.syncFingerprint(t, false, time.UTC, "America/New_York", fingerprint)
+	second := env.syncFingerprint(t, false, time.UTC, "Local", fingerprint)
+	third := env.syncFingerprint(t, false, time.UTC, "America/New_York", fingerprint)
+	if first.FullReingest || second.FullReingest || third.FullReingest {
+		t.Fatalf("timezone aliases triggered a full re-ingest: first=%+v second=%+v third=%+v", first, second, third)
+	}
+	info, err := env.database.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Timezone != "America/New_York" || info.TimezoneFingerprint != fingerprint {
+		t.Fatalf("timezone metadata = %+v", info)
+	}
+}
+
 func TestIncompleteTimezoneMigrationMustBeCompleted(t *testing.T) {
 	env := newEnvironment(t)
 	write(t, env.codexPath("pending-timezone.jsonl"), codexModel("pending-tz")+codexUsage("2026-07-18T00:30:00Z", 2, 1), env.tick())
