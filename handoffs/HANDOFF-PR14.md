@@ -60,22 +60,29 @@ Teach your agents to use tokenomnom?
 
 Installs an agent skill into the skills directory of your detected
 coding agents (~/.claude, ~/.codex) so they can answer token-spend
-questions themselves. Opt-in; remove anytime with
-`tokenomnom install-skill --remove`.
+questions themselves. Opt-in either way:
+install later anytime with `tokenomnom install-skill`,
+remove anytime with `tokenomnom install-skill --remove`.
 
-[y] install   [n] not now   (asked only once)
+[y] install   [n] not now   (this prompt appears only once)
 ```
 
 - `y`/`Y`: run the install through the SAME code path as `install-skill`
   (a tea.Cmd — no blocking I/O in Update), then swap the overlay content
   to the per-provider result lines for a beat (dismiss on any key), write
   `skill_offer=accepted`.
-- `n`/`N`/`esc`/`enter`: dismiss, write `skill_offer=declined`.
+- `n`/`N`/`esc`/`enter`: dismiss, write `skill_offer=declined`, and show
+  a status-line note for this session: `skill not installed — run
+  'tokenomnom install-skill' anytime`. Declining ONLY suppresses the
+  prompt; the command works forever.
 - `q` still quits the app from the overlay (counts as decline — record it).
-- Either answer is final: the overlay never returns on later launches.
-  `install-skill --remove` does NOT reset `skill_offer` (removal is a
-  decision, not amnesia). A fresh state dir may legitimately re-ask —
-  document that in a code comment.
+- The PROMPT never returns after any answer — but nothing else is final:
+  `install-skill` and `--remove` remain fully functional regardless of
+  the recorded answer. `install-skill --remove` does NOT reset
+  `skill_offer` (removal is a decision, not amnesia). A fresh state dir
+  may legitimately re-ask — document that in a code comment.
+- If a user who declined later runs `install-skill` manually, update
+  `skill_offer` to `accepted` so doctor reflects reality.
 - While the overlay is up, other keys are inert (no tab switching
   underneath); resizing keeps the overlay centered and legible.
 
@@ -96,11 +103,13 @@ the dashboard offers the skill once on first run and that
 
 - Model-level (feed Msgs to Update): offer appears when meta unset +
   roots exist + not installed; `y` → install Cmd issued, result state,
-  meta `accepted`; each decline key → meta `declined`; `q` from overlay →
-  quit + `declined`; already-installed → `preinstalled` written, no
-  overlay; no roots → no overlay AND meta stays unset; meta-read error →
-  no overlay; overlay swallows tab/filter keys; second launch with each
-  meta value → no overlay.
+  meta `accepted`; each decline key → meta `declined` + status-line hint
+  present; `q` from overlay → quit + `declined`; already-installed →
+  `preinstalled` written, no overlay; no roots → no overlay AND meta
+  stays unset; meta-read error → no overlay; overlay swallows tab/filter
+  keys; second launch with each meta value → no overlay.
+- Decline-then-manual-install: `install-skill` after `declined` still
+  installs and flips `skill_offer` to `accepted`.
 - Non-TTY bare invocation: byte-identical help (existing guard, keep it
   passing).
 - doctor Skills offer field (pretty + JSON).
