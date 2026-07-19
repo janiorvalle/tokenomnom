@@ -23,12 +23,19 @@ type modelCostKey struct {
 	Model    string
 }
 
+type providerChartValue struct {
+	Cost   aggregateCost
+	Tokens int64
+}
+
 type reportCosts struct {
 	Grand              aggregateCost
 	ByDate             map[string]aggregateCost
 	ByMonth            map[string]aggregateCost
 	ByProvider         map[discover.Provider]aggregateCost
 	ByModel            map[modelCostKey]aggregateCost
+	ByDateProvider     map[string]map[discover.Provider]providerChartValue
+	ByMonthProvider    map[string]map[discover.Provider]providerChartValue
 	UnpricedByModel    map[string]int64
 	UnclassifiedWrites int64
 	UnknownModelTokens int64
@@ -40,6 +47,8 @@ func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
 		ByMonth:         make(map[string]aggregateCost),
 		ByProvider:      make(map[discover.Provider]aggregateCost),
 		ByModel:         make(map[modelCostKey]aggregateCost),
+		ByDateProvider:  make(map[string]map[discover.Provider]providerChartValue),
+		ByMonthProvider: make(map[string]map[discover.Provider]providerChartValue),
 		UnpricedByModel: make(map[string]int64),
 	}
 	for _, row := range rows {
@@ -53,6 +62,8 @@ func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
 		}
 		costs.ByMonth[month] = addAggregateCost(costs.ByMonth[month], value)
 		costs.ByProvider[row.Provider] = addAggregateCost(costs.ByProvider[row.Provider], value)
+		addProviderChartValue(costs.ByDateProvider, row.Date, row.Provider, value, row.Input+row.Output)
+		addProviderChartValue(costs.ByMonthProvider, month, row.Provider, value, row.Input+row.Output)
 		key := modelCostKey{Provider: row.Provider, Model: row.Model}
 		costs.ByModel[key] = addAggregateCost(costs.ByModel[key], value)
 		if breakdown.UnpricedTokens > 0 {
@@ -64,6 +75,16 @@ func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
 		}
 	}
 	return costs
+}
+
+func addProviderChartValue(target map[string]map[discover.Provider]providerChartValue, period string, provider discover.Provider, cost aggregateCost, tokens int64) {
+	if target[period] == nil {
+		target[period] = make(map[discover.Provider]providerChartValue)
+	}
+	current := target[period][provider]
+	current.Cost = addAggregateCost(current.Cost, cost)
+	current.Tokens += tokens
+	target[period][provider] = current
 }
 
 func addAggregateCost(left, right aggregateCost) aggregateCost {
@@ -113,7 +134,6 @@ func formatUSD(value pricing.Money) string {
 }
 
 func writeCostNotes(cmd *cobra.Command, costs reportCosts) {
-	writer := cmd.OutOrStdout()
 	if len(costs.UnpricedByModel) > 0 {
 		models := make([]string, 0, len(costs.UnpricedByModel))
 		for model := range costs.UnpricedByModel {
@@ -124,10 +144,10 @@ func writeCostNotes(cmd *cobra.Command, costs reportCosts) {
 		for _, model := range models {
 			parts = append(parts, fmt.Sprintf("%s: %s", model, formatNumber(costs.UnpricedByModel[model])))
 		}
-		fmt.Fprintf(writer, "WARNING: Unpriced tokens by model: %s.\n", strings.Join(parts, "; "))
+		writeWarningLine(cmd, fmt.Sprintf("WARNING: Unpriced tokens by model: %s.", strings.Join(parts, "; ")))
 	}
 	if costs.UnclassifiedWrites > 0 {
-		fmt.Fprintf(writer, "WARNING: %s unclassified cache-write tokens use the model's 1h cache-write pricing policy.\n", formatNumber(costs.UnclassifiedWrites))
+		writeWarningLine(cmd, fmt.Sprintf("WARNING: %s unclassified cache-write tokens use the model's 1h cache-write pricing policy.", formatNumber(costs.UnclassifiedWrites)))
 	}
-	fmt.Fprintln(writer, pricingDisclaimer)
+	writeSubtleLine(cmd, pricingDisclaimer)
 }

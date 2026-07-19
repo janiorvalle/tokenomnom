@@ -68,11 +68,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	fmt.Fprintln(cmd.OutOrStdout())
 	switch len(found) {
 	case 0:
-		fmt.Fprintln(cmd.OutOrStdout(), "Status: no provider data directories found. Use --codex-dir, --claude-dir, or the TOKENOMNOM_*_DIR environment variables to point tokenomnom at them.")
+		writeWarningLine(cmd, "Status: no provider data directories found. Use --codex-dir, --claude-dir, or the TOKENOMNOM_*_DIR environment variables to point tokenomnom at them.")
 	case 1:
-		fmt.Fprintf(cmd.OutOrStdout(), "Status: only %s was found; discovery is ready to use.\n", providerName(found[0]))
+		writeEmphasisLine(cmd, fmt.Sprintf("Status: only %s was found; discovery is ready to use.", providerName(found[0])))
 	default:
-		fmt.Fprintln(cmd.OutOrStdout(), "Status: both providers found; discovery is ready to use.")
+		writeEmphasisLine(cmd, "Status: both providers found; discovery is ready to use.")
 	}
 	return nil
 }
@@ -179,7 +179,7 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 
 func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	writer := cmd.OutOrStdout()
-	fmt.Fprintln(writer, "Store")
+	writeHeading(cmd, "Store")
 	fmt.Fprintf(writer, "  %-17s %s\n", "Path:", databasePath)
 	fileInfo, err := os.Stat(databasePath)
 	if err != nil {
@@ -254,7 +254,7 @@ func writeProviderReport(cmd *cobra.Command, root discover.Root, files []discove
 	}
 
 	writer := cmd.OutOrStdout()
-	fmt.Fprintln(writer, providerName(root.Provider))
+	writeProviderHeading(cmd, string(root.Provider), providerName(root.Provider))
 	fmt.Fprintf(writer, "  %-12s %s\n", "Path:", root.Path)
 	fmt.Fprintf(writer, "  %-12s %s\n", "Source:", root.Source)
 	fmt.Fprintf(writer, "  %-12s %s\n", "Exists:", yesNo(root.Exists))
@@ -269,7 +269,7 @@ func writeProviderReport(cmd *cobra.Command, root discover.Root, files []discove
 
 	fmt.Fprintf(writer, "  %-12s %d\n", "Walk errors:", len(walkErrors))
 	for _, err := range walkErrors {
-		fmt.Fprintf(writer, "    - %v\n", err)
+		writeWarningLine(cmd, fmt.Sprintf("    - %v", err))
 	}
 }
 

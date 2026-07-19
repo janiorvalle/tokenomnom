@@ -29,6 +29,25 @@ func TestEmbeddedTable(t *testing.T) {
 	}
 }
 
+func TestFormatRatePadsToTwoDecimals(t *testing.T) {
+	whole := Rate(12_500)
+	tenth := Rate(100)
+	precise := Rate(175)
+	for _, test := range []struct {
+		rate *Rate
+		want string
+	}{
+		{rate: &whole, want: "$12.50"},
+		{rate: &tenth, want: "$0.10"},
+		{rate: &precise, want: "$0.175"},
+		{rate: nil, want: "—"},
+	} {
+		if got := FormatRate(test.rate); got != test.want {
+			t.Errorf("FormatRate(%v) = %q, want %q", test.rate, got, test.want)
+		}
+	}
+}
+
 func TestOverrideReplacesWholeModelAndAddsUnknownModel(t *testing.T) {
 	override := `{
 		"gpt-5.2": [{"base_input": 9, "status": "estimated", "source": "https://example.com/rate"}],

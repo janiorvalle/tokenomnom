@@ -331,10 +331,9 @@ func FormatRate(rate *Rate) string {
 	}
 	whole := int64(*rate) / 1000
 	fraction := int64(*rate) % 1000
-	if fraction == 0 {
-		return fmt.Sprintf("$%d", whole)
-	}
 	text := fmt.Sprintf("%03d", fraction)
-	text = strings.TrimRight(text, "0")
+	if strings.HasSuffix(text, "0") {
+		text = text[:2]
+	}
 	return fmt.Sprintf("$%d.%s", whole, text)
 }
