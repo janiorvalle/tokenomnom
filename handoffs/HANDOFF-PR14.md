@@ -97,7 +97,16 @@ unset) so support questions are answerable.
 
 One README touch (sanctioned): in the Agents section, one sentence noting
 the dashboard offers the skill once on first run and that
-`install-skill`/`--remove` remain the manual path. Nothing else.
+`install-skill`/`--remove` remain the manual path.
+
+## Remove the "Why" images (sanctioned, Janior's call)
+
+- Delete `assets/why-receipt.png` and `assets/why-brrr.png` from the
+  repo (`git rm`).
+- Remove the entire `## Why` section from `README.md` (both centered
+  image blocks and the heading). The hero image at the top STAYS.
+- Nothing else in `assets/` or the README changes beyond this and the
+  Agents sentence above.
 
 ## Tests
 
@@ -118,9 +127,10 @@ the dashboard offers the skill once on first run and that
 ## Out of scope — do NOT touch
 
 - No changes to `install-skill` CLI behavior or skill content. No new
-  dependencies. No store schema changes (meta key only). No other README
-  edits. Do not modify `DESIGN.md`, `archive/`, `assets/`, `handoffs/`,
-  CI, Makefile, adapters, syncer, pricing, discover.
+  dependencies. No store schema changes (meta key only). README and
+  `assets/` change ONLY as sanctioned above (Agents sentence, Why-section
+  removal, why-image deletion). Do not modify `DESIGN.md`, `archive/`,
+  `handoffs/`, CI, Makefile, adapters, syncer, pricing, discover.
 
 ## Acceptance criteria
 
