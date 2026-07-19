@@ -3,12 +3,15 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/store"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
 func newDoctorCommand(codexDir, claudeDir *string) *cobra.Command {
@@ -31,13 +34,17 @@ func newDoctorCommand(codexDir, claudeDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+			if err != nil {
+				return err
+			}
 
-			return writeDoctorReport(cmd, roots)
+			return writeDoctorReport(cmd, roots, filepath.Join(stateDir, store.DatabaseName))
 		},
 	}
 }
 
-func writeDoctorReport(cmd *cobra.Command, roots []discover.Root) error {
+func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath string) error {
 	found := make([]discover.Provider, 0, len(roots))
 	for index, root := range roots {
 		if index > 0 {
@@ -51,6 +58,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root) error {
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
+	if err := writeStoreReport(cmd, databasePath); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	switch len(found) {
 	case 0:
 		fmt.Fprintln(cmd.OutOrStdout(), "Status: no provider data directories found. Use --codex-dir, --claude-dir, or the TOKENOMNOM_*_DIR environment variables to point tokenomnom at them.")
@@ -60,6 +72,68 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "Status: both providers found; discovery is ready to use.")
 	}
 	return nil
+}
+
+func writeStoreReport(cmd *cobra.Command, databasePath string) error {
+	writer := cmd.OutOrStdout()
+	fmt.Fprintln(writer, "Store")
+	fmt.Fprintf(writer, "  %-17s %s\n", "Path:", databasePath)
+	fileInfo, err := os.Stat(databasePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(writer, "  %-17s no\n", "Exists:")
+			fmt.Fprintf(writer, "  %-17s -\n", "Size:")
+			fmt.Fprintf(writer, "  %-17s -\n", "Schema version:")
+			fmt.Fprintf(writer, "  %-17s -\n", "Timezone:")
+			fmt.Fprintf(writer, "  %-17s -\n", "Last sync:")
+			fmt.Fprintf(writer, "  %-17s 0\n", "Usage rows:")
+			fmt.Fprintf(writer, "  %-17s 0\n", "Distinct models:")
+			fmt.Fprintf(writer, "  %-17s -\n", "Date range:")
+			fmt.Fprintf(writer, "  %-17s 0\n", "Missing files:")
+			return nil
+		}
+		return fmt.Errorf("stat usage store: %w", err)
+	}
+	database, err := store.Open(databasePath)
+	if err != nil {
+		return fmt.Errorf("inspect usage store: %w", err)
+	}
+	defer database.Close()
+	info, err := database.Info()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(writer, "  %-17s yes\n", "Exists:")
+	fmt.Fprintf(writer, "  %-17s %s\n", "Size:", humanBytes(fileInfo.Size()))
+	fmt.Fprintf(writer, "  %-17s %d\n", "Schema version:", info.SchemaVersion)
+	fmt.Fprintf(writer, "  %-17s %s\n", "Timezone:", dashIfEmpty(info.Timezone))
+	fmt.Fprintf(writer, "  %-17s %s\n", "Last sync:", formatUnix(info.LastSyncUnix))
+	fmt.Fprintf(writer, "  %-17s %d\n", "Usage rows:", info.UsageRows)
+	fmt.Fprintf(writer, "  %-17s %d\n", "Distinct models:", info.DistinctModels)
+	fmt.Fprintf(writer, "  %-17s %s\n", "Date range:", dateRange(info.OldestDate, info.NewestDate))
+	fmt.Fprintf(writer, "  %-17s %d\n", "Missing files:", info.MissingFiles)
+	return nil
+}
+
+func dashIfEmpty(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func formatUnix(value int64) string {
+	if value == 0 {
+		return "-"
+	}
+	return time.Unix(value, 0).Format(time.RFC3339)
+}
+
+func dateRange(oldest, newest string) string {
+	if oldest == "" {
+		return "-"
+	}
+	return oldest + " to " + newest
 }
 
 func writeProviderReport(cmd *cobra.Command, root discover.Root, files []discover.SourceFile, walkErrors []error) {

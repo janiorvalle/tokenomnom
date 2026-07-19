@@ -70,8 +70,7 @@ func (Adapter) ParseFile(f discover.SourceFile, collect func(Candidate)) (FileSt
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			stats.Lines++
-			parseLine(line, collect, &stats)
+			ParseLine(line, collect, &stats)
 		}
 
 		if readErr == nil {
@@ -119,7 +118,9 @@ type cacheCreation struct {
 	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
 }
 
-func parseLine(line []byte, collect func(Candidate), stats *FileStats) {
+// ParseLine consumes one Claude JSONL record and preserves ParseFile semantics.
+func ParseLine(line []byte, collect func(Candidate), stats *FileStats) {
+	stats.Lines++
 	if !bytes.Contains(line, usageMarker) {
 		return
 	}
