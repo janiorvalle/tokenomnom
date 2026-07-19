@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/version"
 )
@@ -21,6 +22,15 @@ func TestRootCommandShowsHelpWithNoArguments(t *testing.T) {
 
 	if !strings.Contains(output.String(), "Your agents nom tokens") {
 		t.Fatalf("help output missing tagline:\n%s", output.String())
+	}
+}
+
+func TestTimezoneFingerprintChangesWithRules(t *testing.T) {
+	t.Parallel()
+	first := timezoneFingerprint(time.FixedZone("Local", 0))
+	second := timezoneFingerprint(time.FixedZone("Local", -5*60*60))
+	if first == second || first == "" || second == "" {
+		t.Fatalf("timezone fingerprints should differ: %q %q", first, second)
 	}
 }
 

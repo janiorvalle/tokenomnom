@@ -39,33 +39,93 @@ func (Adapter) ParseFile(f discover.SourceFile, emit func(ingest.UsageEvent)) (i
 	}
 	defer file.Close()
 
-	parser := fileParser{emit: emit}
+	parser := NewParser(State{}, emit)
 	reader := bufio.NewReader(file)
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			parser.stats.Lines++
-			parser.parseLine(line)
+			parser.ParseLine(line)
 		}
 
 		if readErr == nil {
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
-			parser.flushUnknown()
-			return parser.stats, nil
+			parser.FlushUnknown()
+			return parser.Stats(), nil
 		}
-		return parser.stats, fmt.Errorf("read Codex session %q: %w", f.Path, readErr)
+		return parser.Stats(), fmt.Errorf("read Codex session %q: %w", f.Path, readErr)
 	}
 }
 
-type fileParser struct {
-	emit             func(ingest.UsageEvent)
-	stats            ingest.Stats
-	model            string
-	hasModel         bool
-	pending          []ingest.UsageEvent
-	previousSnapshot *tokenUsage
+// State is the parser context required to resume a growing Codex session.
+type State struct {
+	Model             string              `json:"model"`
+	HasModel          bool                `json:"has_model"`
+	Pending           []ingest.UsageEvent `json:"pending,omitempty"`
+	PreviousSnapshot  *Snapshot           `json:"previous_snapshot,omitempty"`
+	AliasOf           string              `json:"alias_of,omitempty"`
+	SplitContribution bool                `json:"split_contribution,omitempty"`
+	PrefixHash        string              `json:"prefix_hash,omitempty"`
+	PrefixHashState   string              `json:"prefix_hash_state,omitempty"`
+}
+
+// Snapshot is a cumulative usage observation retained only for diagnostics.
+type Snapshot struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+// Parser incrementally parses Codex JSONL records.
+type Parser struct {
+	emit              func(ingest.UsageEvent)
+	stats             ingest.Stats
+	model             string
+	hasModel          bool
+	pending           []ingest.UsageEvent
+	previousSnapshot  *tokenUsage
+	aliasOf           string
+	splitContribution bool
+}
+
+// NewParser restores a resumable parser state.
+func NewParser(state State, emit func(ingest.UsageEvent)) *Parser {
+	parser := &Parser{
+		emit:              emit,
+		model:             state.Model,
+		hasModel:          state.HasModel,
+		pending:           append([]ingest.UsageEvent(nil), state.Pending...),
+		aliasOf:           state.AliasOf,
+		splitContribution: state.SplitContribution,
+	}
+	if state.PreviousSnapshot != nil {
+		value := tokenUsage(*state.PreviousSnapshot)
+		parser.previousSnapshot = &value
+	}
+	return parser
+}
+
+// ParseLine consumes one JSONL record.
+func (p *Parser) ParseLine(line []byte) {
+	p.stats.Lines++
+	p.parseLine(line)
+}
+
+// Stats returns diagnostics accumulated since this Parser was created.
+func (p *Parser) Stats() ingest.Stats { return p.stats }
+
+// State snapshots the context needed to resume at the next complete line.
+func (p *Parser) State() State {
+	state := State{Model: p.model, HasModel: p.hasModel, Pending: append([]ingest.UsageEvent(nil), p.pending...), AliasOf: p.aliasOf, SplitContribution: p.splitContribution}
+	if p.previousSnapshot != nil {
+		value := Snapshot(*p.previousSnapshot)
+		state.PreviousSnapshot = &value
+	}
+	return state
 }
 
 type envelope struct {
@@ -97,7 +157,7 @@ type tokenUsage struct {
 	TotalTokens           int64 `json:"total_tokens"`
 }
 
-func (p *fileParser) parseLine(line []byte) {
+func (p *Parser) parseLine(line []byte) {
 	if !bytes.Contains(line, turnContextMarker) && !bytes.Contains(line, tokenCountMarker) {
 		return
 	}
@@ -116,7 +176,7 @@ func (p *fileParser) parseLine(line []byte) {
 	}
 }
 
-func (p *fileParser) parseTurnContext(raw json.RawMessage) {
+func (p *Parser) parseTurnContext(raw json.RawMessage) {
 	var payload turnContextPayload
 	if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		if err := json.Unmarshal(raw, &payload); err != nil {
@@ -136,7 +196,7 @@ func (p *fileParser) parseTurnContext(raw json.RawMessage) {
 	p.pending = nil
 }
 
-func (p *fileParser) parseEventMessage(event envelope) {
+func (p *Parser) parseEventMessage(event envelope) {
 	var payload eventPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		p.stats.MalformedLines++
@@ -183,7 +243,7 @@ func (p *fileParser) parseEventMessage(event envelope) {
 	p.stats.BufferedBeforeModel++
 }
 
-func (p *fileParser) recordSnapshot(current tokenUsage) {
+func (p *Parser) recordSnapshot(current tokenUsage) {
 	if p.previousSnapshot != nil {
 		if current.lessThan(*p.previousSnapshot) {
 			p.stats.CounterResets++
@@ -204,7 +264,8 @@ func (u tokenUsage) lessThan(other tokenUsage) bool {
 		u.TotalTokens < other.TotalTokens
 }
 
-func (p *fileParser) flushUnknown() {
+// FlushUnknown emits buffered pre-model events as unknown at a definitive EOF.
+func (p *Parser) FlushUnknown() {
 	for _, event := range p.pending {
 		p.emitEvent(event, "unknown")
 	}
@@ -212,7 +273,7 @@ func (p *fileParser) flushUnknown() {
 	p.pending = nil
 }
 
-func (p *fileParser) emitEvent(event ingest.UsageEvent, model string) {
+func (p *Parser) emitEvent(event ingest.UsageEvent, model string) {
 	event.Model = model
 	p.emit(event)
 	p.stats.EmittedEvents++
