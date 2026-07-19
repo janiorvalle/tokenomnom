@@ -32,6 +32,9 @@ tokenomnom reconstructs local coding-agent token usage. All dollar figures are
 API list-price equivalents, not actual bills.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if theme.FromContext(cmd.Context()).Mode == theme.Styled {
+				return runDashboard(cmd, &codexDir, &claudeDir, &timezone)
+			}
 			return cmd.Help()
 		},
 		Version: version.Version,
