@@ -76,4 +76,12 @@ func TestAggregateQueriesAndFilters(t *testing.T) {
 	if empty.Total != 0 || empty.ActiveDays != 0 || empty.FirstDate != "" || len(empty.Providers) != 0 {
 		t.Fatalf("empty totals = %+v", empty)
 	}
+
+	filtered, err := database.FilteredUsageRows(Filter{Provider: discover.ProviderCodex, Since: "2026-02-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].Model != "gpt-a" || filtered[0].Date != "2026-02-01" {
+		t.Fatalf("filtered usage rows = %+v", filtered)
+	}
 }

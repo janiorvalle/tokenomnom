@@ -25,24 +25,25 @@ func TestReportCommandsRenderSeededStore(t *testing.T) {
 			args: []string{"summary", "--no-sync"},
 			fragments: []string{
 				"Summary\n", "Date range:  2026-01-31 to 2026-02-03", "Active days: 3", "Tokens\n",
-				"201,700", "206,910", "Providers\n", "Top models\n", "gpt-large",
-				"Note: 350 tokens are attributed to the unknown model.", "Note: 5 cache-write tokens are unclassified.",
+				"201,700", "206,910", "Providers\n", "Top models\n", "gpt-5.2",
+				"Note: 350 tokens are attributed to the unknown model.", "Cost\n", "Total: $0.18", "Top models by cost",
+				"WARNING: 5 unclassified cache-write tokens", pricingDisclaimer,
 			},
 		},
 		{
 			name:      "daily last",
 			args:      []string{"daily", "--last", "2", "--no-sync"},
-			fragments: []string{"DATE", "CACHE READ", "2026-02-01", "200,300", "205,350", "2026-02-03", "460"},
+			fragments: []string{"DATE", "CACHE READ", "COST", "2026-02-01", "200,300", "205,350", "$0.18", "2026-02-03", "460", pricingDisclaimer},
 		},
 		{
 			name:      "monthly",
 			args:      []string{"monthly", "--no-sync"},
-			fragments: []string{"MONTH", "2026-01", "1,100", "2026-02", "205,810"},
+			fragments: []string{"MONTH", "COST", "2026-01", "1,100", "2026-02", "205,810", "$0.18", pricingDisclaimer},
 		},
 		{
 			name:      "models",
 			args:      []string{"models", "--no-sync"},
-			fragments: []string{"PROVIDER", "MODEL", "SHARE", "DATE RANGE", "gpt-large", "99.1%", "2026-02-01 to 2026-02-01", "claude-model"},
+			fragments: []string{"PROVIDER", "MODEL", "SHARE", "DATE RANGE", "COST", "COST SHARE", "gpt-5.2", "99.1%", "2026-02-01 to 2026-02-01", "$0.18", "100.0%", "claude-model", pricingDisclaimer},
 		},
 	}
 
@@ -59,6 +60,13 @@ func TestReportCommandsRenderSeededStore(t *testing.T) {
 			}
 			if test.name == "daily last" && strings.Contains(output, "2026-01-31") {
 				t.Fatalf("--last did not limit active days:\n%s", output)
+			}
+			if test.name == "models" {
+				for _, line := range strings.Split(output, "\n") {
+					if strings.Contains(line, "gpt-small") && strings.Contains(line, "2026-") && !strings.Contains(line, "—") {
+						t.Fatalf("entirely unpriced model did not render an em dash:\n%s", output)
+					}
+				}
 			}
 		})
 	}
@@ -100,6 +108,7 @@ func TestReportsHandleEmptyState(t *testing.T) {
 	codexDir := filepath.Join(root, "missing-codex")
 	claudeDir := filepath.Join(root, "missing-claude")
 	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
 
 	output, err := executeReport([]string{"summary"}, codexDir, claudeDir)
 	if err != nil {
@@ -135,6 +144,7 @@ func TestReportsSyncByDefaultAndRespectNoSync(t *testing.T) {
 	codexDir := filepath.Join(root, "codex")
 	claudeDir := filepath.Join(root, "missing-claude")
 	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
 	writeTextFixture(t, filepath.Join(codexDir, "sessions", "fresh.jsonl"),
 		"{\"timestamp\":\"2026-03-04T09:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"fresh-model\"}}\n"+
 			"{\"timestamp\":\"2026-03-04T10:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":12,\"output_tokens\":3},\"last_token_usage\":{\"input_tokens\":12,\"output_tokens\":3}}}}\n")
@@ -178,10 +188,40 @@ func TestReportWarnsOnSyncErrorAndUsesStoredData(t *testing.T) {
 	}
 }
 
+func TestReportsUsePricingOverrideAndRejectMalformedRates(t *testing.T) {
+	stateDir, codexDir, claudeDir := seedReportStore(t)
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	configDir := os.Getenv("TOKENOMNOM_CONFIG_DIR")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	overridePath := filepath.Join(configDir, "pricing.json")
+	override := `{"gpt-5.2":[{"base_input":10,"cache_read":1,"output":20,"status":"estimated","source":"https://example.com/rate"}]}`
+	if err := os.WriteFile(overridePath, []byte(override), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeReport([]string{"summary", "--no-sync"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "Total: $0.75") {
+		t.Fatalf("summary did not use pricing override:\n%s", output)
+	}
+
+	if err := os.WriteFile(overridePath, []byte(`{"gpt-5.2":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = executeReport([]string{"summary", "--no-sync"}, codexDir, claudeDir)
+	if err == nil || !strings.Contains(err.Error(), "load pricing override") {
+		t.Fatalf("malformed report pricing error = %v", err)
+	}
+}
+
 func seedReportStore(t *testing.T) (stateDir, codexDir, claudeDir string) {
 	t.Helper()
 	root := t.TempDir()
 	stateDir = filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
 	codexDir = filepath.Join(root, "missing-codex")
 	claudeDir = filepath.Join(root, "missing-claude")
 	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
@@ -190,7 +230,7 @@ func seedReportStore(t *testing.T) (stateDir, codexDir, claudeDir string) {
 	}
 	seed := []store.Usage{
 		{Date: "2026-01-31", Provider: discover.ProviderCodex, Model: "gpt-small", Input: 1_000, CacheRead: 500, Output: 100},
-		{Date: "2026-02-01", Provider: discover.ProviderCodex, Model: "gpt-large", Input: 200_000, CacheRead: 150_000, Output: 5_000},
+		{Date: "2026-02-01", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 200_000, CacheRead: 150_000, Output: 5_000},
 		{Date: "2026-02-01", Provider: discover.ProviderClaude, Model: "unknown", Input: 300, CacheRead: 100, CacheWrite5m: 10, CacheWriteUnclassified: 5, Output: 50},
 		{Date: "2026-02-03", Provider: discover.ProviderClaude, Model: "claude-model", Input: 400, CacheRead: 200, CacheWrite1h: 20, Output: 60},
 	}
