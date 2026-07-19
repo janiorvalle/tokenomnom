@@ -2,7 +2,7 @@
 
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
-`pricing`, `doctor`, `sync`, and `export`. The `export` command defaults to CSV;
+`pricing`, `doctor`, `sync`, `export`, and `install-skill`. The `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
@@ -106,6 +106,18 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 `walk_errors`. `data.store` contains `path`, `exists`, `size_bytes`, nullable
 `schema_version`, nullable `timezone`, nullable `last_sync`, `usage_rows`,
 `distinct_models`, `date_range`, and `missing_files`.
+
+`data.skills` contains one item per provider with `provider`, skill `path`,
+`status`, and nullable installed `version`.
+
+## Install Skill
+
+`tokenomnom install-skill --format json`
+
+`data.providers` contains one result per provider with `provider`, `path`,
+`action`, and `version`. `action` is one of `installed`, `updated`,
+`up_to_date`, `skipped_no_root`, `refused_foreign`, `removed`, or
+`not_installed`.
 
 ## Sync
 

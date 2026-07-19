@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
@@ -61,6 +62,9 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
+	writeSkillsReport(cmd, roots)
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	if err := writeStoreReport(cmd, databasePath); err != nil {
 		return err
 	}
@@ -104,11 +108,19 @@ type jsonDoctorStore struct {
 
 type jsonDoctorData struct {
 	Providers []jsonDoctorProvider `json:"providers"`
+	Skills    []jsonDoctorSkill    `json:"skills"`
 	Store     jsonDoctorStore      `json:"store"`
 }
 
+type jsonDoctorSkill struct {
+	Provider string  `json:"provider"`
+	Path     string  `json:"path"`
+	Status   string  `json:"status"`
+	Version  *string `json:"version"`
+}
+
 func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
-	data := jsonDoctorData{Providers: make([]jsonDoctorProvider, 0, len(roots)), Store: jsonDoctorStore{Path: databasePath, DateRange: jsonDateRange{}}}
+	data := jsonDoctorData{Providers: make([]jsonDoctorProvider, 0, len(roots)), Skills: make([]jsonDoctorSkill, 0, len(roots)), Store: jsonDoctorStore{Path: databasePath, DateRange: jsonDateRange{}}}
 	warnings := []string{}
 	for _, root := range roots {
 		files, walkErrors := discover.ListSourceFiles(root)
@@ -137,6 +149,7 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 			warnings = append(warnings, fmt.Sprintf("%s discovery: %s", root.Provider, message))
 		}
 		data.Providers = append(data.Providers, provider)
+		data.Skills = append(data.Skills, doctorSkillJSON(root))
 	}
 
 	zone := requestedTimezone(requestedZone)
@@ -175,6 +188,36 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		data.Store.MissingFiles = info.MissingFiles
 	}
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func writeSkillsReport(cmd *cobra.Command, roots []discover.Root) {
+	writeHeading(cmd, "Skills")
+	for _, root := range roots {
+		status, _ := doctorSkillStatus(root)
+		fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", providerName(root.Provider)+":", status)
+	}
+}
+
+func doctorSkillJSON(root discover.Root) jsonDoctorSkill {
+	status, installedVersion := doctorSkillStatus(root)
+	return jsonDoctorSkill{
+		Provider: string(root.Provider), Path: skill.Path(root.Path), Status: status,
+		Version: optionalString(installedVersion),
+	}
+}
+
+func doctorSkillStatus(root discover.Root) (string, string) {
+	installedVersion, owned, exists, err := skill.Inspect(skill.Path(root.Path))
+	if err != nil {
+		return "unreadable: " + err.Error(), ""
+	}
+	if !exists {
+		return "not installed", ""
+	}
+	if !owned {
+		return "foreign file present", ""
+	}
+	return "installed v" + installedVersion, installedVersion
 }
 
 func writeStoreReport(cmd *cobra.Command, databasePath string) error {

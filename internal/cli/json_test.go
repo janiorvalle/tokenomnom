@@ -38,6 +38,7 @@ func TestJSONEnvelopeForEveryCommand(t *testing.T) {
 		{"pricing", []string{"pricing", "--format", "json"}},
 		{"doctor", []string{"doctor", "--format", "json"}},
 		{"export", []string{"export", "--format", "json", "--no-sync"}},
+		{"install-skill", []string{"install-skill", "--format", "json"}},
 	}
 	for _, test := range commands {
 		t.Run(test.name, func(t *testing.T) {
@@ -258,7 +259,7 @@ func TestAgentAPIDocMentionsEveryCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill"} {
 		if !strings.Contains(string(contents), "`"+command+"`") && !strings.Contains(string(contents), " "+command+" ") {
 			t.Errorf("agent API documentation does not mention %q", command)
 		}
