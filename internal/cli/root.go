@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"time"
 	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
 
+	"github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/version"
 )
@@ -32,7 +34,7 @@ tokenomnom reconstructs local coding-agent token usage. All dollar figures are
 API list-price equivalents, not actual bills.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if theme.FromContext(cmd.Context()).Mode == theme.Styled {
+			if theme.FromContext(cmd.Context()).Interactive {
 				return runDashboard(cmd, &codexDir, &claudeDir, &timezone)
 			}
 			return cmd.Help()
@@ -50,6 +52,53 @@ API list-price equivalents, not actual bills.`,
 			if (cmd.Name() == "export" && value != "csv" && value != "json") ||
 				(cmd.Name() != "export" && value != "pretty" && value != "json") {
 				return fmt.Errorf("invalid --format %q (expected %s)", value, validFormats)
+			}
+			if cmd.CommandPath() != "tokenomnom config path" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("find user home directory: %w", err)
+				}
+				overrides := config.Overrides{NoColor: noColor, NoColorChanged: cmd.Flags().Changed("no-color")}
+				if cmd.Flags().Changed("codex-dir") {
+					overrides.CodexDir = &codexDir
+				}
+				if cmd.Flags().Changed("claude-dir") {
+					overrides.ClaudeDir = &claudeDir
+				}
+				if cmd.Flags().Changed("tz") {
+					overrides.Timezone = &timezone
+				}
+				if flag := cmd.Flags().Lookup("no-chart"); flag != nil && flag.Changed {
+					value, _ := cmd.Flags().GetBool("no-chart")
+					overrides.NoChart, overrides.NoChartChanged = value, true
+				}
+				if flag := cmd.Flags().Lookup("last"); flag != nil && flag.Changed {
+					value, _ := cmd.Flags().GetInt("last")
+					overrides.DailyLast = &value
+				}
+				if flag := cmd.Flags().Lookup("provider"); flag != nil && flag.Changed {
+					value, _ := cmd.Flags().GetString("provider")
+					overrides.Provider = &value
+				}
+				lookupEnv := renderOptions.LookupEnv
+				if lookupEnv == nil {
+					lookupEnv = os.LookupEnv
+				}
+				loaded, err := config.Load(config.LoadOptions{Home: home, Getenv: os.Getenv, LookupEnv: lookupEnv, Output: cmd.ErrOrStderr(), Flags: overrides})
+				if err != nil {
+					return err
+				}
+				if source := loaded.Sources[config.KeyCodexDir]; source == "config" || source == "flag" {
+					codexDir = loaded.Config.Discovery.CodexDir
+				}
+				if source := loaded.Sources[config.KeyClaudeDir]; source == "config" || source == "flag" {
+					claudeDir = loaded.Config.Discovery.ClaudeDir
+				}
+				timezone = loaded.Config.Sync.Timezone
+				noColor = loaded.Config.Reports.Color == "never"
+				renderOptions.Color = loaded.Config.Reports.Color
+				renderOptions.IgnoreNoColorEnv = true
+				cmd.SetContext(config.WithContext(cmd.Context(), loaded))
 			}
 			if timezone != "" {
 				if _, err := time.LoadLocation(timezone); err != nil {
@@ -78,6 +127,7 @@ API list-price equivalents, not actual bills.`,
 	cmd.AddCommand(newPricingCommand(&timezone))
 	cmd.AddCommand(newExportCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newInstallSkillCommand(&codexDir, &claudeDir))
+	cmd.AddCommand(newConfigCommand())
 
 	return cmd
 }

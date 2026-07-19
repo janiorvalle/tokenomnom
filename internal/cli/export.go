@@ -57,6 +57,7 @@ func newExportCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Export full daily model usage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
 			filter, err := flags.filter()
 			if err != nil {
 				return err

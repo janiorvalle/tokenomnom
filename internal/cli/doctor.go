@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/janiorvalle/tokenomnom/internal/backup"
+	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
@@ -26,12 +29,7 @@ func newDoctorCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				return fmt.Errorf("find user home directory: %w", err)
 			}
 
-			roots, err := discover.Resolve(discover.ResolveOptions{
-				CodexDir:  *codexDir,
-				ClaudeDir: *claudeDir,
-				Home:      home,
-				Getenv:    os.Getenv,
-			})
+			roots, err := resolveRoots(cmd, *codexDir, *claudeDir, home)
 			if err != nil {
 				return err
 			}
@@ -70,6 +68,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 
 	fmt.Fprintln(cmd.OutOrStdout())
 	if err := writeStoreReport(cmd, databasePath); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
+	if err := writeBackupsReport(cmd, databasePath); err != nil {
 		return err
 	}
 
@@ -115,6 +118,17 @@ type jsonDoctorData struct {
 	Skills    []jsonDoctorSkill    `json:"skills"`
 	Offer     *string              `json:"offer"`
 	Store     jsonDoctorStore      `json:"store"`
+	Backups   jsonDoctorBackups    `json:"backups"`
+}
+
+type jsonDoctorBackups struct {
+	Enabled    bool    `json:"enabled"`
+	Dir        string  `json:"dir"`
+	Interval   string  `json:"interval"`
+	LastBackup *string `json:"last_backup"`
+	Count      int     `json:"count"`
+	TotalBytes int64   `json:"total_bytes"`
+	NewestFile *string `json:"newest_file"`
 }
 
 type jsonDoctorSkill struct {
@@ -193,7 +207,78 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		data.Store.MissingFiles = info.MissingFiles
 		data.Offer = optionalString(info.SkillOffer)
 	}
+	backupData, err := doctorBackups(cmd, databasePath)
+	if err != nil {
+		return err
+	}
+	data.Backups = backupData
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func writeBackupsReport(cmd *cobra.Command, databasePath string) error {
+	data, err := doctorBackups(cmd, databasePath)
+	if err != nil {
+		return err
+	}
+	writeHeading(cmd, "Backups")
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Enabled:", yesNo(data.Enabled))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Directory:", data.Dir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Interval:", data.Interval)
+	last := "-"
+	if data.LastBackup != nil {
+		last = *data.LastBackup
+	}
+	newest := "-"
+	if data.NewestFile != nil {
+		newest = *data.NewestFile
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Last backup:", last)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %d\n", "Count:", data.Count)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Total size:", humanBytes(data.TotalBytes))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-13s %s\n", "Newest file:", newest)
+	return nil
+}
+
+func doctorBackups(cmd *cobra.Command, databasePath string) (jsonDoctorBackups, error) {
+	cfg := appconfig.FromContext(cmd.Context()).Config.Backup
+	dir, err := backupDir(cmd)
+	if err != nil {
+		return jsonDoctorBackups{}, err
+	}
+	stats, err := backup.Inspect(dir)
+	if err != nil {
+		return jsonDoctorBackups{}, err
+	}
+	result := jsonDoctorBackups{
+		Enabled: cfg.Enabled, Dir: dir, Interval: cfg.Interval, Count: stats.Count,
+		TotalBytes: stats.TotalBytes,
+	}
+	if stats.NewestFile != "" {
+		value := filepath.Join(dir, stats.NewestFile)
+		result.NewestFile = &value
+	}
+	if _, err := os.Stat(databasePath); err == nil {
+		database, err := store.Open(databasePath)
+		if err != nil {
+			return jsonDoctorBackups{}, fmt.Errorf("inspect usage store backups: %w", err)
+		}
+		lastText, metaErr := database.Meta(backup.MetaKey)
+		database.Close()
+		if metaErr != nil {
+			return jsonDoctorBackups{}, metaErr
+		}
+		if lastText != "" {
+			unix, parseErr := strconv.ParseInt(lastText, 10, 64)
+			if parseErr != nil {
+				return jsonDoctorBackups{}, fmt.Errorf("parse last backup time: %w", parseErr)
+			}
+			value := time.Unix(unix, 0).Format(time.RFC3339)
+			result.LastBackup = &value
+		}
+	} else if !os.IsNotExist(err) {
+		return jsonDoctorBackups{}, fmt.Errorf("stat usage store: %w", err)
+	}
+	return result, nil
 }
 
 func writeSkillsReport(cmd *cobra.Command, roots []discover.Root, offer string) {

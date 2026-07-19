@@ -84,6 +84,7 @@ func newHeatmapCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		Short: "Show a calendar heatmap of daily spend",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.applyConfig(cmd)
 			if cmd.Flags().Changed("year") && (year < 1000 || year > 9999) {
 				return fmt.Errorf("invalid --year %d (expected YYYY)", year)
 			}

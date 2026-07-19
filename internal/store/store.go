@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -159,6 +160,27 @@ func (s *Store) Close() error { return s.db.Close() }
 // Path returns the database path.
 func (s *Store) Path() string { return s.path }
 
+// Meta returns one metadata value, or an empty string when the key is absent.
+func (s *Store) Meta(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read metadata %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// VacuumInto writes a consistent online copy of the database to path.
+func (s *Store) VacuumInto(path string) error {
+	if _, err := s.db.Exec(`VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("vacuum usage store into %q: %w", path, err)
+	}
+	return nil
+}
+
 // LockSync prevents two tokenomnom processes from racing checkpoints and
 // double-applying the same source records.
 func (s *Store) LockSync() (func(), error) {
@@ -175,13 +197,33 @@ func Lock(databasePath string) (func(), error) {
 		return nil, fmt.Errorf("secure state directory: %w", err)
 	}
 	lockPath := databasePath + ".lock"
+	return lockPathFile(lockPath, fmt.Sprintf("usage store is busy; another sync may be running (lock %s)", lockPath))
+}
+
+// LockPath acquires an advisory process lock without changing its parent directory.
+func LockPath(path string) (func(), error) {
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("create lock %s: %w", path, err)
+	}
+	if err := lockFileWait(file); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("acquire lock %s: %w", path, err)
+	}
+	return func() {
+		_ = unlockFile(file)
+		_ = file.Close()
+	}, nil
+}
+
+func lockPathFile(lockPath, busyMessage string) (func(), error) {
 	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create sync lock: %w", err)
 	}
 	if err := lockFile(file); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("usage store is busy; another sync may be running (lock %s)", lockPath)
+		return nil, errors.New(busyMessage)
 	}
 	_ = file.Truncate(0)
 	_, _ = file.WriteAt([]byte(fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))), 0)

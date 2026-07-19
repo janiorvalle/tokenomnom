@@ -28,22 +28,25 @@ type fileDescriptor interface {
 
 // ResolveOptions supplies command state and test-only terminal overrides.
 type ResolveOptions struct {
-	NoColor       bool
-	Format        string
-	Output        io.Writer
-	LookupEnv     func(string) (string, bool)
-	ForceTerminal *bool
-	Width         int
-	ForceColor    bool
-	Dark          *bool
+	NoColor          bool
+	Color            string
+	IgnoreNoColorEnv bool
+	Format           string
+	Output           io.Writer
+	LookupEnv        func(string) (string, bool)
+	ForceTerminal    *bool
+	Width            int
+	ForceColor       bool
+	Dark             *bool
 }
 
 // Context is the resolved presentation state for one command execution.
 type Context struct {
-	Mode     Mode
-	Width    int
-	Renderer *lipgloss.Renderer
-	Palette  Palette
+	Mode        Mode
+	Interactive bool
+	Width       int
+	Renderer    *lipgloss.Renderer
+	Palette     Palette
 }
 
 // Resolve centralizes color, TTY, and terminal-width detection.
@@ -74,12 +77,17 @@ func Resolve(options ResolveOptions) Context {
 
 	mode := Styled
 	_, noColorEnv := lookupEnv("NO_COLOR")
-	if options.NoColor || noColorEnv || !terminal || options.Format == "json" {
+	if options.IgnoreNoColorEnv {
+		noColorEnv = false
+	}
+	if options.NoColor || options.Color == "never" || noColorEnv || options.Format == "json" {
+		mode = Plain
+	} else if options.Color != "always" && !terminal {
 		mode = Plain
 	}
 
 	renderer := lipgloss.NewRenderer(options.Output)
-	if options.ForceColor {
+	if options.ForceColor || options.Color == "always" {
 		// termenv.TrueColor is profile value zero. Keeping the override here
 		// avoids exposing lipgloss's transitive termenv dependency to callers.
 		renderer.SetColorProfile(0)
@@ -91,10 +99,10 @@ func Resolve(options ResolveOptions) Context {
 	}
 	// termenv.Ascii is profile value three. A TTY without a color profile cannot
 	// distinguish provider segments, so it uses the stable Plain presentation.
-	if mode == Styled && renderer.ColorProfile() == 3 {
+	if mode == Styled && options.Color != "always" && renderer.ColorProfile() == 3 {
 		mode = Plain
 	}
-	return Context{Mode: mode, Width: width, Renderer: renderer, Palette: NewPalette(renderer)}
+	return Context{Mode: mode, Interactive: terminal && mode == Styled, Width: width, Renderer: renderer, Palette: NewPalette(renderer)}
 }
 
 func darkBackground(lookupEnv func(string) (string, bool)) bool {

@@ -28,6 +28,20 @@ func lockFile(file *os.File) error {
 	return nil
 }
 
+func lockFileWait(file *os.File) error {
+	var overlapped syscall.Overlapped
+	result, _, callErr := lockFileExProc.Call(
+		file.Fd(),
+		0x00000002, // LOCKFILE_EXCLUSIVE_LOCK
+		0, 1, 0,
+		uintptr(unsafe.Pointer(&overlapped)),
+	)
+	if result == 0 {
+		return callErr
+	}
+	return nil
+}
+
 func unlockFile(file *os.File) error {
 	var overlapped syscall.Overlapped
 	result, _, callErr := unlockFileExProc.Call(

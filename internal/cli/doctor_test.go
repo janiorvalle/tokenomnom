@@ -134,7 +134,7 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute doctor after sync: %v", err)
 	}
-	for _, fragment := range []string{"Store\n", "Path:             " + filepath.Join(stateDir, "usage.db"), "Exists:           yes", "Schema version:   1", "Timezone:         UTC", "Usage rows:       1", "Distinct models:  1", "Date range:       2026-07-18 to 2026-07-18"} {
+	for _, fragment := range []string{"Store\n", "Path:             " + filepath.Join(stateDir, "usage.db"), "Exists:           yes", "Schema version:   1", "Timezone:         UTC", "Usage rows:       1", "Distinct models:  1", "Date range:       2026-07-18 to 2026-07-18", "Backups\n", "Enabled:      yes", "Last backup:"} {
 		if !strings.Contains(output.String(), fragment) {
 			t.Errorf("doctor output missing %q:\n%s", fragment, output.String())
 		}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +85,33 @@ func TestBarePlainInvocationRemainsHelp(t *testing.T) {
 	}
 	if plain != noColor || !strings.Contains(plain, "Your agents nom tokens") {
 		t.Fatalf("plain bare output changed:\nplain:\n%s\nno-color:\n%s", plain, noColor)
+	}
+}
+
+func TestForcedColorDoesNotLaunchDashboardWithoutTerminal(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	withoutEnv(t, "NO_COLOR")
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[reports]\ncolor = \"always\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := runDashboardProgram
+	defer func() { runDashboardProgram = original }()
+	called := false
+	runDashboardProgram = func(_ *cobra.Command, _ tui.Model) error {
+		called = true
+		return nil
+	}
+	var output bytes.Buffer
+	cmd := NewRootCommand()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if called || !strings.Contains(output.String(), "Your agents nom tokens") {
+		t.Fatalf("redirected forced-color launch = called %t, output %q", called, output.String())
 	}
 }
 
