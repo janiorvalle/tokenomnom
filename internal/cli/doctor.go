@@ -62,7 +62,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
-	writeSkillsReport(cmd, roots)
+	offer, err := storedSkillOffer(databasePath)
+	if err != nil {
+		return err
+	}
+	writeSkillsReport(cmd, roots, offer)
 
 	fmt.Fprintln(cmd.OutOrStdout())
 	if err := writeStoreReport(cmd, databasePath); err != nil {
@@ -109,6 +113,7 @@ type jsonDoctorStore struct {
 type jsonDoctorData struct {
 	Providers []jsonDoctorProvider `json:"providers"`
 	Skills    []jsonDoctorSkill    `json:"skills"`
+	Offer     *string              `json:"offer"`
 	Store     jsonDoctorStore      `json:"store"`
 }
 
@@ -186,16 +191,37 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		data.Store.DistinctModels = info.DistinctModels
 		data.Store.DateRange = jsonDateRange{FirstDate: optionalString(info.OldestDate), LastDate: optionalString(info.NewestDate)}
 		data.Store.MissingFiles = info.MissingFiles
+		data.Offer = optionalString(info.SkillOffer)
 	}
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
 }
 
-func writeSkillsReport(cmd *cobra.Command, roots []discover.Root) {
+func writeSkillsReport(cmd *cobra.Command, roots []discover.Root, offer string) {
 	writeHeading(cmd, "Skills")
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", "Offer:", dashIfEmpty(offer))
 	for _, root := range roots {
 		status, _ := doctorSkillStatus(root)
 		fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", providerName(root.Provider)+":", status)
 	}
+}
+
+func storedSkillOffer(databasePath string) (string, error) {
+	if _, err := os.Stat(databasePath); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat usage store: %w", err)
+	}
+	database, err := store.Open(databasePath)
+	if err != nil {
+		return "", fmt.Errorf("inspect usage store: %w", err)
+	}
+	defer database.Close()
+	info, err := database.Info()
+	if err != nil {
+		return "", err
+	}
+	return info.SkillOffer, nil
 }
 
 func doctorSkillJSON(root discover.Root) jsonDoctorSkill {

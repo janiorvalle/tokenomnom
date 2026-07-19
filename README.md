@@ -35,16 +35,6 @@ go install github.com/janiorvalle/tokenomnom/cmd/nomnom@latest
 Release archives ship both `tokenomnom` and its shorter `nomnom` alias. Check
 either one with `tokenomnom --version` or `nomnom --version`.
 
-## Why
-
-<p align="center">
-  <img src="assets/why-receipt.png" alt="the subscription is flat. the token appetite is not." width="840">
-</p>
-
-<p align="center">
-  <img src="assets/why-brrr.png" alt="agents go brrr. tokenomnom keeps the receipt." width="840">
-</p>
-
 ## Use It
 
 Run the dashboard:
@@ -101,6 +91,9 @@ commands answer common token and spend questions:
 tokenomnom install-skill
 tokenomnom install-skill --remove
 ```
+
+The dashboard offers this skill once on first run; `install-skill` and
+`install-skill --remove` remain available anytime as the manual path.
 
 The installer only writes under existing agent roots. It refuses to overwrite
 a foreign `SKILL.md` unless you pass `--force`.

@@ -91,36 +91,85 @@ type Snapshot struct {
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
 type Loader func(Request) (Snapshot, error)
 
+// SkillOfferCheck describes whether the one-time skill offer is relevant.
+type SkillOfferCheck struct {
+	Answered  bool
+	HasRoots  bool
+	Installed bool
+}
+
+// SkillOfferChoice is a persisted answer to the one-time skill offer.
+type SkillOfferChoice uint8
+
+const (
+	SkillOfferAccepted SkillOfferChoice = iota + 1
+	SkillOfferDeclined
+	SkillOfferPreinstalled
+)
+
+// SkillOffer keeps dashboard interaction pure while the CLI adapter owns I/O.
+type SkillOffer struct {
+	Check   func() (SkillOfferCheck, error)
+	Install func() ([]string, error)
+	Record  func(SkillOfferChoice) error
+}
+
 type loadedMsg struct {
 	request  Request
 	snapshot Snapshot
 	err      error
 }
 
+type skillOfferCheckedMsg struct {
+	check SkillOfferCheck
+	err   error
+}
+
+type skillOfferInstalledMsg struct {
+	results []string
+	err     error
+}
+
+type skillOfferRecordedMsg struct{ err error }
+
+type skillOfferState uint8
+
+const (
+	skillOfferHidden skillOfferState = iota
+	skillOfferPrompt
+	skillOfferInstalling
+	skillOfferResult
+)
+
 // Model is the pure dashboard state machine.
 type Model struct {
-	render   theme.Context
-	loader   Loader
-	spinner  spinner.Model
-	request  Request
-	snapshot Snapshot
-	tab      Tab
-	help     bool
-	loading  bool
-	syncing  bool
-	loaded   bool
-	started  time.Time
-	status   string
-	warning  string
+	render       theme.Context
+	loader       Loader
+	offer        SkillOffer
+	spinner      spinner.Model
+	request      Request
+	snapshot     Snapshot
+	tab          Tab
+	help         bool
+	loading      bool
+	syncing      bool
+	loaded       bool
+	started      time.Time
+	status       string
+	warning      string
+	offerState   skillOfferState
+	offerChecked bool
+	offerResults []string
+	pendingSync  bool
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
-func New(render theme.Context, loader Loader) Model {
+func New(render theme.Context, loader Loader, offer SkillOffer) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = render.Palette.Emphasis()
 	return Model{
-		render: render, loader: loader, spinner: spin,
+		render: render, loader: loader, offer: offer, spinner: spin,
 		request: Request{Provider: AllProviders, Range: Range30Days, Width: render.Width},
 		loading: true, started: time.Now(),
 	}
@@ -139,6 +188,53 @@ func (m Model) loadCmd(request Request) tea.Cmd {
 		snapshot, err := m.loader(request)
 		return loadedMsg{request: request, snapshot: snapshot, err: err}
 	}
+}
+
+func (m Model) checkSkillOfferCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.offer.Check == nil {
+			return skillOfferCheckedMsg{}
+		}
+		check, err := m.offer.Check()
+		return skillOfferCheckedMsg{check: check, err: err}
+	}
+}
+
+func (m Model) installSkillCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.offer.Install == nil {
+			return skillOfferInstalledMsg{err: fmt.Errorf("skill installer is unavailable")}
+		}
+		results, err := m.offer.Install()
+		return skillOfferInstalledMsg{results: results, err: err}
+	}
+}
+
+func (m Model) recordSkillOfferCmd(choice SkillOfferChoice) tea.Cmd {
+	return func() tea.Msg {
+		if m.offer.Record == nil {
+			return skillOfferRecordedMsg{}
+		}
+		return skillOfferRecordedMsg{err: m.offer.Record(choice)}
+	}
+}
+
+func (m *Model) maybeCheckSkillOffer() tea.Cmd {
+	if m.offerChecked || m.offer.Check == nil {
+		return nil
+	}
+	m.offerChecked = true
+	return m.checkSkillOfferCmd()
+}
+
+func (m *Model) resumeInitialSync() tea.Cmd {
+	if !m.pendingSync {
+		return nil
+	}
+	m.pendingSync = false
+	next := m.request
+	next.Sync = true
+	return m.loadCmd(next)
 }
 
 // Update handles navigation and background snapshot results.
@@ -169,7 +265,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.request.Sync {
 			m.syncing = false
 			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
-			return m, nil
+			return m, m.maybeCheckSkillOffer()
 		}
 		if !initial {
 			return m, nil
@@ -182,7 +278,37 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		next := m.request
 		next.Sync = true
-		return m, m.loadCmd(next)
+		if msg.snapshot.Empty {
+			return m, m.loadCmd(next)
+		}
+		checkCommand := m.maybeCheckSkillOffer()
+		if checkCommand == nil {
+			return m, m.loadCmd(next)
+		}
+		m.pendingSync = true
+		return m, checkCommand
+	case skillOfferCheckedMsg:
+		if msg.err != nil || msg.check.Answered || !msg.check.HasRoots {
+			return m, m.resumeInitialSync()
+		}
+		if msg.check.Installed {
+			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
+		}
+		m.offerState = skillOfferPrompt
+		return m, nil
+	case skillOfferInstalledMsg:
+		m.offerState = skillOfferResult
+		m.offerResults = append([]string(nil), msg.results...)
+		if msg.err != nil {
+			m.offerResults = append(m.offerResults, "Install failed: "+msg.err.Error())
+		}
+		if len(m.offerResults) == 0 {
+			m.offerResults = []string{"No agent skills were changed."}
+		}
+		return m, m.recordSkillOfferCmd(SkillOfferAccepted)
+	case skillOfferRecordedMsg:
+		// Offer bookkeeping is intentionally best effort and never blocks the TUI.
+		return m, m.resumeInitialSync()
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -191,6 +317,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	value := key.String()
+	if m.offerState != skillOfferHidden {
+		return m.updateSkillOfferKey(value)
+	}
 	if value == "ctrl+c" || value == "q" {
 		return m, tea.Quit
 	}
@@ -259,6 +388,38 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {
+	switch m.offerState {
+	case skillOfferPrompt:
+		switch value {
+		case "y", "Y":
+			m.offerState = skillOfferInstalling
+			return m, m.installSkillCmd()
+		case "n", "N", "esc", "enter":
+			m.offerState = skillOfferHidden
+			m.status = "skill not installed — run 'tokenomnom install-skill' anytime"
+			return m, m.recordSkillOfferCmd(SkillOfferDeclined)
+		case "q", "ctrl+c":
+			return m, m.declineSkillOfferAndQuitCmd()
+		}
+	case skillOfferInstalling:
+		return m, nil
+	case skillOfferResult:
+		m.offerState = skillOfferHidden
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) declineSkillOfferAndQuitCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.offer.Record != nil {
+			_ = m.offer.Record(SkillOfferDeclined)
+		}
+		return tea.Quit()
+	}
+}
+
 func (m *Model) pan(direction int) {
 	switch m.tab {
 	case DailyTab:
@@ -302,7 +463,87 @@ func (m Model) View() string {
 		output.WriteByte('\n')
 	}
 	output.WriteString(m.footerView())
-	return output.String()
+	view := output.String()
+	if m.offerState != skillOfferHidden {
+		return m.skillOfferView()
+	}
+	return view
+}
+
+func (m Model) skillOfferView() string {
+	width := min(68, max(40, m.request.Width-8))
+	contentWidth := width - 4
+	var body strings.Builder
+	switch m.offerState {
+	case skillOfferPrompt:
+		body.WriteString(m.render.Palette.Header().Render("Teach your agents to use tokenomnom?"))
+		body.WriteString("\n\n")
+		body.WriteString(wrapText("Installs an agent skill into the skills directory of your detected coding agents (~/.claude, ~/.codex) so they can answer token-spend questions themselves.", contentWidth))
+		body.WriteString("\n\n")
+		body.WriteString(wrapText("Opt-in either way: install later anytime with `tokenomnom install-skill`, remove anytime with `tokenomnom install-skill --remove`.", contentWidth))
+		body.WriteString("\n\n")
+		body.WriteString(m.render.Palette.Emphasis().Render("[y] install   [n] not now"))
+		body.WriteByte('\n')
+		body.WriteString(m.render.Palette.Subtle().Render("(this prompt appears only once)"))
+	case skillOfferInstalling:
+		body.WriteString(m.render.Palette.Header().Render("Installing agent skill"))
+		body.WriteString("\n\n")
+		body.WriteString(m.spinner.View() + " Checking detected coding agents...")
+	case skillOfferResult:
+		body.WriteString(m.render.Palette.Header().Render("Agent skill results"))
+		body.WriteString("\n\n")
+		for index, result := range m.offerResults {
+			if index > 0 {
+				body.WriteByte('\n')
+			}
+			body.WriteString(wrapText(result, contentWidth))
+		}
+		body.WriteString("\n\n")
+		body.WriteString(m.render.Palette.Subtle().Render("Press any key to return to the dashboard"))
+	}
+	modal := lipgloss.NewStyle().Width(width).Border(lipgloss.RoundedBorder()).Padding(0, 2).Render(body.String())
+	return lipgloss.Place(max(m.request.Width, minimumWidth), max(m.request.Height, minimumHeight), lipgloss.Center, lipgloss.Center, modal)
+}
+
+func wrapText(value string, width int) string {
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return ""
+	}
+	lines := []string{}
+	current := ""
+	for _, word := range words {
+		for lipgloss.Width(word) > width {
+			if current != "" {
+				lines = append(lines, current)
+				current = ""
+			}
+			chunk, rest := splitTextWidth(word, width)
+			lines = append(lines, chunk)
+			word = rest
+		}
+		if current == "" {
+			current = word
+		} else if lipgloss.Width(current)+1+lipgloss.Width(word) <= width {
+			current += " " + word
+		} else {
+			lines = append(lines, current)
+			current = word
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func splitTextWidth(value string, width int) (string, string) {
+	runes := []rune(value)
+	end := 0
+	for end < len(runes) && lipgloss.Width(string(runes[:end+1])) <= width {
+		end++
+	}
+	return string(runes[:end]), string(runes[end:])
 }
 
 func (m Model) cardsView() string {
@@ -331,7 +572,11 @@ func (m Model) tabsView() string {
 func (m Model) footerView() string {
 	status := m.status
 	if m.syncing {
-		status = "syncing"
+		if status == "" {
+			status = "syncing"
+		} else {
+			status += " · syncing"
+		}
 	}
 	if m.warning != "" {
 		status = m.render.Palette.Warning().Render(m.warning)

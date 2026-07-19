@@ -3,12 +3,15 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
+	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
 type skillInstallResult struct {
@@ -31,23 +34,18 @@ func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 		Short: "Install the tokenomnom agent skill",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("find user home directory: %w", err)
-			}
-			roots, err := discover.Resolve(discover.ResolveOptions{
-				CodexDir: *codexDir, ClaudeDir: *claudeDir, Home: home, Getenv: os.Getenv,
-			})
+			home, roots, err := resolveSkillRoots(*codexDir, *claudeDir)
 			if err != nil {
 				return err
 			}
-			results := make([]skillInstallResult, 0, len(roots))
-			for _, root := range roots {
-				result, err := applySkill(root, version.Version, force, remove)
-				if err != nil {
+			results, err := applySkills(roots, version.Version, force, remove)
+			if err != nil {
+				return err
+			}
+			if !remove && skillInstallSucceeded(results) {
+				if err := setSkillOffer(home, skill.OfferAccepted); err != nil {
 					return err
 				}
-				results = append(results, result)
 			}
 			if currentFormat(cmd) == "json" {
 				return writeJSONEnvelope(cmd, "install-skill", requestedTimezone(""), jsonFilters{}, nil, jsonInstallSkillData{Providers: results})
@@ -61,6 +59,61 @@ func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "replace or remove a foreign skill file")
 	cmd.Flags().BoolVar(&remove, "remove", false, "remove the installed tokenomnom skill")
 	return cmd
+}
+
+func resolveSkillRoots(codexDir, claudeDir string) (string, []discover.Root, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, fmt.Errorf("find user home directory: %w", err)
+	}
+	roots, err := discover.Resolve(discover.ResolveOptions{
+		CodexDir: codexDir, ClaudeDir: claudeDir, Home: home, Getenv: os.Getenv,
+	})
+	return home, roots, err
+}
+
+func applySkills(roots []discover.Root, targetVersion string, force, remove bool) ([]skillInstallResult, error) {
+	results := make([]skillInstallResult, 0, len(roots))
+	for _, root := range roots {
+		result, err := applySkill(root, targetVersion, force, remove)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func skillInstallSucceeded(results []skillInstallResult) bool {
+	for _, result := range results {
+		switch result.Action {
+		case "installed", "updated", "up_to_date":
+			return true
+		}
+	}
+	return false
+}
+
+func skillOfferDatabasePath(home string) (string, error) {
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, store.DatabaseName), nil
+}
+
+func setSkillOffer(home, value string) error {
+	databasePath, err := skillOfferDatabasePath(home)
+	if err != nil {
+		return err
+	}
+	database, err := store.Open(databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	// Offer state belongs to the usage state directory, so a fresh state dir may ask again.
+	return database.Transaction(func(tx *store.Tx) error { return tx.SetMeta(skill.OfferMetaKey, value) })
 }
 
 func applySkill(root discover.Root, targetVersion string, force, remove bool) (skillInstallResult, error) {
