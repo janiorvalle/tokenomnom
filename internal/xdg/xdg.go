@@ -1,4 +1,4 @@
-// Package xdg resolves tokenomnom's persistent state directory.
+// Package xdg resolves tokenomnom's persistent state and configuration directories.
 package xdg
 
 import (
@@ -47,6 +47,40 @@ func StateDir(options Options) (string, error) {
 		return "", errors.New("home directory is required when no state override is set")
 	}
 	return absolute(filepath.Join(options.Home, ".local", "state", "tokenomnom"))
+}
+
+// ConfigDir returns the directory containing tokenomnom's user configuration.
+func ConfigDir(options Options) (string, error) {
+	getenv := options.Getenv
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	if value := getenv("TOKENOMNOM_CONFIG_DIR"); value != "" {
+		return absolute(value)
+	}
+
+	goos := options.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos == "windows" {
+		base := getenv("APPDATA")
+		if base == "" {
+			if options.Home == "" {
+				return "", errors.New("home directory is required when APPDATA is unset")
+			}
+			base = filepath.Join(options.Home, "AppData", "Roaming")
+		}
+		return absolute(filepath.Join(base, "tokenomnom"))
+	}
+
+	if value := getenv("XDG_CONFIG_HOME"); value != "" {
+		return absolute(filepath.Join(value, "tokenomnom"))
+	}
+	if options.Home == "" {
+		return "", errors.New("home directory is required when no config override is set")
+	}
+	return absolute(filepath.Join(options.Home, ".config", "tokenomnom"))
 }
 
 func absolute(path string) (string, error) {

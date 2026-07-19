@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,7 +76,15 @@ func newDailyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if !dateRangeSet && len(rows) > last {
 					rows = rows[len(rows)-last:]
 				}
-				return writeDailyReport(cmd, rows)
+				visibleDates := make(map[string]bool, len(rows))
+				for _, row := range rows {
+					visibleDates[row.Date] = true
+				}
+				costs, err := loadReportCosts(database, filter, func(row store.Usage) bool { return visibleDates[row.Date] })
+				if err != nil {
+					return err
+				}
+				return writeDailyReport(cmd, rows, costs)
 			})
 		},
 	}
@@ -100,7 +109,11 @@ func newMonthlyCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeMonthlyReport(cmd, rows)
+				costs, err := loadReportCosts(database, filter, nil)
+				if err != nil {
+					return err
+				}
+				return writeMonthlyReport(cmd, rows, costs)
 			})
 		},
 	}
@@ -128,7 +141,11 @@ func newModelsCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeModelsReport(cmd, rows, totals.Total)
+				costs, err := loadReportCosts(database, filter, nil)
+				if err != nil {
+					return err
+				}
+				return writeModelsReport(cmd, rows, totals.Total, costs)
 			})
 		},
 	}
@@ -270,6 +287,10 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	if err != nil {
 		return err
 	}
+	costs, err := loadReportCosts(database, filter, nil)
+	if err != nil {
+		return err
+	}
 
 	writer := cmd.OutOrStdout()
 	fmt.Fprintln(writer, "Summary")
@@ -309,39 +330,73 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	if unknownTokens > 0 {
 		fmt.Fprintf(writer, "Note: %s tokens are attributed to the unknown model.\n", formatNumber(unknownTokens))
 	}
-	if totals.CacheWriteUnclassified > 0 {
-		fmt.Fprintf(writer, "Note: %s cache-write tokens are unclassified.\n", formatNumber(totals.CacheWriteUnclassified))
+
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, "Cost")
+	fmt.Fprintf(writer, "Total: %s\n", formatCost(costs.Grand))
+	fmt.Fprintln(writer)
+	providerCostRows := make([][]string, 0, len(totals.Providers))
+	for _, provider := range totals.Providers {
+		providerCostRows = append(providerCostRows, []string{providerName(provider.Provider), formatCost(costs.ByProvider[provider.Provider])})
 	}
+	writeTable(writer, []string{"PROVIDER", "COST"}, providerCostRows, []bool{false, true})
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, "Top models by cost")
+	keys := make([]modelCostKey, 0, len(costs.ByModel))
+	for key := range costs.ByModel {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := costs.ByModel[keys[i]], costs.ByModel[keys[j]]
+		if left.Total != right.Total {
+			return left.Total > right.Total
+		}
+		if keys[i].Provider != keys[j].Provider {
+			return keys[i].Provider < keys[j].Provider
+		}
+		return keys[i].Model < keys[j].Model
+	})
+	if len(keys) > 5 {
+		keys = keys[:5]
+	}
+	topCostRows := make([][]string, 0, len(keys))
+	for _, key := range keys {
+		topCostRows = append(topCostRows, []string{providerName(key.Provider), key.Model, formatCost(costs.ByModel[key])})
+	}
+	writeTable(writer, []string{"PROVIDER", "MODEL", "COST"}, topCostRows, []bool{false, false, true})
+	writeCostNotes(cmd, costs)
 	return nil
 }
 
-func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow) error {
+func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCosts) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		tableRows = append(tableRows, tokenRow(row.Date, row.TokenTotals))
+		tableRows = append(tableRows, append(tokenRow(row.Date, row.TokenTotals), formatCost(costs.ByDate[row.Date])))
 	}
-	writeTable(cmd.OutOrStdout(), []string{"DATE", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL"}, tableRows, []bool{false, true, true, true, true, true})
+	writeTable(cmd.OutOrStdout(), []string{"DATE", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true})
+	writeCostNotes(cmd, costs)
 	return nil
 }
 
-func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow) error {
+func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs reportCosts) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		tableRows = append(tableRows, tokenRow(row.Month, row.TokenTotals))
+		tableRows = append(tableRows, append(tokenRow(row.Month, row.TokenTotals), formatCost(costs.ByMonth[row.Month])))
 	}
-	writeTable(cmd.OutOrStdout(), []string{"MONTH", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL"}, tableRows, []bool{false, true, true, true, true, true})
+	writeTable(cmd.OutOrStdout(), []string{"MONTH", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "COST"}, tableRows, []bool{false, true, true, true, true, true, true})
+	writeCostNotes(cmd, costs)
 	return nil
 }
 
-func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int64) error {
+func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int64, costs reportCosts) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), noUsageMessage)
 		return nil
@@ -352,15 +407,21 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 		if grandTotal > 0 {
 			share = float64(row.Total) / float64(grandTotal) * 100
 		}
+		modelCost := costs.ByModel[modelCostKey{Provider: row.Provider, Model: row.Model}]
+		costShare := "—"
+		if modelCost.PricedTokens > 0 && costs.Grand.Total > 0 {
+			costShare = fmt.Sprintf("%.1f%%", float64(modelCost.Total)/float64(costs.Grand.Total)*100)
+		}
 		tableRows = append(tableRows, []string{
 			providerName(row.Provider), row.Model, formatNumber(row.Input), formatNumber(row.CacheRead), formatNumber(row.CacheWrite), formatNumber(row.Output), formatNumber(row.Total),
-			fmt.Sprintf("%.1f%%", share), formatNumber(int64(row.ActiveDays)), row.FirstDate + " to " + row.LastDate,
+			fmt.Sprintf("%.1f%%", share), formatNumber(int64(row.ActiveDays)), row.FirstDate + " to " + row.LastDate, formatCost(modelCost), costShare,
 		})
 	}
 	writeTable(cmd.OutOrStdout(),
-		[]string{"PROVIDER", "MODEL", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "SHARE", "DAYS", "DATE RANGE"},
-		tableRows, []bool{false, false, true, true, true, true, true, true, true, false},
+		[]string{"PROVIDER", "MODEL", "INPUT", "CACHE READ", "CACHE WRITE", "OUTPUT", "TOTAL", "SHARE", "DAYS", "DATE RANGE", "COST", "COST SHARE"},
+		tableRows, []bool{false, false, true, true, true, true, true, true, true, false, true, true},
 	)
+	writeCostNotes(cmd, costs)
 	return nil
 }
 

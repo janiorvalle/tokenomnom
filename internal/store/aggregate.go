@@ -164,6 +164,26 @@ func (s *Store) Totals(filter Filter) (TotalsResult, error) {
 	return result, nil
 }
 
+// FilteredUsageRows returns daily provider/model rows for pricing and other
+// calculations that cannot be performed after aggregation.
+func (s *Store) FilteredUsageRows(filter Filter) ([]Usage, error) {
+	where, args := filterSQL(filter)
+	rows, err := s.db.Query(`SELECT date, provider, model, input, cache_read, cache_write_5m, cache_write_1h, cache_write_unclassified, output, reasoning FROM usage_daily `+where+` ORDER BY date, provider, model`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query filtered usage: %w", err)
+	}
+	defer rows.Close()
+	var result []Usage
+	for rows.Next() {
+		var usage Usage
+		if err := rows.Scan(&usage.Date, &usage.Provider, &usage.Model, &usage.Input, &usage.CacheRead, &usage.CacheWrite5m, &usage.CacheWrite1h, &usage.CacheWriteUnclassified, &usage.Output, &usage.Reasoning); err != nil {
+			return nil, fmt.Errorf("scan filtered usage: %w", err)
+		}
+		result = append(result, usage)
+	}
+	return result, rows.Err()
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
