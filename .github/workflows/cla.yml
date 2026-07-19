@@ -35,4 +35,4 @@ jobs:
           path-to-signatures: signatures/version1/cla.json
           path-to-document: https://github.com/janiorvalle/tokenomnom/blob/main/CONTRIBUTING.md
           branch: signatures
-          allowlist: dependabot[bot],*[bot]
+          allowlist: janiorvalle,dependabot[bot],*[bot]
