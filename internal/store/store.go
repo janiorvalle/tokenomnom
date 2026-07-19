@@ -76,6 +76,7 @@ type Info struct {
 	OldestDate          string
 	NewestDate          string
 	MissingFiles        int
+	SkillOffer          string
 }
 
 // Open creates or opens a usage database and initializes schema v1.
@@ -368,10 +369,11 @@ func (s *Store) Info() (Info, error) {
 		(SELECT COUNT(DISTINCT model) FROM usage_daily),
 		COALESCE((SELECT MIN(date) FROM usage_daily), ''),
 		COALESCE((SELECT MAX(date) FROM usage_daily), ''),
-		(SELECT COUNT(*) FROM files WHERE missing=1)`).Scan(
+		(SELECT COUNT(*) FROM files WHERE missing=1),
+		COALESCE((SELECT value FROM meta WHERE key='skill_offer'), '')`).Scan(
 		&info.SchemaVersion, &info.Timezone, &info.TimezoneFingerprint,
 		&info.PendingTimezone, &info.PendingFingerprint, &info.LastSyncUnix, &info.UsageRows,
-		&info.DistinctModels, &info.OldestDate, &info.NewestDate, &info.MissingFiles)
+		&info.DistinctModels, &info.OldestDate, &info.NewestDate, &info.MissingFiles, &info.SkillOffer)
 	if err != nil {
 		return Info{}, fmt.Errorf("query store diagnostics: %w", err)
 	}

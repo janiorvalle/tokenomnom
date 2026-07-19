@@ -12,10 +12,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	"github.com/janiorvalle/tokenomnom/internal/version"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
@@ -28,7 +30,77 @@ var runDashboardProgram = func(cmd *cobra.Command, model tui.Model) error {
 func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) error {
 	render := theme.FromContext(cmd.Context())
 	loader := newDashboardLoader(*codexDir, *claudeDir, *timezone, render)
-	return runDashboardProgram(cmd, tui.New(render, loader))
+	offer := newDashboardSkillOffer(*codexDir, *claudeDir)
+	return runDashboardProgram(cmd, tui.New(render, loader, offer))
+}
+
+func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
+	return tui.SkillOffer{
+		Check: func() (tui.SkillOfferCheck, error) {
+			home, roots, err := resolveSkillRoots(codexDir, claudeDir)
+			if err != nil {
+				return tui.SkillOfferCheck{}, err
+			}
+			databasePath, err := skillOfferDatabasePath(home)
+			if err != nil {
+				return tui.SkillOfferCheck{}, err
+			}
+			database, err := store.Open(databasePath)
+			if err != nil {
+				return tui.SkillOfferCheck{}, err
+			}
+			defer database.Close()
+			info, err := database.Info()
+			if err != nil {
+				return tui.SkillOfferCheck{}, err
+			}
+			check := tui.SkillOfferCheck{Answered: info.SkillOffer != ""}
+			if check.Answered {
+				return check, nil
+			}
+			for _, root := range roots {
+				if !root.Exists {
+					continue
+				}
+				check.HasRoots = true
+				_, owned, exists, inspectErr := skill.Inspect(skill.Path(root.Path))
+				if inspectErr != nil {
+					return tui.SkillOfferCheck{}, inspectErr
+				}
+				check.Installed = check.Installed || owned && exists
+			}
+			return check, nil
+		},
+		Install: func() ([]string, error) {
+			_, roots, err := resolveSkillRoots(codexDir, claudeDir)
+			if err != nil {
+				return nil, err
+			}
+			results, err := applySkills(roots, version.Version, false, false)
+			if err != nil {
+				return nil, err
+			}
+			lines := make([]string, 0, len(results))
+			for _, result := range results {
+				lines = append(lines, formatSkillResult(result))
+			}
+			return lines, nil
+		},
+		Record: func(choice tui.SkillOfferChoice) error {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("find user home directory: %w", err)
+			}
+			value := skill.OfferDeclined
+			switch choice {
+			case tui.SkillOfferAccepted:
+				value = skill.OfferAccepted
+			case tui.SkillOfferPreinstalled:
+				value = skill.OfferPreinstalled
+			}
+			return setSkillOffer(home, value)
+		},
+	}
 }
 
 func newDashboardLoader(codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {

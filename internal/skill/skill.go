@@ -15,6 +15,12 @@ const (
 	markerPrefix = "<!-- tokenomnom-skill v"
 	markerSuffix = " -->"
 	versionToken = "{{VERSION}}"
+
+	// OfferMetaKey and its values record the one-time dashboard offer.
+	OfferMetaKey      = "skill_offer"
+	OfferAccepted     = "accepted"
+	OfferDeclined     = "declined"
+	OfferPreinstalled = "preinstalled"
 )
 
 //go:embed SKILL.md
