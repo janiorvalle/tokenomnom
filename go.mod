@@ -3,7 +3,7 @@ module github.com/janiorvalle/tokenomnom
 go 1.25.6
 
 require (
-	github.com/BurntSushi/toml v1.5.0
+	github.com/BurntSushi/toml v1.6.0
 	github.com/NimbleMarkets/ntcharts v0.1.0
 	github.com/charmbracelet/bubbles v0.18.0
 	github.com/charmbracelet/bubbletea v0.25.0
