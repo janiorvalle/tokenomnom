@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,8 +10,40 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 )
+
+func TestUsageBackupDoesNotCopyHistoryDatabase(t *testing.T) {
+	stateDir := t.TempDir()
+	usage, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usage.Close()
+	historyDB, err := historystore.Open(filepath.Join(stateDir, historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer historyDB.Close()
+
+	result, err := Run(usage, Options{Enabled: true, Dir: filepath.Join(t.TempDir(), "backups"), Interval: time.Hour, Keep: 1, Now: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy, err := sql.Open("sqlite", result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copy.Close()
+	var containsHistory bool
+	if err := copy.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions')`).Scan(&containsHistory); err != nil {
+		t.Fatal(err)
+	}
+	if containsHistory {
+		t.Fatal("usage backup unexpectedly contains history schema")
+	}
+}
 
 func TestRunCreatesOpenableIdenticalBackupWhenDue(t *testing.T) {
 	database := seedStore(t)
