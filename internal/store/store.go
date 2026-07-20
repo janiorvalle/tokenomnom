@@ -148,9 +148,8 @@ func (s *Store) initialize() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
 		return fmt.Errorf("set SQLite busy timeout: %w", err)
 	}
-	var mode string
-	if err := s.db.QueryRow(`PRAGMA journal_mode = WAL;`).Scan(&mode); err != nil {
-		return fmt.Errorf("enable SQLite WAL mode: %w", err)
+	if err := enableWAL(s.db); err != nil {
+		return err
 	}
 	var existingVersion int
 	var metaTableExists bool
@@ -188,6 +187,23 @@ func (s *Store) initialize() error {
 		existingVersion = next
 	}
 	return nil
+}
+
+func enableWAL(database *sql.DB) error {
+	var lastErr error
+	for attempt := 0; attempt < 50; attempt++ {
+		var mode string
+		lastErr = database.QueryRow(`PRAGMA journal_mode = WAL;`).Scan(&mode)
+		if lastErr == nil {
+			return nil
+		}
+		message := strings.ToLower(lastErr.Error())
+		if !strings.Contains(message, "database is locked") && !strings.Contains(message, "sqlite_busy") {
+			return fmt.Errorf("enable SQLite WAL mode: %w", lastErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("enable SQLite WAL mode: %w", lastErr)
 }
 
 func (s *Store) runSchemaStep(version int, ddl string) error {
