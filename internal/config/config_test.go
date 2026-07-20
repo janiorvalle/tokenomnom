@@ -12,7 +12,8 @@ func TestDefaults(t *testing.T) {
 	got := Defaults()
 	if got.Reports.Color != "auto" || !got.Reports.Charts || got.Reports.DailyLast != 30 ||
 		got.Backup.Enabled != true || got.Backup.Interval != "24h" || got.Backup.Keep != 14 ||
-		got.Vault.MinAge != "168h" || !got.Vault.Auto || strings.Join(got.Vault.Providers, ",") != "codex,claude" {
+		got.Vault.MinAge != "168h" || !got.Vault.Auto || got.Vault.AutoInterval != "24h" ||
+		got.Schedule.Interval != "24h" || strings.Join(got.Vault.Providers, ",") != "codex,claude" {
 		t.Fatalf("unexpected defaults: %#v", got)
 	}
 }
@@ -39,6 +40,9 @@ dir = "/config/vault"
 min_age = "2h"
 providers = ["claude"]
 auto = false
+auto_interval = "3h"
+[schedule]
+interval = "6h"
 `
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
@@ -75,13 +79,14 @@ auto = false
 			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
 		}
 	}
-	for _, key := range []string{KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto} {
+	for _, key := range []string{KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval, KeyScheduleInterval} {
 		if loaded.Sources[key] != "config" {
 			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
 		}
 	}
 	if loaded.Config.Vault.Dir != "/config/vault" || loaded.Config.Vault.MinAge != "2h" ||
-		strings.Join(loaded.Config.Vault.Providers, ",") != "claude" || loaded.Config.Vault.Auto {
+		strings.Join(loaded.Config.Vault.Providers, ",") != "claude" || loaded.Config.Vault.Auto ||
+		loaded.Config.Vault.AutoInterval != "3h" || loaded.Config.Schedule.Interval != "6h" {
 		t.Fatalf("vault config = %#v", loaded.Config.Vault)
 	}
 }
@@ -113,6 +118,24 @@ func TestLoadMissingMalformedInvalidAndUnknown(t *testing.T) {
 	}
 	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "vault.providers") {
 		t.Fatalf("invalid vault provider error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[vault]\nauto_interval = \"soon\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "vault.auto_interval") {
+		t.Fatalf("invalid auto-vault interval error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[schedule]\ninterval = \"0s\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "schedule.interval") {
+		t.Fatalf("invalid schedule interval error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[schedule]\ninterval = \"1500ms\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "schedule.interval") {
+		t.Fatalf("fractional schedule interval error = %v", err)
 	}
 
 	if err := os.WriteFile(malformed, []byte("[reports]\ndaily_last = 5\ntypo = true\n[unknown]\nvalue = 1\n"), 0o600); err != nil {

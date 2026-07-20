@@ -308,17 +308,35 @@ func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.R
 		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warnings[len(warnings)-1])
 		}
-	} else if backupErr := runDueBackup(cmd, database); backupErr != nil {
-		warning := fmt.Sprintf("backup usage: %v", backupErr)
-		warnings = append(warnings, warning)
-		if currentFormat(cmd) != "json" && cmd.Name() != "export" {
-			writeWarningLine(cmd, "WARNING: "+warning)
-		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warning)
+	} else {
+		if backupErr := runDueBackup(cmd, database); backupErr != nil {
+			warning := fmt.Sprintf("backup usage: %v", backupErr)
+			warnings = append(warnings, warning)
+			writeReportMaintenanceLine(cmd, "WARNING: "+warning)
+		}
+		autoResult, autoErr := runDueAutoVault(cmd, database, roots)
+		if summary := autoVaultSummary(autoResult); summary != "" {
+			warnings = append(warnings, summary)
+			writeReportMaintenanceLine(cmd, "Auto-vault: "+strings.TrimPrefix(summary, "auto-vault "))
+		}
+		for _, warning := range autoVaultWarnings(autoResult, autoErr) {
+			warnings = append(warnings, warning)
+			writeReportMaintenanceLine(cmd, "WARNING: "+warning)
 		}
 	}
 	release()
 	return database, warnings, nil
+}
+
+func writeReportMaintenanceLine(cmd *cobra.Command, line string) {
+	if currentFormat(cmd) == "json" {
+		return
+	}
+	if cmd.Name() == "export" {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
+		return
+	}
+	writeWarningLine(cmd, line)
 }
 
 func requestedTimezone(value string) string {

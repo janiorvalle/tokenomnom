@@ -29,9 +29,17 @@ that tokenomnom is not installed instead of guessing numbers.
 - Discovery and store health: `tokenomnom doctor --format json`; read `data.providers`, `data.skills`, and `data.store`.
 - Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
+- Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 
 Provider, model, and explicit date filters are available on report commands.
 For repeated reads, add `--no-sync` before `--format json`.
+
+## Mining
+
+For "what did I work on" or "how did I prompt X", use
+`tokenomnom vault list --format json` to locate sessions, then
+`tokenomnom vault cat <source-path> --format json` to read one. Check the live
+Codex or Claude transcript directories for recent sessions not vaulted yet.
 
 ## Reading JSON
 

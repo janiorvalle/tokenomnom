@@ -3,10 +3,15 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"syscall"
 	"unsafe"
 )
+
+func isLockBusy(err error) bool {
+	return errors.Is(err, syscall.Errno(33)) // ERROR_LOCK_VIOLATION
+}
 
 var (
 	kernel32         = syscall.NewLazyDLL("kernel32.dll")

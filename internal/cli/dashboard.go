@@ -157,6 +157,17 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			if err := runDueBackup(cmd, database); err != nil {
 				backupWarning = fmt.Sprintf("backup usage: %v", err)
 			}
+			autoResult, autoErr := runDueAutoVault(cmd, database, roots)
+			maintenance := autoVaultWarnings(autoResult, autoErr)
+			if summary := autoVaultSummary(autoResult); summary != "" {
+				maintenance = append([]string{summary}, maintenance...)
+			}
+			if len(maintenance) > 0 {
+				if backupWarning != "" {
+					backupWarning += "; "
+				}
+				backupWarning += strings.Join(maintenance, "; ")
+			}
 		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
 		snapshot.Warning = backupWarning

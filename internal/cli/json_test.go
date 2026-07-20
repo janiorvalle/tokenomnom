@@ -259,7 +259,7 @@ func TestAgentAPIDocMentionsEveryCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "vault", "schedule", "config"} {
 		if !strings.Contains(string(contents), "`"+command+"`") && !strings.Contains(string(contents), " "+command+" ") {
 			t.Errorf("agent API documentation does not mention %q", command)
 		}

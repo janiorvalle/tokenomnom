@@ -98,6 +98,26 @@ The dashboard offers this skill once on first run; `install-skill` and
 The installer only writes under existing agent roots. It refuses to overwrite
 a foreign `SKILL.md` unless you pass `--force`.
 
+## Keep It Fresh
+
+Install a per-user maintenance schedule, inspect it, or remove it:
+
+```sh
+tokenomnom schedule install
+tokenomnom schedule status
+tokenomnom schedule uninstall
+```
+
+Each tick runs one quiet `sync --scheduled`, then performs a due database
+backup and a due settled-transcript auto-vault pass. tokenomnom uses launchd
+on macOS, a systemd user timer on Linux, and Windows Task Scheduler on Windows.
+There is no daemon, watcher, or resident tokenomnom process.
+
+The installed unit embeds the current absolute binary path and
+`schedule.interval`. Re-run `schedule install` after moving or upgrading the
+binary, or after changing that interval. Other config is read fresh by every
+tick.
+
 ## Configuration
 
 User config lives at `~/.config/tokenomnom/config.toml` on macOS and Linux,
@@ -134,6 +154,10 @@ dir = ""
 min_age = "168h"
 providers = ["codex", "claude"]
 auto = true
+auto_interval = "24h"
+
+[schedule]
+interval = "24h"
 ```
 
 An empty discovery directory uses automatic detection. The existing
@@ -157,9 +181,16 @@ default; `backup.interval` is a Go duration; `backup.keep = 0` keeps every
 backup. Backup failures warn but never block a report.
 
 An empty `vault.dir` uses `<data-dir>/vault`. `vault.min_age` is the settle
-time before a transcript is eligible for manual archiving, and
-`vault.providers` selects `codex`, `claude`, or both. `vault.auto` is stored
-and shown now; automatic archiving is not enabled yet.
+time before a transcript is eligible for archiving, and `vault.providers`
+selects `codex`, `claude`, or both. When `vault.auto` is true, successful syncs
+run a settled-file archive pass at most once per `vault.auto_interval`.
+Failures warn and retry on a later tick; source transcripts are never deleted.
+
+`schedule.interval` controls the installed OS schedule and defaults to 24
+hours. It must be a whole-second Go duration. Changing it requires another
+`schedule install`; `schedule status`
+flags drift between the config and installed unit. Windows Task Scheduler
+supports intervals from 1 minute through 31 days.
 
 The SQLite store lives at `~/.local/state/tokenomnom/usage.db` on macOS and
 Linux, or `%LOCALAPPDATA%\tokenomnom\usage.db` on Windows. Use

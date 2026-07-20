@@ -20,27 +20,30 @@ import (
 const FileName = "config.toml"
 
 const (
-	KeyCodexDir        = "discovery.codex_dir"
-	KeyClaudeDir       = "discovery.claude_dir"
-	KeyTimezone        = "sync.timezone"
-	KeyColor           = "reports.color"
-	KeyCharts          = "reports.charts"
-	KeyDailyLast       = "reports.daily_last"
-	KeyDefaultProvider = "reports.default_provider"
-	KeyBackupEnabled   = "backup.enabled"
-	KeyBackupInterval  = "backup.interval"
-	KeyBackupDir       = "backup.dir"
-	KeyBackupKeep      = "backup.keep"
-	KeyVaultDir        = "vault.dir"
-	KeyVaultMinAge     = "vault.min_age"
-	KeyVaultProviders  = "vault.providers"
-	KeyVaultAuto       = "vault.auto"
+	KeyCodexDir          = "discovery.codex_dir"
+	KeyClaudeDir         = "discovery.claude_dir"
+	KeyTimezone          = "sync.timezone"
+	KeyColor             = "reports.color"
+	KeyCharts            = "reports.charts"
+	KeyDailyLast         = "reports.daily_last"
+	KeyDefaultProvider   = "reports.default_provider"
+	KeyBackupEnabled     = "backup.enabled"
+	KeyBackupInterval    = "backup.interval"
+	KeyBackupDir         = "backup.dir"
+	KeyBackupKeep        = "backup.keep"
+	KeyVaultDir          = "vault.dir"
+	KeyVaultMinAge       = "vault.min_age"
+	KeyVaultProviders    = "vault.providers"
+	KeyVaultAuto         = "vault.auto"
+	KeyVaultAutoInterval = "vault.auto_interval"
+	KeyScheduleInterval  = "schedule.interval"
 )
 
 var keys = []string{
 	KeyCodexDir, KeyClaudeDir, KeyTimezone, KeyColor, KeyCharts, KeyDailyLast,
 	KeyDefaultProvider, KeyBackupEnabled, KeyBackupInterval, KeyBackupDir, KeyBackupKeep,
-	KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto,
+	KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval,
+	KeyScheduleInterval,
 }
 
 type Config struct {
@@ -49,6 +52,7 @@ type Config struct {
 	Reports   Reports   `toml:"reports" json:"reports"`
 	Backup    Backup    `toml:"backup" json:"backup"`
 	Vault     Vault     `toml:"vault" json:"vault"`
+	Schedule  Schedule  `toml:"schedule" json:"schedule"`
 }
 
 type Discovery struct {
@@ -75,17 +79,23 @@ type Backup struct {
 }
 
 type Vault struct {
-	Dir       string   `toml:"dir" json:"dir"`
-	MinAge    string   `toml:"min_age" json:"min_age"`
-	Providers []string `toml:"providers" json:"providers"`
-	Auto      bool     `toml:"auto" json:"auto"`
+	Dir          string   `toml:"dir" json:"dir"`
+	MinAge       string   `toml:"min_age" json:"min_age"`
+	Providers    []string `toml:"providers" json:"providers"`
+	Auto         bool     `toml:"auto" json:"auto"`
+	AutoInterval string   `toml:"auto_interval" json:"auto_interval"`
+}
+
+type Schedule struct {
+	Interval string `toml:"interval" json:"interval"`
 }
 
 func Defaults() Config {
 	return Config{
-		Reports: Reports{Color: "auto", Charts: true, DailyLast: 30},
-		Backup:  Backup{Enabled: true, Interval: "24h", Keep: 14},
-		Vault:   Vault{MinAge: "168h", Providers: []string{"codex", "claude"}, Auto: true},
+		Reports:  Reports{Color: "auto", Charts: true, DailyLast: 30},
+		Backup:   Backup{Enabled: true, Interval: "24h", Keep: 14},
+		Vault:    Vault{MinAge: "168h", Providers: []string{"codex", "claude"}, Auto: true, AutoInterval: "24h"},
+		Schedule: Schedule{Interval: "24h"},
 	}
 }
 
@@ -267,6 +277,14 @@ func Validate(value Config) error {
 	minAge, err := time.ParseDuration(value.Vault.MinAge)
 	if err != nil || minAge < 0 {
 		return validationError{KeyVaultMinAge, "must be a non-negative Go duration"}
+	}
+	autoInterval, err := time.ParseDuration(value.Vault.AutoInterval)
+	if err != nil || autoInterval <= 0 {
+		return validationError{KeyVaultAutoInterval, "must be a positive Go duration"}
+	}
+	scheduleInterval, err := time.ParseDuration(value.Schedule.Interval)
+	if err != nil || scheduleInterval < time.Second || scheduleInterval%time.Second != 0 {
+		return validationError{KeyScheduleInterval, "must be a positive whole-second Go duration"}
 	}
 	seenProviders := make(map[string]bool, len(value.Vault.Providers))
 	for _, provider := range value.Vault.Providers {

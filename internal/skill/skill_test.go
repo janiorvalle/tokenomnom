@@ -9,7 +9,7 @@ import (
 
 func TestEmbeddedSkillContentGuard(t *testing.T) {
 	contents := string(Embedded())
-	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "vault list", "vault cat", "schedule status"} {
 		if !strings.Contains(contents, "tokenomnom "+command) {
 			t.Errorf("embedded skill does not mention command %q", command)
 		}

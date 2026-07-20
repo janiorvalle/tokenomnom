@@ -23,6 +23,9 @@ const (
 	DatabaseName = "usage.db"
 )
 
+// ErrStoreInUse reports that another tokenomnom process owns the sync lock.
+var ErrStoreInUse = errors.New("usage store is busy")
+
 // Store owns a SQLite usage database.
 type Store struct {
 	db   *sql.DB
@@ -311,7 +314,7 @@ func Lock(databasePath string) (func(), error) {
 		return nil, fmt.Errorf("secure state directory: %w", err)
 	}
 	lockPath := databasePath + ".lock"
-	return lockPathFile(lockPath, fmt.Sprintf("usage store is busy; another sync may be running (lock %s)", lockPath))
+	return lockPathFile(lockPath, fmt.Errorf("%w; another sync may be running (lock %s)", ErrStoreInUse, lockPath))
 }
 
 // LockPath acquires an advisory process lock without changing its parent directory.
@@ -330,14 +333,17 @@ func LockPath(path string) (func(), error) {
 	}, nil
 }
 
-func lockPathFile(lockPath, busyMessage string) (func(), error) {
+func lockPathFile(lockPath string, busyError error) (func(), error) {
 	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create sync lock: %w", err)
 	}
 	if err := lockFile(file); err != nil {
 		file.Close()
-		return nil, errors.New(busyMessage)
+		if isLockBusy(err) {
+			return nil, busyError
+		}
+		return nil, fmt.Errorf("acquire sync lock: %w", err)
 	}
 	_ = file.Truncate(0)
 	_, _ = file.WriteAt([]byte(fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))), 0)

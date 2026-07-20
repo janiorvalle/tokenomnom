@@ -3,6 +3,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 	var full bool
+	var scheduled bool
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Incrementally ingest coding-agent token usage",
@@ -37,6 +39,13 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			databasePath := filepath.Join(stateDir, store.DatabaseName)
 			release, err := store.Lock(databasePath)
 			if err != nil {
+				if scheduled && errors.Is(err, store.ErrStoreInUse) {
+					if currentFormat(cmd) == "json" {
+						return writeSyncJSON(cmd, syncer.Summary{}, requestedTimezone(*timezone), "", autoVaultResult{}, nil, true, true)
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), "skipped: store in use")
+					return nil
+				}
 				return err
 			}
 			defer release()
@@ -66,36 +75,64 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err := runDueBackup(cmd, database); err != nil {
 				backupWarning = fmt.Sprintf("backup usage: %v", err)
 			}
+			autoResult, autoErr := runDueAutoVault(cmd, database, roots)
 			if currentFormat(cmd) == "json" {
-				return writeSyncJSON(cmd, summary, name, backupWarning)
+				return writeSyncJSON(cmd, summary, name, backupWarning, autoResult, autoErr, scheduled, false)
+			}
+			if scheduled {
+				warningCount := len(autoVaultWarnings(autoResult, autoErr))
+				if backupWarning != "" {
+					warningCount++
+				}
+				if summary.UnknownModelTokens > 0 {
+					warningCount++
+				}
+				if summary.UnclassifiedCacheWriteTokens > 0 {
+					warningCount++
+				}
+				warningSummary := ""
+				if warningCount > 0 {
+					warningSummary = fmt.Sprintf(", warnings: %d", warningCount)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "sync complete: %d files scanned, %d events applied, %d files vaulted%s\n", summary.FilesScanned, summary.EventsApplied, autoResult.Archived, warningSummary)
+				return nil
 			}
 			writeSyncSummary(cmd, summary)
+			writeAutoVaultDetails(cmd, autoResult)
 			if backupWarning != "" {
 				writeWarningLine(cmd, "WARNING: "+backupWarning)
+			}
+			for _, warning := range autoVaultWarnings(autoResult, autoErr) {
+				writeWarningLine(cmd, "WARNING: "+warning)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&full, "full", false, "re-ingest all files while retaining vanished history")
+	cmd.Flags().BoolVar(&scheduled, "scheduled", false, "run as a quiet OS-scheduled maintenance tick")
 	return cmd
 }
 
 type jsonSyncData struct {
-	FilesScanned                 int      `json:"files_scanned"`
-	FilesSkipped                 int      `json:"files_skipped"`
-	FilesAppended                int      `json:"files_appended"`
-	FilesRewritten               int      `json:"files_rewritten"`
-	FilesMissing                 int      `json:"files_missing"`
-	EventsApplied                int      `json:"events_applied"`
-	UsageRows                    int      `json:"usage_rows"`
-	UnknownModelTokens           int64    `json:"unknown_model_tokens"`
-	UnclassifiedCacheWriteTokens int64    `json:"unclassified_cache_write_tokens"`
-	FullReingest                 bool     `json:"full_reingest"`
-	DurationMS                   int64    `json:"duration_ms"`
-	Warnings                     []string `json:"warnings"`
+	FilesScanned                 int              `json:"files_scanned"`
+	FilesSkipped                 int              `json:"files_skipped"`
+	FilesAppended                int              `json:"files_appended"`
+	FilesRewritten               int              `json:"files_rewritten"`
+	FilesMissing                 int              `json:"files_missing"`
+	EventsApplied                int              `json:"events_applied"`
+	UsageRows                    int              `json:"usage_rows"`
+	UnknownModelTokens           int64            `json:"unknown_model_tokens"`
+	UnclassifiedCacheWriteTokens int64            `json:"unclassified_cache_write_tokens"`
+	FullReingest                 bool             `json:"full_reingest"`
+	DurationMS                   int64            `json:"duration_ms"`
+	Warnings                     []string         `json:"warnings"`
+	Scheduled                    bool             `json:"scheduled"`
+	Skipped                      bool             `json:"skipped"`
+	SkipReason                   string           `json:"skip_reason,omitempty"`
+	AutoVault                    *autoVaultResult `json:"auto_vault,omitempty"`
 }
 
-func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupWarning string) error {
+func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupWarning string, autoResult autoVaultResult, autoErr error, scheduled, skipped bool) error {
 	warnings := []string{}
 	if summary.UnknownModelTokens > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d unknown-model tokens were ingested and remain explicitly attributed to unknown.", summary.UnknownModelTokens))
@@ -106,6 +143,11 @@ func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupW
 	if backupWarning != "" {
 		warnings = append(warnings, backupWarning)
 	}
+	warnings = append(warnings, autoVaultWarnings(autoResult, autoErr)...)
+	var autoData *autoVaultResult
+	if autoResult.Ran {
+		autoData = &autoResult
+	}
 	data := jsonSyncData{
 		FilesScanned: summary.FilesScanned, FilesSkipped: summary.FilesSkipped,
 		FilesAppended: summary.FilesAppended, FilesRewritten: summary.FilesRewritten,
@@ -113,7 +155,10 @@ func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupW
 		UsageRows: summary.UsageRows, UnknownModelTokens: summary.UnknownModelTokens,
 		UnclassifiedCacheWriteTokens: summary.UnclassifiedCacheWriteTokens,
 		FullReingest:                 summary.FullReingest, DurationMS: summary.Duration.Milliseconds(),
-		Warnings: warnings,
+		Warnings: warnings, Scheduled: scheduled, Skipped: skipped, AutoVault: autoData,
+	}
+	if skipped {
+		data.SkipReason = "store in use"
 	}
 	return writeJSONEnvelope(cmd, "sync", timezone, jsonFilters{}, warnings, data)
 }

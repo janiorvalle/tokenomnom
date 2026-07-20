@@ -2,8 +2,8 @@
 
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
-`pricing`, `doctor`, `sync`, `export`, `install-skill`, and every `vault`
-subcommand. The `export` command defaults to CSV;
+`pricing`, `doctor`, `sync`, `export`, `install-skill`, `config show`, every
+`vault` subcommand, and every `schedule` subcommand. The `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
@@ -117,6 +117,11 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 deeply verified reclaimable value so routine diagnostics do not rescan the
 transcript corpus; run `vault status` to refresh it.
 
+`data.schedule` contains `installed`, `definition_exists`, `mechanism`, `unit_path`, optional `task_name`, `binary_path`,
+`binary_exists`, `configured_interval`, nullable `installed_interval`,
+`interval_drift`, and nullable `last_sync`, `last_backup`, and
+`last_auto_vault` timestamps.
+
 ## Vault
 
 All vault JSON commands use the standard envelope. Command values are
@@ -126,8 +131,9 @@ All vault JSON commands use the standard envelope. Command values are
 `stored_bytes`, `deduplicated`, `skipped`, and `changed_during_read` counts.
 `--all` ignores settle age and rechecks source hashes; `stored_bytes` is the
 change in on-disk bundle bytes for the archive run.
-Discovery problems are also returned as envelope warnings. The command is
-manual; the configured `vault.auto` value does not act yet.
+Discovery problems are also returned as envelope warnings. Successful syncs
+run this settled-file pass when `vault.auto` is enabled and its
+`vault.auto_interval` guard is due.
 
 `vault verify [--deep]` returns `deep`, `checked`, `verified`, and `failures`.
 Each failure identifies `source_path`, `version`, `archive`, and `error`; any
@@ -157,6 +163,28 @@ action.
 `up_to_date`, `skipped_no_root`, `refused_foreign`, `removed`, or
 `not_installed`.
 
+## Schedule
+
+`tokenomnom schedule install --format json`, `schedule status --format json`,
+and `schedule uninstall --format json` use command values `schedule install`,
+`schedule status`, and `schedule uninstall`. Data contains `installed`,
+`mechanism`, `definition_exists`, `unit_path`, optional `task_name`, `binary_path`, `binary_exists`,
+`configured_interval`, nullable `installed_interval`, `interval_drift`, and
+nullable `last_sync`, `last_backup`, and `last_auto_vault`. Uninstall also
+returns `uninstalled: true`.
+
+The scheduler is per-user: launchd on macOS, a systemd user timer on Linux,
+and Windows Task Scheduler on Windows. It runs the installed absolute binary
+as `sync --scheduled`; no daemon remains resident.
+
+## Config Show
+
+`tokenomnom config show --format json` uses command `config`. `data.config`
+contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`, and
+`schedule` sections. `data.sources` maps every supported dotted key to
+`default`, `config`, an environment source, or `flag`; `path` is the resolved
+config path and `found` says whether the file existed.
+
 ## Sync
 
 `tokenomnom sync --format json`
@@ -164,8 +192,12 @@ action.
 `data` contains `files_scanned`, `files_skipped`, `files_appended`,
 `files_rewritten`, `files_missing`, `events_applied`, `usage_rows`,
 `unknown_model_tokens`, `unclassified_cache_write_tokens`, `full_reingest`, and
-`duration_ms`. Its `warnings` array repeats the sync-specific envelope warnings
-so the sync result remains self-contained.
+`duration_ms`, `scheduled`, `skipped`, optional `skip_reason`, and optional
+`auto_vault`. Auto-vault data contains `ran`, `archived`, per-provider archive
+counts, and warnings. Its `warnings` array repeats the sync-specific envelope
+warnings so the sync result remains self-contained. A scheduled tick that
+finds the store lock held succeeds with `skipped: true` and `skip_reason:
+"store in use"`.
 
 ## Export
 

@@ -13,6 +13,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/backup"
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/schedule"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/vault"
@@ -83,6 +84,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
+	if err := writeDoctorScheduleReport(cmd); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	switch len(found) {
 	case 0:
 		writeWarningLine(cmd, "Status: no provider data directories found. Use --codex-dir, --claude-dir, or the TOKENOMNOM_*_DIR environment variables to point tokenomnom at them.")
@@ -126,6 +132,7 @@ type jsonDoctorData struct {
 	Store     jsonDoctorStore      `json:"store"`
 	Backups   jsonDoctorBackups    `json:"backups"`
 	Vault     jsonDoctorVault      `json:"vault"`
+	Schedule  jsonScheduleData     `json:"schedule"`
 }
 
 type jsonDoctorBackups struct {
@@ -237,7 +244,33 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		return err
 	}
 	data.Vault = vaultData
+	scheduleData, err := doctorSchedule(cmd)
+	if err != nil {
+		return err
+	}
+	data.Schedule = scheduleData
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func doctorSchedule(cmd *cobra.Command) (jsonScheduleData, error) {
+	options, err := currentScheduleOptions(cmd)
+	if err != nil {
+		return jsonScheduleData{}, err
+	}
+	status, err := schedule.Inspect(options)
+	if err != nil {
+		return jsonScheduleData{}, err
+	}
+	return scheduleData(cmd, status)
+}
+
+func writeDoctorScheduleReport(cmd *cobra.Command) error {
+	data, err := doctorSchedule(cmd)
+	if err != nil {
+		return err
+	}
+	writeScheduleStatus(cmd, data)
+	return nil
 }
 
 func writeVaultReport(cmd *cobra.Command, roots []discover.Root, databasePath string) error {
