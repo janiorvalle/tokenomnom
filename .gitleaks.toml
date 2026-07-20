@@ -1,0 +1,4 @@
+title = "tokenomnom gitleaks configuration"
+
+[extend]
+useDefault = true

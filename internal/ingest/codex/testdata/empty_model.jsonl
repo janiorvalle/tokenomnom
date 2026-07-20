@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-18T13:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3},"last_token_usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}}
+{"timestamp":"2026-07-18T13:01:00Z","type":"turn_context","payload":{"model":"   "}}
+{"timestamp":"2026-07-18T13:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7},"last_token_usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}}
