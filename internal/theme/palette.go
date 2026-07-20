@@ -15,6 +15,8 @@ type Palette struct {
 	emphasisColor lipgloss.AdaptiveColor
 	warningColor  lipgloss.AdaptiveColor
 	moneyColor    lipgloss.AdaptiveColor
+	borderColor   lipgloss.AdaptiveColor
+	successColor  lipgloss.AdaptiveColor
 }
 
 // NewPalette builds adaptive styles for light and dark terminal backgrounds.
@@ -47,6 +49,8 @@ func NewPalette(renderer *lipgloss.Renderer) Palette {
 		emphasisColor: lipgloss.AdaptiveColor{Light: "#4338CA", Dark: "#A5B4FC"},
 		warningColor:  lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"},
 		moneyColor:    lipgloss.AdaptiveColor{Light: "#047857", Dark: "#6EE7B7"},
+		borderColor:   lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#374151"},
+		successColor:  lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"},
 	}
 }
 
@@ -87,6 +91,26 @@ func (p Palette) Warning() lipgloss.Style {
 // Money styles cost values.
 func (p Palette) Money() lipgloss.Style {
 	return p.style().Foreground(p.adaptiveColor(p.moneyColor))
+}
+
+// Border styles structural chrome: card borders, dividers, rules.
+func (p Palette) Border() lipgloss.Style {
+	return p.style().Foreground(p.adaptiveColor(p.borderColor))
+}
+
+// BorderColor exposes the chrome color for lipgloss BorderForeground.
+func (p Palette) BorderColor() lipgloss.Color {
+	return p.adaptiveColor(p.borderColor)
+}
+
+// AccentBorderColor exposes the emphasis color for focused chrome.
+func (p Palette) AccentBorderColor() lipgloss.Color {
+	return p.adaptiveColor(p.emphasisColor)
+}
+
+// Success styles completed-state markers such as installed and synced.
+func (p Palette) Success() lipgloss.Style {
+	return p.style().Foreground(p.adaptiveColor(p.successColor))
 }
 
 // ProviderColor maps a provider and model rank to a deterministic ramp shade.

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/NimbleMarkets/ntcharts/canvas"
@@ -20,7 +21,9 @@ const (
 	// Below 32 columns even one two-column bar plus readable axes cannot scan well.
 	minimumChartWidth = 32
 	minimumBarWidth   = 2
-	barGap            = 1
+	// Bars widen up to this when few periods share a wide plot.
+	maximumBarWidth = 6
+	barGap          = 1
 )
 
 type chartPeriod struct {
@@ -93,10 +96,14 @@ func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, pl
 	}
 	maxLabel = formatChartAxis(maxValue, tokens)
 
+	barWidth := minimumBarWidth
+	if len(periods) > 0 {
+		barWidth = max(minimumBarWidth, min(maximumBarWidth, (plotWidth-(len(periods)-1)*barGap)/len(periods)))
+	}
 	chart := barchart.New(plotWidth, chartHeight,
 		barchart.WithNoAxis(),
 		barchart.WithNoAutoBarWidth(),
-		barchart.WithBarWidth(minimumBarWidth),
+		barchart.WithBarWidth(barWidth),
 		barchart.WithBarGap(barGap),
 	)
 	for _, period := range periods {
@@ -132,18 +139,50 @@ func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, pl
 	}
 	ticks := make([]string, 0, len(periods))
 	for _, period := range periods {
-		ticks = append(ticks, shortPeriodLabel(period.label))
+		label := shortPeriodLabel(period.label)
+		leftPad := max(0, (barWidth-lipgloss.Width(label))/2)
+		rightPad := max(0, barWidth-lipgloss.Width(label)-leftPad)
+		ticks = append(ticks, strings.Repeat(" ", leftPad)+label+strings.Repeat(" ", rightPad))
 	}
 	output.WriteString(strings.Repeat(" ", axisWidth))
-	output.WriteString(render.Palette.Subtle().Render(strings.Join(ticks, strings.Repeat(" ", barGap))))
+	output.WriteString(render.Palette.Subtle().Render(strings.TrimRight(strings.Join(ticks, strings.Repeat(" ", barGap)), " ")))
 	output.WriteByte('\n')
-	for _, contextRow := range periodContextRows(periods) {
-		line := strings.TrimRight(strings.Join(contextRow, strings.Repeat(" ", barGap)), " ")
+	if caption := periodCaption(periods); caption != "" {
 		output.WriteString(strings.Repeat(" ", axisWidth))
-		output.WriteString(render.Palette.Subtle().Render(line))
+		output.WriteString(render.Palette.Subtle().Render(caption))
 		output.WriteByte('\n')
 	}
 	return output.String()
+}
+
+// periodCaption names the charted span in one line — "Jul 2026" or
+// "Dec 2025 – Jan 2026" for days, "2026" or "2025 – 2026" for months —
+// replacing the old per-column month/year fragment rows.
+func periodCaption(periods []chartPeriod) string {
+	if len(periods) == 0 {
+		return ""
+	}
+	first, last := periods[0].label, periods[len(periods)-1].label
+	daily := len(first) == len("2006-01-02")
+	layout := "2006-01"
+	if daily {
+		layout = "2006-01-02"
+	}
+	from, errFrom := time.Parse(layout, first)
+	to, errTo := time.Parse(layout, last)
+	if errFrom != nil || errTo != nil {
+		return ""
+	}
+	if daily {
+		if from.Year() == to.Year() && from.Month() == to.Month() {
+			return from.Format("Jan 2006")
+		}
+		return from.Format("Jan 2006") + " – " + to.Format("Jan 2006")
+	}
+	if from.Year() == to.Year() {
+		return from.Format("2006")
+	}
+	return from.Format("2006") + " – " + to.Format("2006")
 }
 
 func bindChartRenderer(chart *barchart.Model, renderer *lipgloss.Renderer) {
@@ -157,35 +196,6 @@ func bindChartRenderer(chart *barchart.Model, renderer *lipgloss.Renderer) {
 			chart.Canvas.SetCell(point, cell)
 		}
 	}
-}
-
-func periodContextRows(periods []chartPeriod) [][]string {
-	if len(periods) == 0 {
-		return nil
-	}
-	months := make([]string, len(periods))
-	years := make([]string, len(periods))
-	previousMonth, previousYear := "", ""
-	daily := len(periods[0].label) == len("2006-01-02")
-	for index, period := range periods {
-		label := period.label
-		if len(label) < len("2006-01") {
-			continue
-		}
-		year, month := label[:4], label[5:7]
-		monthKey := label[:7]
-		if daily && (index == 0 || monthKey != previousMonth) {
-			months[index] = month
-		}
-		if index == 0 || year != previousYear {
-			years[index] = year[2:4]
-		}
-		previousMonth, previousYear = monthKey, year
-	}
-	if daily {
-		return [][]string{months, years}
-	}
-	return [][]string{years}
 }
 
 func maxChartValue(periods []chartPeriod, tokens bool) float64 {

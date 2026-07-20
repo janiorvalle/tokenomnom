@@ -211,17 +211,18 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		return tui.Snapshot{}, err
 	}
 
-	render.Width = max(32, request.Width-2)
+	render.Width = tui.ContentWidth(request.Width)
 	snapshot := tui.Snapshot{Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
-	topModel := "—"
+	topModel, topProvider := "—", ""
 	if len(models) > 0 {
 		topModel = models[0].Model
+		topProvider = string(models[0].Provider)
 	}
 	snapshot.Cards = [4]tui.Card{
-		{Label: "TOTAL COST", Value: formatCost(costs.Grand)},
+		{Label: "TOTAL COST", Value: formatCost(costs.Grand), Kind: tui.CardMoney},
 		{Label: "TOTAL TOKENS", Value: formatNumber(totals.Total)},
 		{Label: "ACTIVE DAYS", Value: formatNumber(int64(totals.ActiveDays))},
-		{Label: "TOP MODEL", Value: topModel},
+		{Label: "TOP MODEL", Value: topModel, Kind: tui.CardModel, Provider: topProvider},
 	}
 	snapshot.Views[tui.DailyTab], err = dashboardDailyView(database, filter, costs, request, render)
 	if err != nil {
