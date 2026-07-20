@@ -44,6 +44,9 @@ func TestMigrateConcurrentUpgradeAppliesEachStepOnce(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('schema_version','1'); CREATE TABLE old(value TEXT)`); err != nil {
 		t.Fatal(err)
 	}
+	if err := EnableWAL(db, "test store"); err != nil {
+		t.Fatal(err)
+	}
 	plan := MigrationPlan{Label: "test store", Current: 3, Steps: map[int]string{2: `ALTER TABLE old ADD COLUMN two TEXT`, 3: `ALTER TABLE old ADD COLUMN three TEXT`}}
 	var wait sync.WaitGroup
 	errorsFound := make(chan error, 8)

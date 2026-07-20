@@ -94,6 +94,23 @@ func Migrate(db *sql.DB, plan MigrationPlan) error {
 
 // SchemaVersion reads meta.schema_version when present.
 func SchemaVersion(db *sql.DB, label string) (int, bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 50; attempt++ {
+		version, exists, err := schemaVersionOnce(db, label)
+		if err == nil {
+			return version, exists, nil
+		}
+		lastErr = err
+		message := strings.ToLower(err.Error())
+		if !strings.Contains(message, "database is locked") && !strings.Contains(message, "sqlite_busy") {
+			return 0, exists, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return 0, false, lastErr
+}
+
+func schemaVersionOnce(db *sql.DB, label string) (int, bool, error) {
 	var exists bool
 	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')`).Scan(&exists); err != nil {
 		return 0, false, fmt.Errorf("inspect %s schema: %w", label, err)
