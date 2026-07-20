@@ -49,7 +49,7 @@ func TestConcurrentOpensOfInitializedStoreSucceed(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesSchemaV1ToV2(t *testing.T) {
+func TestOpenMigratesSchemaV1ToCurrent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), store.DatabaseName)
 	database, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestOpenMigratesSchemaV1ToV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer migrated.Close()
-	if got, err := migrated.Meta("schema_version"); err != nil || got != "2" {
+	if got, err := migrated.Meta("schema_version"); err != nil || got != "3" {
 		t.Fatalf("schema version = %q, %v", got, err)
 	}
 	if files, err := migrated.VaultFiles(); err != nil || len(files) != 0 {

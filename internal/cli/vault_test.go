@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/janiorvalle/tokenomnom/internal/vault"
 )
 
 func TestVaultCommandsAndJSONEnvelopes(t *testing.T) {
@@ -69,6 +72,101 @@ func TestVaultCommandsAndJSONEnvelopes(t *testing.T) {
 	invalid.SetArgs(append(append([]string{}, base...), "vault", "list", "--since", "2026-02-01", "--until", "2026-01-01"))
 	if err := invalid.Execute(); err == nil || !strings.Contains(err.Error(), "--until must be on or after --since") {
 		t.Fatalf("inverted range error = %v", err)
+	}
+}
+
+func TestVaultListPaginationJSONPrettyAndValidation(t *testing.T) {
+	root := t.TempDir()
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 3 {
+		source := filepath.Join(codexDir, "sessions", "2020", "01", fmt.Sprintf("session-%d.jsonl", index))
+		if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("{\"timestamp\":\"2020-01-0%dT03:04:05Z\",\"type\":\"fixture\"}\n", index+1)
+		if err := os.WriteFile(source, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Date(2020, 1, index+2, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(source, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	base := []string{"--codex-dir", codexDir, "--claude-dir", claudeDir}
+	executeVaultCommand(t, append(append([]string{}, base...), "vault", "archive", "--all", "--format", "json"))
+
+	type listEnvelope struct {
+		Data struct {
+			Files []vault.ListEntry `json:"files"`
+			Page  *struct {
+				Limit      int    `json:"limit"`
+				HasMore    bool   `json:"has_more"`
+				NextCursor string `json:"next_cursor"`
+			} `json:"page"`
+		} `json:"data"`
+	}
+	var first listEnvelope
+	output := executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--limit", "1", "--latest", "--format", "json"))
+	if err := json.Unmarshal(output, &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Data.Files) != 1 || first.Data.Page == nil || first.Data.Page.Limit != 1 || !first.Data.Page.HasMore || !strings.HasPrefix(first.Data.Page.NextCursor, "v1:") {
+		t.Fatalf("first page = %#v\n%s", first, output)
+	}
+	var second listEnvelope
+	output = executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--latest", "--cursor", first.Data.Page.NextCursor, "--format", "json"))
+	if err := json.Unmarshal(output, &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Data.Files) != 1 || second.Data.Page == nil || second.Data.Page.Limit != 1 || second.Data.Files[0].SourcePath == first.Data.Files[0].SourcePath {
+		t.Fatalf("second page = %#v\n%s", second, output)
+	}
+
+	var legacy listEnvelope
+	output = executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--format", "json"))
+	if err := json.Unmarshal(output, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Data.Files) != 3 || legacy.Data.Page != nil {
+		t.Fatalf("legacy list = %#v", legacy)
+	}
+	if bytes.Contains(output, []byte(`"page"`)) {
+		t.Fatalf("legacy response unexpectedly added page metadata: %s", output)
+	}
+	pretty := string(executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--limit", "1")))
+	if !strings.Contains(pretty, "PROVIDER") || !strings.Contains(pretty, "More results: rerun with the same filters and --cursor v1:") {
+		t.Fatalf("pretty page missing provider or continuation:\n%s", pretty)
+	}
+	var sorted listEnvelope
+	output = executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--sort", "first_ts", "--format", "json"))
+	if err := json.Unmarshal(output, &sorted); err != nil {
+		t.Fatal(err)
+	}
+	if sorted.Data.Page != nil || !strings.HasSuffix(sorted.Data.Files[0].SourcePath, "session-2.jsonl") {
+		t.Fatalf("unbounded sorted list = %#v", sorted)
+	}
+	var empty listEnvelope
+	output = executeVaultCommand(t, append(append([]string{}, base...), "vault", "list", "--provider", "claude", "--limit", "10", "--format", "json"))
+	if err := json.Unmarshal(output, &empty); err != nil || empty.Data.Files == nil || len(empty.Data.Files) != 0 || empty.Data.Page == nil {
+		t.Fatalf("empty page = %#v, %v", empty, err)
+	}
+
+	for _, args := range [][]string{{"vault", "list", "--limit", "0"}, {"vault", "list", "--limit", "501"}, {"vault", "list", "--cursor", "bad"}} {
+		var commandOutput bytes.Buffer
+		cmd := NewRootCommand()
+		cmd.SetOut(&commandOutput)
+		cmd.SetErr(&commandOutput)
+		cmd.SetArgs(append(append([]string{}, base...), args...))
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("%v unexpectedly succeeded", args)
+		}
 	}
 }
 
