@@ -11,6 +11,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	"github.com/janiorvalle/tokenomnom/internal/version"
 )
 
 func TestInstallSkillFreshIdempotentAndJSON(t *testing.T) {
@@ -188,6 +189,76 @@ func TestDoctorReportsSkillStatusPrettyAndJSON(t *testing.T) {
 	}
 	if len(data.Skills) != 2 || data.Offer == nil || *data.Offer != skill.OfferDeclined || data.Skills[0].Version == nil || *data.Skills[0].Version != "1.2.3" || data.Skills[1].Status != "foreign file present" {
 		t.Fatalf("doctor JSON skills = %+v", data.Skills)
+	}
+}
+
+func TestDoctorDetectsOutdatedCurrentForeignAbsentAndDevelopmentSkills(t *testing.T) {
+	previousVersion := version.Version
+	t.Cleanup(func() { version.Version = previousVersion })
+	version.Version = "2.0.0"
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	for _, directory := range []string{codexDir, claudeDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := skill.Write(skill.Path(codexDir), skill.Document("1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := skill.Write(skill.Path(claudeDir), skill.Document("2.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, output)
+	var data jsonDoctorData
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Skills) != 2 || !data.Skills[0].UpdateAvailable || data.Skills[0].CurrentVersion != "2.0.0" || data.Skills[1].UpdateAvailable {
+		t.Fatalf("skill freshness = %+v", data.Skills)
+	}
+	if !strings.Contains(strings.Join(envelope.Warnings, "\n"), "tokenomnom install-skill") {
+		t.Fatalf("outdated skill warning = %#v", envelope.Warnings)
+	}
+
+	if err := os.Remove(skill.Path(codexDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill.Path(claudeDir), []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err = executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Skills[0].Status != "not installed" || data.Skills[0].UpdateAvailable || data.Skills[1].Status != "foreign file present" || data.Skills[1].UpdateAvailable {
+		t.Fatalf("absent/foreign freshness = %+v", data.Skills)
+	}
+
+	version.Version = "dev"
+	if err := skill.Write(skill.Path(codexDir), skill.Document("1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	output, err = executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Skills[0].UpdateAvailable || data.Skills[0].CurrentVersion != "dev" {
+		t.Fatalf("development freshness = %+v", data.Skills[0])
 	}
 }
 

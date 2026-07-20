@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/janiorvalle/tokenomnom/internal/store"
 )
 
 func TestDoctorReportsFixtureDirectories(t *testing.T) {
@@ -50,6 +53,9 @@ func TestDoctorReportsFixtureDirectories(t *testing.T) {
 
 func TestDoctorAllowsNoProviders(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(tempDir, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(tempDir, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(tempDir, "config"))
 
 	var output bytes.Buffer
 	cmd := NewRootCommand()
@@ -69,6 +75,13 @@ func TestDoctorAllowsNoProviders(t *testing.T) {
 	}
 	if strings.Count(output.String(), "Exists:      no") != 2 {
 		t.Fatalf("doctor output should report two missing roots:\n%s", output.String())
+	}
+	jsonOutput, err := executeReport([]string{"doctor", "--format", "json"}, filepath.Join(tempDir, "missing-codex"), filepath.Join(tempDir, "missing-claude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(decodeEnvelope(t, jsonOutput).Warnings, "\n"), "previously synced transcript files") {
+		t.Fatalf("missing optional providers produced a retained-file warning: %s", jsonOutput)
 	}
 }
 
@@ -161,6 +174,18 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	if !strings.Contains(output.String(), "Missing files:    1") || !strings.Contains(output.String(), "Usage rows:       1") {
 		t.Fatalf("doctor did not report retained missing file:\n%s", output.String())
 	}
+	warning := "1 previously synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted."
+	if !strings.Contains(output.String(), warning) {
+		t.Fatalf("doctor missing actionable retained-file warning:\n%s", output.String())
+	}
+	jsonOutput, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, jsonOutput)
+	if !strings.Contains(strings.Join(envelope.Warnings, "\n"), warning) {
+		t.Fatalf("doctor JSON warnings = %#v", envelope.Warnings)
+	}
 }
 
 func TestSyncPrintsResidualWarningsAndRejectsInvalidTimezone(t *testing.T) {
@@ -192,6 +217,97 @@ func TestSyncPrintsResidualWarningsAndRejectsInvalidTimezone(t *testing.T) {
 	cmd.SetArgs([]string{"doctor", "--tz", "Mars/Olympus"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "invalid timezone") {
 		t.Fatalf("invalid timezone error = %v", err)
+	}
+}
+
+func TestDoctorVaultReadinessFieldsUseSharedVaultSummary(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	dataDir := filepath.Join(root, "data")
+	configDir := filepath.Join(root, "config")
+	vaultDir := filepath.Join(root, "vault")
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "[backup]\nenabled = false\n[vault]\ndir = " + strconvQuote(vaultDir) + "\nmin_age = \"24h\"\nauto = false\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settledPath := filepath.Join(codexDir, "sessions", "settled.jsonl")
+	recentPath := filepath.Join(codexDir, "sessions", "recent.jsonl")
+	usageLine := "{\"timestamp\":\"2026-07-18T09:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-test\"}}\n"
+	writeTextFixture(t, settledPath, usageLine)
+	writeTextFixture(t, recentPath, usageLine)
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(settledPath, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(recentPath, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--codex-dir", codexDir, "--claude-dir", claudeDir}
+	executeVaultCommand(t, append(append([]string{}, base...), "sync", "--tz", "UTC", "--format", "json"))
+	executeVaultCommand(t, append(append([]string{}, base...), "vault", "archive", "--format", "json"))
+	executeVaultCommand(t, append(append([]string{}, base...), "vault", "verify", "--deep", "--format", "json"))
+	executeVaultCommand(t, append(append([]string{}, base...), "vault", "status", "--format", "json"))
+
+	readDoctor := func() (jsonDoctorVault, decodedEnvelope) {
+		t.Helper()
+		output := executeVaultCommand(t, append(append([]string{}, base...), "doctor", "--format", "json"))
+		envelope := decodeEnvelope(t, string(output))
+		var data jsonDoctorData
+		if err := json.Unmarshal(envelope.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		return data.Vault, envelope
+	}
+	readiness, _ := readDoctor()
+	if !readiness.Initialized || readiness.LastUsageSync == nil || readiness.LastArchive == nil || readiness.LastDeepVerification == nil || readiness.LastStatusScan == nil || readiness.ReclaimableCachedAt == nil {
+		t.Fatalf("readiness timestamps = %+v", readiness)
+	}
+	if readiness.VaultedSources != 1 || readiness.SettledUnvaultedSources != 0 || readiness.RecentUnsettledSources != 1 || readiness.KnownBrokenBundles != 0 || readiness.AutoVaultEnabled {
+		t.Fatalf("readiness counts = %+v", readiness)
+	}
+	if *readiness.LastStatusScan != *readiness.ReclaimableCachedAt {
+		t.Fatalf("status/reclaimable timestamps diverged: %+v", readiness)
+	}
+
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := database.VaultFiles()
+	database.Close()
+	if err != nil || len(files) != 1 {
+		t.Fatalf("manifest = %#v, %v", files, err)
+	}
+	bundle := filepath.Join(vaultDir, filepath.FromSlash(files[0].Archive))
+	bundleData, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleData[len(bundleData)/2] ^= 0xff
+	if err := os.WriteFile(bundle, bundleData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	command := NewRootCommand()
+	command.SetOut(&output)
+	command.SetErr(&output)
+	command.SetArgs(append(append([]string{}, base...), "vault", "verify", "--deep", "--format", "json"))
+	if err := command.Execute(); err == nil {
+		t.Fatal("corrupt bundle passed deep verification")
+	}
+	readiness, _ = readDoctor()
+	if readiness.KnownBrokenBundles != 1 || readiness.SettledUnvaultedSources != 1 || readiness.RecentUnsettledSources != 1 {
+		t.Fatalf("broken readiness = %+v", readiness)
 	}
 }
 

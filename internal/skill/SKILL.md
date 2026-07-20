@@ -12,9 +12,11 @@ relay that caveat when reporting a cost.
 ## Calling The CLI
 
 Use `--format json` for every query. `nomnom` is an alias for `tokenomnom`.
-Use `--no-sync` for fast repeated report queries within one conversation after
-the first query has refreshed the store. If neither binary is available, say
-that tokenomnom is not installed instead of guessing numbers.
+`--no-sync` is supported only by `summary`, `daily`, `monthly`, `models`,
+`heatmap`, and `export`. Use it for fast repeated report queries after the first
+query has refreshed the usage store. Do not pass `--no-sync` to `doctor`,
+`sync`, `vault`, `schedule`, or `install-skill`. If neither binary is available,
+say that tokenomnom is not installed instead of guessing numbers.
 
 ## Task Map
 
@@ -32,14 +34,30 @@ that tokenomnom is not installed instead of guessing numbers.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 
 Provider, model, and explicit date filters are available on report commands.
-For repeated reads, add `--no-sync` before `--format json`.
+
+## Freshness
+
+- Usage sync freshness says when token accounting last scanned provider logs.
+- Vault archive freshness says which byte-exact transcripts have been preserved;
+  settled-file rules and the archive schedule can make it lag recent activity.
+- History-index freshness will describe the future searchable prompt index. No
+  history command exists yet, so do not imply that vault metadata is session or
+  project search.
 
 ## Mining
 
 For "what did I work on" or "how did I prompt X", use
-`tokenomnom vault list --format json` to locate sessions, then
-`tokenomnom vault cat <source-path> --format json` to read one. Check the live
-Codex or Claude transcript directories for recent sessions not vaulted yet.
+`tokenomnom vault list --limit 100 --latest --format json` to inspect the
+bounded storage manifest. Follow `data.page.next_cursor` with the same filters
+until `has_more` is false. Then use
+`tokenomnom vault cat <source-path> --format json` to read one archived source;
+read `data.content` when `encoding` is `utf-8`, otherwise decode
+`data.content_base64`.
+
+As a temporary fallback, check the live Codex or Claude transcript directories
+when the bounded vault manifest is not enough. Recent activity may not be
+vaulted yet because it is still inside the settle window or the archive pass has
+not run. This fallback goes away once first-class history commands exist.
 
 ## Reading JSON
 

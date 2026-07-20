@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -56,6 +57,20 @@ func TestVaultCommandsAndJSONEnvelopes(t *testing.T) {
 			t.Fatalf("%v envelope = %#v", command, envelope)
 		}
 	}
+	var catEnvelope struct {
+		Data struct {
+			Encoding      string  `json:"encoding"`
+			Content       *string `json:"content"`
+			ContentBase64 string  `json:"content_base64"`
+		} `json:"data"`
+	}
+	catJSON := executeVaultCommand(t, append(append([]string{}, base...), "vault", "cat", "sessions/2020/01/session.jsonl", "--format", "json"))
+	if err := json.Unmarshal(catJSON, &catEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if catEnvelope.Data.Encoding != "utf-8" || catEnvelope.Data.Content == nil || *catEnvelope.Data.Content != string(content) || catEnvelope.Data.ContentBase64 != base64.StdEncoding.EncodeToString(content) {
+		t.Fatalf("UTF-8 cat JSON = %#v", catEnvelope.Data)
+	}
 
 	raw := executeVaultCommand(t, append(append([]string{}, base...), "vault", "cat", "sessions/2020/01/session.jsonl"))
 	if !bytes.Equal(raw, content) {
@@ -72,6 +87,50 @@ func TestVaultCommandsAndJSONEnvelopes(t *testing.T) {
 	invalid.SetArgs(append(append([]string{}, base...), "vault", "list", "--since", "2026-02-01", "--until", "2026-01-01"))
 	if err := invalid.Execute(); err == nil || !strings.Contains(err.Error(), "--until must be on or after --since") {
 		t.Fatalf("inverted range error = %v", err)
+	}
+}
+
+func TestVaultCatJSONPreservesInvalidUTF8AsBase64(t *testing.T) {
+	root := t.TempDir()
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	source := filepath.Join(codexDir, "sessions", "binary.jsonl")
+	content := []byte{0xff, 0xfe, '\n', 0x00, 0x80}
+	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2020, 1, 3, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(source, old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	base := []string{"--codex-dir", codexDir, "--claude-dir", claudeDir}
+	executeVaultCommand(t, append(append([]string{}, base...), "vault", "archive", "--all", "--format", "json"))
+	output := executeVaultCommand(t, append(append([]string{}, base...), "vault", "cat", "sessions/binary.jsonl", "--format", "json"))
+	var envelope struct {
+		Data struct {
+			Encoding      string  `json:"encoding"`
+			Content       *string `json:"content"`
+			ContentBase64 string  `json:"content_base64"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Encoding != "base64" || envelope.Data.Content != nil || envelope.Data.ContentBase64 != base64.StdEncoding.EncodeToString(content) {
+		t.Fatalf("binary cat JSON = %#v", envelope.Data)
+	}
+	raw := executeVaultCommand(t, append(append([]string{}, base...), "vault", "cat", "sessions/binary.jsonl"))
+	if !bytes.Equal(raw, content) {
+		t.Fatalf("binary raw cat = %v", raw)
 	}
 }
 

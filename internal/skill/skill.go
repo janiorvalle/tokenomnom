@@ -69,6 +69,11 @@ func Inspect(path string) (version string, owned, exists bool, err error) {
 	return version, owned, true, nil
 }
 
+// UpdateAvailable reports whether an owned installed skill differs from a release build.
+func UpdateAvailable(installedVersion, currentVersion string) bool {
+	return currentVersion != "" && currentVersion != "dev" && installedVersion != currentVersion
+}
+
 // Write atomically replaces a skill document after its directory exists.
 func Write(path string, contents []byte) (err error) {
 	directory := filepath.Dir(path)
