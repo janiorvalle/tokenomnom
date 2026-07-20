@@ -37,7 +37,7 @@ func TestPeriodChartsRenderStructureAndLastNotice(t *testing.T) {
 		{label: "2026-02", values: map[discover.Provider]providerChartValue{discover.ProviderClaude: {Cost: aggregateCost{Total: 2_000_000_000}}}},
 	}
 	output = renderPeriodChart(styledRenderContext(80), months, "month", "months", false)
-	for _, fragment := range []string{"cost/month", "01 02", "$2.00"} {
+	for _, fragment := range []string{"cost/month", "01", "02", "2026", "$2.00"} {
 		if !strings.Contains(output, fragment) {
 			t.Errorf("monthly chart missing %q:\n%s", fragment, output)
 		}
@@ -80,21 +80,25 @@ func TestPeriodChartDoesNotWrapBelowMinimumWidth(t *testing.T) {
 	}
 }
 
-func TestPeriodChartAddsMonthAndYearBoundaryContext(t *testing.T) {
+func TestPeriodChartAddsSpanCaption(t *testing.T) {
 	daily := []chartPeriod{{label: "2025-12-31"}, {label: "2026-01-01"}}
 	output := renderPeriodChart(styledRenderContext(80), daily, "day", "days", false)
-	for _, fragment := range []string{"31 01", "12 01", "25 26"} {
+	for _, fragment := range []string{"31", "01", "Dec 2025 – Jan 2026"} {
 		if !strings.Contains(output, fragment) {
 			t.Errorf("cross-month daily chart missing %q:\n%s", fragment, output)
 		}
 	}
 
+	sameMonth := []chartPeriod{{label: "2026-07-01"}, {label: "2026-07-02"}}
+	output = renderPeriodChart(styledRenderContext(80), sameMonth, "day", "days", false)
+	if !strings.Contains(output, "Jul 2026") || strings.Contains(output, "–") {
+		t.Errorf("same-month daily caption wrong:\n%s", output)
+	}
+
 	monthly := []chartPeriod{{label: "2025-12"}, {label: "2026-01"}}
 	output = renderPeriodChart(styledRenderContext(80), monthly, "month", "months", false)
-	for _, fragment := range []string{"12 01", "25 26"} {
-		if !strings.Contains(output, fragment) {
-			t.Errorf("cross-year monthly chart missing %q:\n%s", fragment, output)
-		}
+	if !strings.Contains(output, "2025 – 2026") {
+		t.Errorf("cross-year monthly chart missing span caption:\n%s", output)
 	}
 }
 

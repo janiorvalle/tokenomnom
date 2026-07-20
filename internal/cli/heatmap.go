@@ -367,11 +367,38 @@ func renderHeatmap(render theme.Context, report heatmapReport) string {
 	output.WriteByte('\n')
 	caption := heatmapCaption(report)
 	if render.Mode == theme.Styled {
-		caption = render.Palette.Subtle().Render(caption)
+		caption = renderStyledHeatmapCaption(render, report)
 	}
 	output.WriteString(caption)
 	output.WriteByte('\n')
 	return output.String()
+}
+
+// renderStyledHeatmapCaption lifts the caption's values above their labels;
+// the Plain caption in heatmapCaption stays byte-stable.
+func renderStyledHeatmapCaption(render theme.Context, report heatmapReport) string {
+	subtle := render.Palette.Subtle()
+	emphasis := render.Palette.Header()
+	money := render.Palette.Money()
+	busiest := subtle.Render("none")
+	if report.Stats.BusiestDate != "" {
+		if report.UsesTokens {
+			busiest = emphasis.Render(report.Stats.BusiestDate) + subtle.Render(" · ") +
+				emphasis.Render(formatNumber(report.Stats.BusiestTokens)) + subtle.Render(" tokens")
+		} else {
+			busiest = emphasis.Render(report.Stats.BusiestDate) + subtle.Render(" · ") +
+				money.Render(formatUSD(report.Stats.BusiestCost))
+		}
+	}
+	totalCost := money.Render(formatUSD(report.Stats.TotalCost))
+	metricNote := ""
+	if report.UsesTokens {
+		totalCost = subtle.Render("unpriced")
+		metricNote = subtle.Render(" · showing tokens (unpriced)")
+	}
+	return emphasis.Render(formatNumber(int64(report.Stats.ActiveDays))) + subtle.Render(" active days · total cost ") +
+		totalCost + subtle.Render(" · busiest ") + busiest + subtle.Render(" · longest streak ") +
+		emphasis.Render(pluralCount(report.Stats.LongestStreak, "day", "days")) + metricNote
 }
 
 func renderHeatmapLegend(render theme.Context) string {

@@ -70,7 +70,7 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 
 	updated, command := model.Update(tea.WindowSizeMsg{Width: 50, Height: 10})
 	model = updated.(Model)
-	if command != nil || model.View() != "terminal too small\n" {
+	if command != nil || !strings.Contains(model.View(), "terminal too small") {
 		t.Fatalf("small terminal state = command %v, view %q", command != nil, model.View())
 	}
 	updated, command = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -307,7 +307,12 @@ func loadedTestModel() Model {
 	model.request.Width, model.request.Height = 100, 30
 	model.loading, model.loaded = false, true
 	model.snapshot = Snapshot{
-		Cards: [4]Card{{"TOTAL COST", "$1.00"}, {"TOTAL TOKENS", "100"}, {"ACTIVE DAYS", "2"}, {"TOP MODEL", "model"}},
+		Cards: [4]Card{
+			{Label: "TOTAL COST", Value: "$1.00", Kind: CardMoney},
+			{Label: "TOTAL TOKENS", Value: "100"},
+			{Label: "ACTIVE DAYS", Value: "2"},
+			{Label: "TOP MODEL", Value: "model", Kind: CardModel, Provider: "codex"},
+		},
 		Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"},
 	}
 	return model
