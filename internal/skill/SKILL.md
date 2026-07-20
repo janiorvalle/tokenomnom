@@ -1,6 +1,6 @@
 ---
 name: tokenomnom
-description: Reports local coding-agent token usage and API-equivalent spend or cost when questions mention tokenomnom or nomnom.
+description: Reports local coding-agent (Codex, Claude Code) token usage and API-equivalent spend, and mines vaulted session-transcript history for workflow analysis. Use for token, cost, or spend questions, for "what did I work on" session-history mining, or whenever tokenomnom or nomnom is mentioned.
 ---
 
 # tokenomnom

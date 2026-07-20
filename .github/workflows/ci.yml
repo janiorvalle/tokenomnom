@@ -45,6 +45,7 @@ jobs:
               code=false
               for file in "${changed[@]}"; do
                 case "$file" in
+                  internal/*) code=true; break ;; # go:embed-ed .md (e.g. SKILL.md) ships in the binary
                   *.md) ;;
                   *) code=true; break ;;
                 esac
