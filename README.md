@@ -128,6 +128,12 @@ enabled = true
 interval = "24h"
 dir = ""
 keep = 14
+
+[vault]
+dir = ""
+min_age = "168h"
+providers = ["codex", "claude"]
+auto = true
 ```
 
 An empty discovery directory uses automatic detection. The existing
@@ -149,6 +155,11 @@ Linux, or the OS user-config data directory on Windows. `XDG_DATA_HOME` and
 `TOKENOMNOM_DATA_DIR` replace that base. An empty `backup.dir` uses the
 default; `backup.interval` is a Go duration; `backup.keep = 0` keeps every
 backup. Backup failures warn but never block a report.
+
+An empty `vault.dir` uses `<data-dir>/vault`. `vault.min_age` is the settle
+time before a transcript is eligible for manual archiving, and
+`vault.providers` selects `codex`, `claude`, or both. `vault.auto` is stored
+and shown now; automatic archiving is not enabled yet.
 
 The SQLite store lives at `~/.local/state/tokenomnom/usage.db` on macOS and
 Linux, or `%LOCALAPPDATA%\tokenomnom\usage.db` on Windows. Use
@@ -189,6 +200,20 @@ The standalone installer supports
 `TOKENOMNOM_INSTALL_REPO`, `TOKENOMNOM_INSTALL_DIR`,
 `TOKENOMNOM_INSTALL_BASE_URL`, `TOKENOMNOM_INSTALL_VERSION`, and
 `TOKENOMNOM_INSTALL_ARCHIVE` for mirrors and local verification.
+
+## Vault
+
+The transcript vault stores byte-for-byte source content in monthly,
+provider-specific `.tar.zst` bundles while keeping a versioned manifest in the
+usage database. Run `tokenomnom vault archive` for settled files or add `--all`
+to ignore the settle age and recheck source hashes. `vault verify [--deep]`
+checks bundles, `vault list` shows the manifest,
+`vault cat <source-path | rel-path>` restores original
+bytes to stdout, and `vault status` reports compression and reclaimable
+originals.
+
+tokenomnom never modifies or deletes source transcripts. Reclaiming a verified
+original listed by `vault status` is always a manual decision.
 
 ## How It Counts
 

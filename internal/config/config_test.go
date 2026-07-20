@@ -11,7 +11,8 @@ import (
 func TestDefaults(t *testing.T) {
 	got := Defaults()
 	if got.Reports.Color != "auto" || !got.Reports.Charts || got.Reports.DailyLast != 30 ||
-		got.Backup.Enabled != true || got.Backup.Interval != "24h" || got.Backup.Keep != 14 {
+		got.Backup.Enabled != true || got.Backup.Interval != "24h" || got.Backup.Keep != 14 ||
+		got.Vault.MinAge != "168h" || !got.Vault.Auto || strings.Join(got.Vault.Providers, ",") != "codex,claude" {
 		t.Fatalf("unexpected defaults: %#v", got)
 	}
 }
@@ -33,6 +34,11 @@ enabled = false
 interval = "1h"
 dir = "/config/backups"
 keep = 3
+[vault]
+dir = "/config/vault"
+min_age = "2h"
+providers = ["claude"]
+auto = false
 `
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
@@ -69,6 +75,15 @@ keep = 3
 			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
 		}
 	}
+	for _, key := range []string{KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto} {
+		if loaded.Sources[key] != "config" {
+			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
+		}
+	}
+	if loaded.Config.Vault.Dir != "/config/vault" || loaded.Config.Vault.MinAge != "2h" ||
+		strings.Join(loaded.Config.Vault.Providers, ",") != "claude" || loaded.Config.Vault.Auto {
+		t.Fatalf("vault config = %#v", loaded.Config.Vault)
+	}
 }
 
 func TestLoadMissingMalformedInvalidAndUnknown(t *testing.T) {
@@ -92,6 +107,12 @@ func TestLoadMissingMalformedInvalidAndUnknown(t *testing.T) {
 	}
 	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "backup.interval") {
 		t.Fatalf("invalid error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[vault]\nproviders = [\"codex\", \"other\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "vault.providers") {
+		t.Fatalf("invalid vault provider error = %v", err)
 	}
 
 	if err := os.WriteFile(malformed, []byte("[reports]\ndaily_last = 5\ntypo = true\n[unknown]\nvalue = 1\n"), 0o600); err != nil {

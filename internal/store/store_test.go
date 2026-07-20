@@ -1,15 +1,78 @@
 package store_test
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/store"
+	_ "modernc.org/sqlite"
 )
+
+func TestConcurrentOpensOfInitializedStoreSucceed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), store.DatabaseName)
+	database, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const workers = 8
+	start := make(chan struct{})
+	errors := make(chan error, workers)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			opened, err := store.Open(path)
+			if err == nil {
+				err = opened.Close()
+			}
+			errors <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent open: %v", err)
+		}
+	}
+}
+
+func TestOpenMigratesSchemaV1ToV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), store.DatabaseName)
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta(key, value) VALUES ('schema_version', '1');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	if got, err := migrated.Meta("schema_version"); err != nil || got != "2" {
+		t.Fatalf("schema version = %q, %v", got, err)
+	}
+	if files, err := migrated.VaultFiles(); err != nil || len(files) != 0 {
+		t.Fatalf("vault table after migration = %#v, %v", files, err)
+	}
+}
 
 func TestSyncLockFailsFastAndReleases(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), store.DatabaseName))

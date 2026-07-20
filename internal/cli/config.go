@@ -66,6 +66,11 @@ func writeEffectiveConfig(cmd *cobra.Command, loaded appconfig.Loaded) {
 	writeConfigString(w, "interval", cfg.Backup.Interval, sources[appconfig.KeyBackupInterval])
 	writeConfigString(w, "dir", cfg.Backup.Dir, sources[appconfig.KeyBackupDir])
 	writeConfigInt(w, "keep", cfg.Backup.Keep, sources[appconfig.KeyBackupKeep])
+	fmt.Fprintln(w, "\n[vault]")
+	writeConfigString(w, "dir", cfg.Vault.Dir, sources[appconfig.KeyVaultDir])
+	writeConfigString(w, "min_age", cfg.Vault.MinAge, sources[appconfig.KeyVaultMinAge])
+	writeConfigStrings(w, "providers", cfg.Vault.Providers, sources[appconfig.KeyVaultProviders])
+	writeConfigBool(w, "auto", cfg.Vault.Auto, sources[appconfig.KeyVaultAuto])
 }
 
 func writeConfigString(w io.Writer, key, value, source string) {
@@ -81,4 +86,11 @@ func writeConfigBool(w io.Writer, key string, value bool, source string) {
 
 func writeConfigInt(w io.Writer, key string, value int, source string) {
 	fmt.Fprintf(w, "%s = %d # %s\n", key, value, source)
+}
+
+func writeConfigStrings(w io.Writer, key string, value []string, source string) {
+	var encoded strings.Builder
+	_ = toml.NewEncoder(&encoded).Encode(map[string][]string{"value": value})
+	array := strings.TrimSpace(strings.TrimPrefix(encoded.String(), "value = "))
+	fmt.Fprintf(w, "%s = %s # %s\n", key, array, source)
 }

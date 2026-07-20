@@ -15,6 +15,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
+	"github.com/janiorvalle/tokenomnom/internal/vault"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
@@ -77,6 +78,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
+	if err := writeVaultReport(cmd, roots, databasePath); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	switch len(found) {
 	case 0:
 		writeWarningLine(cmd, "Status: no provider data directories found. Use --codex-dir, --claude-dir, or the TOKENOMNOM_*_DIR environment variables to point tokenomnom at them.")
@@ -119,6 +125,7 @@ type jsonDoctorData struct {
 	Offer     *string              `json:"offer"`
 	Store     jsonDoctorStore      `json:"store"`
 	Backups   jsonDoctorBackups    `json:"backups"`
+	Vault     jsonDoctorVault      `json:"vault"`
 }
 
 type jsonDoctorBackups struct {
@@ -129,6 +136,19 @@ type jsonDoctorBackups struct {
 	Count      int     `json:"count"`
 	TotalBytes int64   `json:"total_bytes"`
 	NewestFile *string `json:"newest_file"`
+}
+
+type jsonDoctorVault struct {
+	Dir                 string  `json:"dir"`
+	Initialized         bool    `json:"initialized"`
+	Format              *int    `json:"format"`
+	Encryption          *string `json:"encryption"`
+	Files               int     `json:"files"`
+	RawBytes            int64   `json:"raw_bytes"`
+	StoredBytes         int64   `json:"stored_bytes"`
+	LastArchive         *string `json:"last_archive"`
+	ReclaimableBytes    int64   `json:"reclaimable_bytes"`
+	ReclaimableCachedAt *string `json:"reclaimable_cached_at"`
 }
 
 type jsonDoctorSkill struct {
@@ -212,7 +232,103 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		return err
 	}
 	data.Backups = backupData
+	vaultData, err := doctorVault(cmd, roots, databasePath)
+	if err != nil {
+		return err
+	}
+	data.Vault = vaultData
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func writeVaultReport(cmd *cobra.Command, roots []discover.Root, databasePath string) error {
+	data, err := doctorVault(cmd, roots, databasePath)
+	if err != nil {
+		return err
+	}
+	writeHeading(cmd, "Vault")
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Directory:", data.Dir)
+	format := "not initialized"
+	if data.Format != nil {
+		format = fmt.Sprintf("v%d, %s", *data.Format, stringValue(data.Encryption))
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Format:", format)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %d\n", "Files:", data.Files)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Raw size:", humanBytes(data.RawBytes))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Stored size:", humanBytes(data.StoredBytes))
+	last := "-"
+	if data.LastArchive != nil {
+		last = *data.LastArchive
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Last archive:", last)
+	reclaimable := humanBytes(data.ReclaimableBytes)
+	if data.ReclaimableCachedAt != nil {
+		reclaimable += " (verified " + *data.ReclaimableCachedAt + ")"
+	} else {
+		reclaimable += " (run vault status to verify)"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Reclaimable:", reclaimable)
+	return nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return "-"
+	}
+	return *value
+}
+
+func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string) (jsonDoctorVault, error) {
+	loaded := appconfig.FromContext(cmd.Context())
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return jsonDoctorVault{}, err
+	}
+	dir, err := configuredVaultDir(loaded.Config, home)
+	if err != nil {
+		return jsonDoctorVault{}, err
+	}
+	result := jsonDoctorVault{Dir: dir}
+	marker, found, err := vault.InspectFormat(dir)
+	if err != nil {
+		return result, err
+	}
+	if !found {
+		return result, nil
+	}
+	result.Initialized = true
+	result.Format = &marker.VaultFormat
+	result.Encryption = &marker.Encryption
+	if _, err := os.Stat(databasePath); err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, err
+	}
+	database, err := store.Open(databasePath)
+	if err != nil {
+		return result, err
+	}
+	defer database.Close()
+	providers := make([]discover.Provider, 0, len(loaded.Config.Vault.Providers))
+	for _, provider := range loaded.Config.Vault.Providers {
+		providers = append(providers, discover.Provider(provider))
+	}
+	instance, err := vault.New(vault.Options{Dir: dir, Store: database, Roots: roots, Providers: providers})
+	if err != nil {
+		return result, err
+	}
+	status, cachedAt, err := instance.Snapshot()
+	if err != nil {
+		return result, err
+	}
+	result.Files, result.RawBytes, result.StoredBytes = status.Files, status.RawBytes, status.StoredBytes
+	result.ReclaimableBytes = status.ReclaimableBytes
+	if cachedAt != 0 {
+		value := time.Unix(cachedAt, 0).Format(time.RFC3339)
+		result.ReclaimableCachedAt = &value
+	}
+	result.LastArchive, err = parseLastVault(database)
+	return result, err
 }
 
 func writeBackupsReport(cmd *cobra.Command, databasePath string) error {

@@ -18,7 +18,7 @@ import (
 
 const (
 	// SchemaVersion is the current usage database schema.
-	SchemaVersion = 1
+	SchemaVersion = 2
 	// DatabaseName is the filename within tokenomnom's state directory.
 	DatabaseName = "usage.db"
 )
@@ -64,6 +64,22 @@ type Message struct {
 	IterationsJSON string
 }
 
+// VaultFile records one archived version of a source transcript.
+type VaultFile struct {
+	SourcePath    string            `json:"source_path"`
+	Provider      discover.Provider `json:"provider"`
+	RelPath       string            `json:"rel_path"`
+	Archive       string            `json:"archive"`
+	ContentSHA256 string            `json:"content_sha256"`
+	Size          int64             `json:"size"`
+	ModTimeUnix   int64             `json:"mtime_unix"`
+	FirstTS       string            `json:"first_ts,omitempty"`
+	LastTS        string            `json:"last_ts,omitempty"`
+	LineCount     int64             `json:"line_count"`
+	VaultedAt     int64             `json:"vaulted_at"`
+	Version       int               `json:"version"`
+}
+
 // Info summarizes persisted state for doctor and sync output.
 type Info struct {
 	SchemaVersion       int
@@ -80,7 +96,7 @@ type Info struct {
 	SkillOffer          string
 }
 
-// Open creates or opens a usage database and initializes schema v1.
+// Open creates or opens a usage database and initializes the current schema.
 func Open(path string) (*Store, error) {
 	stateDir := filepath.Dir(path)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -123,13 +139,32 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) initialize() error {
-	if _, err := s.db.Exec(`PRAGMA busy_timeout = 500;`); err != nil {
+	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
 		return fmt.Errorf("set SQLite busy timeout: %w", err)
 	}
 	var mode string
 	if err := s.db.QueryRow(`PRAGMA journal_mode = WAL;`).Scan(&mode); err != nil {
 		return fmt.Errorf("enable SQLite WAL mode: %w", err)
 	}
+	var existingVersion int
+	var metaTableExists bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')`).Scan(&metaTableExists); err != nil {
+		return fmt.Errorf("inspect usage schema: %w", err)
+	}
+	if metaTableExists {
+		err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&existingVersion)
+		if err == nil {
+			if existingVersion == SchemaVersion {
+				return nil
+			}
+			if existingVersion != 1 {
+				return fmt.Errorf("unsupported usage store schema %d (expected %d)", existingVersion, SchemaVersion)
+			}
+		} else if err != sql.ErrNoRows {
+			return fmt.Errorf("read schema version: %w", err)
+		}
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin schema transaction: %w", err)
@@ -138,7 +173,7 @@ func (s *Store) initialize() error {
 	if _, err := tx.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("initialize usage schema: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO NOTHING`, SchemaVersion); err != nil {
+	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, SchemaVersion); err != nil {
 		return fmt.Errorf("record schema version: %w", err)
 	}
 	var version int
@@ -171,6 +206,85 @@ func (s *Store) Meta(key string) (string, error) {
 		return "", fmt.Errorf("read metadata %q: %w", key, err)
 	}
 	return value, nil
+}
+
+// LatestVaultFile returns the latest archived version for sourcePath.
+func (s *Store) LatestVaultFile(sourcePath string) (VaultFile, bool, error) {
+	row := s.db.QueryRow(vaultSelect+` WHERE source_path = ? ORDER BY version DESC LIMIT 1`, sourcePath)
+	value, err := scanVaultFile(row)
+	if err == sql.ErrNoRows {
+		return VaultFile{}, false, nil
+	}
+	if err != nil {
+		return VaultFile{}, false, fmt.Errorf("read vault manifest for %q: %w", sourcePath, err)
+	}
+	return value, true, nil
+}
+
+// VaultFileVersion returns one archived version for sourcePath.
+func (s *Store) VaultFileVersion(sourcePath string, version int) (VaultFile, bool, error) {
+	row := s.db.QueryRow(vaultSelect+` WHERE source_path = ? AND version = ?`, sourcePath, version)
+	value, err := scanVaultFile(row)
+	if err == sql.ErrNoRows {
+		return VaultFile{}, false, nil
+	}
+	if err != nil {
+		return VaultFile{}, false, fmt.Errorf("read vault manifest for %q version %d: %w", sourcePath, version, err)
+	}
+	return value, true, nil
+}
+
+// VaultFiles returns manifest rows in stable path and version order.
+func (s *Store) VaultFiles() ([]VaultFile, error) {
+	rows, err := s.db.Query(vaultSelect + ` ORDER BY source_path, version`)
+	if err != nil {
+		return nil, fmt.Errorf("list vault manifest: %w", err)
+	}
+	defer rows.Close()
+	var values []VaultFile
+	for rows.Next() {
+		value, err := scanVaultFile(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan vault manifest: %w", err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+// LatestVaultFiles returns only the newest manifest row for each source.
+func (s *Store) LatestVaultFiles() ([]VaultFile, error) {
+	rows, err := s.db.Query(vaultSelect + ` WHERE version = (SELECT MAX(v2.version) FROM vault_files v2 WHERE v2.source_path = vault_files.source_path) ORDER BY source_path`)
+	if err != nil {
+		return nil, fmt.Errorf("list latest vault manifest: %w", err)
+	}
+	defer rows.Close()
+	var values []VaultFile
+	for rows.Next() {
+		value, err := scanVaultFile(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan latest vault manifest: %w", err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+type rowScanner interface{ Scan(...any) error }
+
+const vaultSelect = `SELECT source_path, provider, rel_path, archive, content_sha256, size, mtime_unix, first_ts, last_ts, line_count, vaulted_at, version FROM vault_files`
+
+func scanVaultFile(row rowScanner) (VaultFile, error) {
+	var value VaultFile
+	var firstTS, lastTS sql.NullString
+	var lineCount sql.NullInt64
+	err := row.Scan(&value.SourcePath, &value.Provider, &value.RelPath, &value.Archive, &value.ContentSHA256,
+		&value.Size, &value.ModTimeUnix, &firstTS, &lastTS, &lineCount, &value.VaultedAt, &value.Version)
+	value.FirstTS, value.LastTS = firstTS.String, lastTS.String
+	if lineCount.Valid {
+		value.LineCount = lineCount.Int64
+	}
+	return value, err
 }
 
 // VacuumInto writes a consistent online copy of the database to path.
@@ -588,6 +702,28 @@ func (tx *Tx) PutMessage(value Message) error {
 	return err
 }
 
+// PutVaultFile records one archived source version.
+func (tx *Tx) PutVaultFile(value VaultFile) error {
+	var firstTS, lastTS any
+	if value.FirstTS != "" {
+		firstTS = value.FirstTS
+	}
+	if value.LastTS != "" {
+		lastTS = value.LastTS
+	}
+	_, err := tx.tx.Exec(`INSERT INTO vault_files(source_path, provider, rel_path, archive, content_sha256, size, mtime_unix, first_ts, last_ts, line_count, vaulted_at, version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, value.SourcePath, value.Provider, value.RelPath, value.Archive,
+		value.ContentSHA256, value.Size, value.ModTimeUnix, firstTS, lastTS, value.LineCount, value.VaultedAt, value.Version)
+	return err
+}
+
+// UpdateVaultFileSourceState records current source metadata after a content-identical recheck.
+func (tx *Tx) UpdateVaultFileSourceState(sourcePath string, version int, size, modTimeUnix int64) error {
+	_, err := tx.tx.Exec(`UPDATE vault_files SET size = ?, mtime_unix = ? WHERE source_path = ? AND version = ?`,
+		size, modTimeUnix, sourcePath, version)
+	return err
+}
+
 // SetMeta records one metadata value.
 func (tx *Tx) SetMeta(key, value string) error {
 	_, err := tx.tx.Exec(`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
@@ -628,4 +764,11 @@ CREATE TABLE IF NOT EXISTS file_daily (
   cache_write_unclassified INTEGER NOT NULL DEFAULT 0,
   output INTEGER NOT NULL DEFAULT 0, reasoning INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (path, date, provider, model)
+);
+CREATE TABLE IF NOT EXISTS vault_files (
+  source_path TEXT NOT NULL, provider TEXT NOT NULL, rel_path TEXT NOT NULL,
+  archive TEXT NOT NULL, content_sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+  mtime_unix INTEGER NOT NULL, first_ts TEXT, last_ts TEXT, line_count INTEGER,
+  vaulted_at INTEGER NOT NULL, version INTEGER NOT NULL,
+  PRIMARY KEY (source_path, version)
 );`
