@@ -1,0 +1,11 @@
+{"timestamp":"2026-07-18T08:00:00Z","type":"session_meta","payload":{"note":"ignored"}}
+{"timestamp":"2026-07-18T08:01:00Z","type":"turn_context","payload":{"model":"  gpt-5.3-codex  ","extra":true}}
+{"timestamp":"2026-07-18T08:02:00Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"remaining":1}}}
+{"timestamp":"2026-07-18T08:02:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1}}}}
+{"timestamp":"2026-07-18T08:02:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}}}
+{"timestamp":"2026-07-18T08:03:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":3,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":3,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}}}
+{"timestamp":"2026-07-18T08:04:00Z","type":"event_msg","payload":{"type":"token_count"
+{"timestamp":"2026-07-18T08:05:00Z","type":"response_item","payload":{"note":"token_count is mentioned but this is unrelated"}}
+{"timestamp":"2026-07-18T08:06:00Z","type":"turn_context","payload":{"model":"gpt-5.3-codex-spark"}}
+{"timestamp":"2026-07-18T08:07:00-04:00","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":50,"cache_write_input_tokens":3,"output_tokens":40,"reasoning_output_tokens":10,"total_tokens":240},"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":999}}}}
+{"timestamp":"not-a-timestamp","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":210,"cached_input_tokens":50,"cache_write_input_tokens":3,"output_tokens":42,"reasoning_output_tokens":10,"total_tokens":252},"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}}
