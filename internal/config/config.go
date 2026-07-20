@@ -31,11 +31,16 @@ const (
 	KeyBackupInterval  = "backup.interval"
 	KeyBackupDir       = "backup.dir"
 	KeyBackupKeep      = "backup.keep"
+	KeyVaultDir        = "vault.dir"
+	KeyVaultMinAge     = "vault.min_age"
+	KeyVaultProviders  = "vault.providers"
+	KeyVaultAuto       = "vault.auto"
 )
 
 var keys = []string{
 	KeyCodexDir, KeyClaudeDir, KeyTimezone, KeyColor, KeyCharts, KeyDailyLast,
 	KeyDefaultProvider, KeyBackupEnabled, KeyBackupInterval, KeyBackupDir, KeyBackupKeep,
+	KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto,
 }
 
 type Config struct {
@@ -43,6 +48,7 @@ type Config struct {
 	Sync      Sync      `toml:"sync" json:"sync"`
 	Reports   Reports   `toml:"reports" json:"reports"`
 	Backup    Backup    `toml:"backup" json:"backup"`
+	Vault     Vault     `toml:"vault" json:"vault"`
 }
 
 type Discovery struct {
@@ -68,10 +74,18 @@ type Backup struct {
 	Keep     int    `toml:"keep" json:"keep"`
 }
 
+type Vault struct {
+	Dir       string   `toml:"dir" json:"dir"`
+	MinAge    string   `toml:"min_age" json:"min_age"`
+	Providers []string `toml:"providers" json:"providers"`
+	Auto      bool     `toml:"auto" json:"auto"`
+}
+
 func Defaults() Config {
 	return Config{
 		Reports: Reports{Color: "auto", Charts: true, DailyLast: 30},
 		Backup:  Backup{Enabled: true, Interval: "24h", Keep: 14},
+		Vault:   Vault{MinAge: "168h", Providers: []string{"codex", "claude"}, Auto: true},
 	}
 }
 
@@ -249,6 +263,20 @@ func Validate(value Config) error {
 	}
 	if value.Backup.Keep < 0 {
 		return validationError{KeyBackupKeep, "must be 0 or a positive integer"}
+	}
+	minAge, err := time.ParseDuration(value.Vault.MinAge)
+	if err != nil || minAge < 0 {
+		return validationError{KeyVaultMinAge, "must be a non-negative Go duration"}
+	}
+	seenProviders := make(map[string]bool, len(value.Vault.Providers))
+	for _, provider := range value.Vault.Providers {
+		if provider != "codex" && provider != "claude" {
+			return validationError{KeyVaultProviders, fmt.Sprintf("contains unknown provider %q", provider)}
+		}
+		if seenProviders[provider] {
+			return validationError{KeyVaultProviders, fmt.Sprintf("contains duplicate provider %q", provider)}
+		}
+		seenProviders[provider] = true
 	}
 	if value.Sync.Timezone != "" {
 		if _, err := time.LoadLocation(value.Sync.Timezone); err != nil {

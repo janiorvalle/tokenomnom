@@ -128,6 +128,7 @@ API list-price equivalents, not actual bills.`,
 	cmd.AddCommand(newExportCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newInstallSkillCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newConfigCommand())
+	cmd.AddCommand(newVaultCommand(&codexDir, &claudeDir))
 
 	return cmd
 }

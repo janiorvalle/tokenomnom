@@ -2,7 +2,8 @@
 
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
-`pricing`, `doctor`, `sync`, `export`, and `install-skill`. The `export` command defaults to CSV;
+`pricing`, `doctor`, `sync`, `export`, `install-skill`, and every `vault`
+subcommand. The `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
@@ -109,6 +110,43 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 
 `data.skills` contains one item per provider with `provider`, skill `path`,
 `status`, and nullable installed `version`.
+
+`data.vault` contains `dir`, `initialized`, nullable `format`, nullable
+`encryption`, `files`, `raw_bytes`, `stored_bytes`, nullable `last_archive`,
+`reclaimable_bytes`, and nullable `reclaimable_cached_at`. Doctor uses the last
+deeply verified reclaimable value so routine diagnostics do not rescan the
+transcript corpus; run `vault status` to refresh it.
+
+## Vault
+
+All vault JSON commands use the standard envelope. Command values are
+`vault archive`, `vault verify`, `vault list`, `vault cat`, and `vault status`.
+
+`vault archive [--all]` returns per-provider `archived`, `input_bytes`,
+`stored_bytes`, `deduplicated`, `skipped`, and `changed_during_read` counts.
+`--all` ignores settle age and rechecks source hashes; `stored_bytes` is the
+change in on-disk bundle bytes for the archive run.
+Discovery problems are also returned as envelope warnings. The command is
+manual; the configured `vault.auto` value does not act yet.
+
+`vault verify [--deep]` returns `deep`, `checked`, `verified`, and `failures`.
+Each failure identifies `source_path`, `version`, `archive`, and `error`; any
+failure also produces a nonzero exit.
+
+`vault list [--provider] [--since] [--until]` returns `data.files`. Each row
+contains the manifest fields (`source_path`, `provider`, `rel_path`, `archive`,
+`content_sha256`, `size`, `mtime_unix`, optional `first_ts`/`last_ts`,
+`line_count`, `vaulted_at`, and `version`) plus `original_exists`.
+
+`vault cat <source-path | rel-path> [--version N]` returns the selected source
+and relative paths, version, and the byte-exact content as `content_base64`.
+Without JSON format it writes the original bytes directly to stdout.
+
+`vault status` returns vault format details, total and per-provider files,
+`raw_bytes`, `stored_bytes`, `ratio`, `reclaimable_bytes`, and
+`reclaimable_paths`. `never_deletes_sources` is always true and
+`reclaimable_instruction` states that deleting a listed original is a manual
+action.
 
 ## Install Skill
 
