@@ -288,21 +288,7 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 
 func doctorHistory(usageDatabasePath string) (historystore.Health, error) {
 	path := filepath.Join(filepath.Dir(usageDatabasePath), historystore.DatabaseName)
-	health, err := historystore.InspectHealth(path)
-	if err == nil {
-		return health, nil
-	}
-	health = historystore.Health{Path: path, ErrorSources: 1, InspectionError: err.Error()}
-	if len(health.InspectionError) > 512 {
-		health.InspectionError = health.InspectionError[:512]
-	}
-	if stat, statErr := os.Stat(path); statErr == nil {
-		health.Exists = true
-		health.SizeBytes = stat.Size()
-	} else if !os.IsNotExist(statErr) {
-		return historystore.Health{}, statErr
-	}
-	return health, nil
+	return inspectHistoryHealth(path)
 }
 
 func writeDoctorHistoryReport(cmd *cobra.Command, usageDatabasePath string) error {

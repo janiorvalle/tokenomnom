@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS prompt_tombstones (
 	deleted_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_errors (
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	last_attempt_unix INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	PRIMARY KEY(provider, source_path)
+);
+
 CREATE INDEX IF NOT EXISTS source_heads_session_idx ON source_heads(session_id);
 CREATE INDEX IF NOT EXISTS snapshots_session_idx ON preserved_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS prompts_session_idx ON prompts(session_id);

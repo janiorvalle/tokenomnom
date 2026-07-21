@@ -260,6 +260,36 @@ func TestRewriteRetainsBoundedTombstonesWithoutPromptText(t *testing.T) {
 	}
 }
 
+func TestNewSourceErrorsRemainVisibleUntilResolved(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	path := "/provider/unpublished.jsonl"
+	if err := database.RecordSourceError(history.ProviderCodex, path, errors.New("source disappeared")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordRun(time.Now(), 0); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.ErrorSources != 1 || health.LastRunErrorCount != 0 {
+		t.Fatalf("unpublished error health = %+v", health)
+	}
+	retained, err := database.SourceErrors()
+	if err != nil || len(retained) != 1 || retained[0].Path != path {
+		t.Fatalf("retained source errors = %+v err=%v", retained, err)
+	}
+	if err := database.ClearSourceError(history.ProviderCodex, path); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.Health()
+	if err != nil || health.ErrorSources != 0 {
+		t.Fatalf("resolved source error health = %+v err=%v", health, err)
+	}
+}
+
 func TestApplySourceRejectsMismatchedExtractionReference(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()

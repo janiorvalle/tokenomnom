@@ -89,7 +89,7 @@ func TestPartialTrailingLineCompletion(t *testing.T) {
 	// Replace the still-unindexed partial suffix with one complete valid record.
 	writeFile(t, path, codexMeta("partial-session")+codexPrompt("p1", "wait for newline"))
 	third := env.index(t, false)
-	if third.AppendedSources != 1 || third.IndexedPrompts != 1 || env.health(t).Prompts != 1 {
+	if third.AppendedSources+third.RewrittenSources != 1 || third.IndexedPrompts != 1 || env.health(t).Prompts != 1 {
 		t.Fatalf("completed partial summary = %+v health=%+v", third, env.health(t))
 	}
 }
@@ -116,7 +116,7 @@ func TestAppendDuringIndexingRemainsPendingForNextRun(t *testing.T) {
 		Provider: history.ProviderCodex, Path: path, Kind: history.LocationProviderLive,
 		Size: parsed.size, CompleteOffset: parsed.position.ByteOffset, LineCount: parsed.position.LineNumber,
 		ContentSHA256: parsed.contentHash, ContentHashState: parsed.hashState,
-		PrefixFingerprint: parsed.physicalFingerprint, TailFingerprint: parsed.tailFingerprint,
+		PrefixFingerprint: parsed.prefixFingerprint, TailFingerprint: parsed.tailFingerprint,
 		ExtractorVersion: history.ExtractorVersion,
 	}
 	kind, err := classify(discover.SourceFile{Provider: discover.ProviderCodex, Kind: discover.SourceCodexLive, Path: path, Size: stat.Size(), ModTime: stat.ModTime()}, checkpoint, true, false)

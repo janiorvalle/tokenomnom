@@ -170,6 +170,13 @@ CREATE TABLE prompt_tombstones (
 	deleted_at INTEGER NOT NULL
 );
 CREATE INDEX prompt_tombstones_source_idx ON prompt_tombstones(source_head_id, deleted_at DESC);
+CREATE TABLE source_errors (
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	last_attempt_unix INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	PRIMARY KEY(provider, source_path)
+);
 `,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, _ int) error {

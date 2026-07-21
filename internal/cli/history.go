@@ -95,13 +95,31 @@ func newHistoryStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			health, err := historystore.InspectHealth(path)
+			health, err := inspectHistoryHealth(path)
 			if err != nil {
 				return err
 			}
 			return writeHistoryStatus(cmd, health)
 		},
 	}
+}
+
+func inspectHistoryHealth(path string) (historystore.Health, error) {
+	health, err := historystore.InspectHealth(path)
+	if err == nil {
+		return health, nil
+	}
+	health = historystore.Health{Path: path, ErrorSources: 1, InspectionError: err.Error()}
+	if len(health.InspectionError) > 512 {
+		health.InspectionError = health.InspectionError[:512]
+	}
+	if stat, statErr := os.Stat(path); statErr == nil {
+		health.Exists = true
+		health.SizeBytes = stat.Size()
+	} else if !os.IsNotExist(statErr) {
+		return historystore.Health{}, statErr
+	}
+	return health, nil
 }
 
 func newHistoryPurgeCommand() *cobra.Command {

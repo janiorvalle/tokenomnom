@@ -80,6 +80,17 @@ func TestDoctorReportsCorruptOptionalHistoryIndexWithoutAborting(t *testing.T) {
 	if doctor.History.Status != "error" || doctor.History.InspectionError == nil || *doctor.History.InspectionError == "" {
 		t.Fatalf("doctor corrupt history = %+v", doctor.History)
 	}
+	statusOutput, err := executeReport([]string{"history", "status", "--format", "json"}, filepath.Join(root, "codex"), filepath.Join(root, "claude"))
+	if err != nil {
+		t.Fatalf("status aborted on corrupt history index: %v\n%s", err, statusOutput)
+	}
+	var status jsonHistoryHealth
+	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "error" || status.InspectionError == nil {
+		t.Fatalf("corrupt history status = %+v", status)
+	}
 }
 
 func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {

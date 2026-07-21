@@ -33,6 +33,13 @@ type Checkpoint struct {
 	Session           history.Session
 }
 
+// SourceError retains bounded diagnostics for a source that failed before a
+// source head could be published.
+type SourceError struct {
+	Provider history.Provider
+	Path     string
+}
+
 // Health is bounded non-content index status used by status and doctor.
 type Health struct {
 	Exists                  bool
@@ -109,16 +116,17 @@ func CheckpointKey(provider history.Provider, path string) string {
 // UpdateCheckpointOnly publishes non-content metadata without changing the
 // index generation. It is used when only an incomplete trailing line changed.
 func (s *Store) UpdateCheckpointOnly(head history.SourceHead) error {
-	_, err := s.db.Exec(`UPDATE source_heads SET source_kind=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,
-		current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,
-		last_attempt_unix=?,last_error='' WHERE provider=? AND source_path=?`,
-		providerSourceKind(head.Source.Provider, head.Source.Kind), head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount,
-		head.ContentSHA256, head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState,
-		time.Now().Unix(), head.Source.Provider, head.Source.Path)
-	if err != nil {
-		return fmt.Errorf("update history checkpoint metadata: %w", err)
-	}
-	return nil
+	return s.Transaction(func(tx *Tx) error {
+		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_kind=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,
+			current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,
+			last_attempt_unix=?,last_error='' WHERE provider=? AND source_path=?`,
+			providerSourceKind(head.Source.Provider, head.Source.Kind), head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount,
+			head.ContentSHA256, head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState,
+			time.Now().Unix(), head.Source.Provider, head.Source.Path); err != nil {
+			return fmt.Errorf("update history checkpoint metadata: %w", err)
+		}
+		return tx.clearSourceError(head.Source.Provider, head.Source.Path)
+	})
 }
 
 // MarkSourceMissing removes only mutable source occurrences and content that
@@ -152,6 +160,9 @@ func (s *Store) MarkSourceMissing(provider history.Provider, path string) (bool,
 		if _, err := tx.tx.Exec(`UPDATE locations SET available=0 WHERE source_head_id=?`, sourceID); err != nil {
 			return fmt.Errorf("mark history source location missing: %w", err)
 		}
+		if err := tx.clearSourceError(provider, path); err != nil {
+			return err
+		}
 		changed = true
 		return tx.advanceGenerationIf(true)
 	})
@@ -164,18 +175,60 @@ func (s *Store) RecordSourceError(provider history.Provider, path string, indexE
 	if len(message) > 2048 {
 		message = message[:2048]
 	}
-	_, err := s.db.Exec(`UPDATE source_heads SET last_attempt_unix=?,last_error=? WHERE provider=? AND source_path=?`, time.Now().Unix(), message, provider, path)
-	if err != nil {
-		return fmt.Errorf("record history source error: %w", err)
-	}
-	return nil
+	return s.Transaction(func(tx *Tx) error {
+		now := time.Now().Unix()
+		result, err := tx.tx.Exec(`UPDATE source_heads SET last_attempt_unix=?,last_error=? WHERE provider=? AND source_path=?`, now, message, provider, path)
+		if err != nil {
+			return fmt.Errorf("record history source error: %w", err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count updated history source errors: %w", err)
+		}
+		if updated > 0 {
+			return tx.clearSourceError(provider, path)
+		}
+		if _, err := tx.tx.Exec(`INSERT INTO source_errors(provider,source_path,last_attempt_unix,last_error) VALUES(?,?,?,?)
+			ON CONFLICT(provider,source_path) DO UPDATE SET last_attempt_unix=excluded.last_attempt_unix,last_error=excluded.last_error`, provider, path, now, message); err != nil {
+			return fmt.Errorf("retain unpublished history source error: %w", err)
+		}
+		return nil
+	})
 }
 
 // RecordSourceChecked clears a prior source error after a successful no-op check.
 func (s *Store) RecordSourceChecked(provider history.Provider, path string) error {
-	_, err := s.db.Exec(`UPDATE source_heads SET last_attempt_unix=?,last_error='' WHERE provider=? AND source_path=?`, time.Now().Unix(), provider, path)
+	return s.Transaction(func(tx *Tx) error {
+		if _, err := tx.tx.Exec(`UPDATE source_heads SET last_attempt_unix=?,last_error='' WHERE provider=? AND source_path=?`, time.Now().Unix(), provider, path); err != nil {
+			return fmt.Errorf("record successful history source check: %w", err)
+		}
+		return tx.clearSourceError(provider, path)
+	})
+}
+
+// SourceErrors lists non-content diagnostics for unpublished source heads.
+func (s *Store) SourceErrors() ([]SourceError, error) {
+	rows, err := s.db.Query(`SELECT provider,source_path FROM source_errors ORDER BY provider,source_path`)
 	if err != nil {
-		return fmt.Errorf("record successful history source check: %w", err)
+		return nil, fmt.Errorf("list unpublished history source errors: %w", err)
+	}
+	defer rows.Close()
+	var values []SourceError
+	for rows.Next() {
+		var value SourceError
+		if err := rows.Scan(&value.Provider, &value.Path); err != nil {
+			return nil, fmt.Errorf("scan unpublished history source error: %w", err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+// ClearSourceError removes a diagnostic after the source succeeds or vanishes.
+func (s *Store) ClearSourceError(provider history.Provider, path string) error {
+	_, err := s.db.Exec(`DELETE FROM source_errors WHERE provider=? AND source_path=?`, provider, path)
+	if err != nil {
+		return fmt.Errorf("clear unpublished history source error: %w", err)
 	}
 	return nil
 }
@@ -245,7 +298,7 @@ const healthQuery = `SELECT
 		(SELECT COUNT(*) FROM occurrences),(SELECT COUNT(*) FROM source_heads WHERE source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads WHERE source_kind='codex_archive'),
 		(SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?),
-		(SELECT COUNT(*) FROM source_heads WHERE last_error<>''),(SELECT COUNT(*) FROM source_heads WHERE available=0),
+		((SELECT COUNT(*) FROM source_heads WHERE last_error<>'')+(SELECT COUNT(*) FROM source_errors)),(SELECT COUNT(*) FROM source_heads WHERE available=0),
 		COALESCE((SELECT MAX(indexed_at) FROM source_heads),0),
 		COALESCE((SELECT value FROM meta WHERE key='last_attempt_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_complete_success_unix'),'0'),

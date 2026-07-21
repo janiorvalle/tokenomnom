@@ -101,6 +101,9 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 				return fmt.Errorf("remove prompts from unavailable source: %w", err)
 			}
 			result = ApplyResult{SessionID: sessionPublicID, SourceID: sourcePublicID, PromptIDs: map[string]string{}}
+			if err := tx.clearSourceError(extraction.Provider, head.Source.Path); err != nil {
+				return err
+			}
 			if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 				return err
 			}
@@ -122,6 +125,9 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 			}
 		}
 		result = ApplyResult{SessionID: sessionPublicID, SourceID: sourcePublicID, PromptIDs: promptIDs}
+		if err := tx.clearSourceError(extraction.Provider, head.Source.Path); err != nil {
+			return err
+		}
 		if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 			return err
 		}
@@ -1025,6 +1031,13 @@ func (tx *Tx) advanceGenerationIf(advance bool) error {
 		ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1`)
 	if err != nil {
 		return fmt.Errorf("advance history index generation: %w", err)
+	}
+	return nil
+}
+
+func (tx *Tx) clearSourceError(provider history.Provider, path string) error {
+	if _, err := tx.tx.Exec(`DELETE FROM source_errors WHERE provider=? AND source_path=?`, provider, path); err != nil {
+		return fmt.Errorf("clear history source error: %w", err)
 	}
 	return nil
 }
