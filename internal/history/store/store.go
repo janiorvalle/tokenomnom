@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	SchemaVersion = 7
+	SchemaVersion = 8
 	DatabaseName  = "history.db"
 )
 
@@ -332,15 +333,41 @@ CREATE TRIGGER sample_strata_prompt_delete AFTER DELETE ON prompts BEGIN
 	DELETE FROM sample_strata WHERE unit_kind='prompt' AND unit_id=old.id;
 END;
 `,
+			8: `
+UPDATE prompts SET role='user' WHERE role='unknown' AND classification='human';
+UPDATE occurrences SET role='user' WHERE role='unknown' AND classification='human';
+CREATE INDEX IF NOT EXISTS prompts_role_timestamp_idx ON prompts(role,timestamp,public_id);
+CREATE INDEX IF NOT EXISTS occurrences_role_idx ON occurrences(role,prompt_id);
+DROP TRIGGER prompts_ai;
+DROP TRIGGER prompts_ad;
+DROP TRIGGER prompts_au;
+DROP VIEW searchable_prompts;
+CREATE VIEW searchable_prompts AS
+	SELECT id,clean_text FROM prompts WHERE searchable=1 AND role IN ('user','assistant');
+CREATE TRIGGER prompts_ai AFTER INSERT ON prompts WHEN new.searchable=1 AND new.role IN ('user','assistant') BEGIN
+	INSERT INTO prompt_fts(rowid,clean_text) VALUES(new.id,new.clean_text);
+END;
+CREATE TRIGGER prompts_ad AFTER DELETE ON prompts WHEN old.searchable=1 AND old.role IN ('user','assistant') BEGIN
+	INSERT INTO prompt_fts(prompt_fts,rowid,clean_text) VALUES('delete',old.id,old.clean_text);
+END;
+CREATE TRIGGER prompts_au AFTER UPDATE OF clean_text,searchable,role ON prompts BEGIN
+	INSERT INTO prompt_fts(prompt_fts,rowid,clean_text)
+		SELECT 'delete',old.id,old.clean_text WHERE old.searchable=1 AND old.role IN ('user','assistant');
+	INSERT INTO prompt_fts(rowid,clean_text)
+		SELECT new.id,new.clean_text WHERE new.searchable=1 AND new.role IN ('user','assistant');
+END;
+INSERT INTO prompt_fts(prompt_fts) VALUES('rebuild');
+`,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {
 			if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES
 				('extractor_version', ?), ('index_generation', '0'),
-				('last_attempt_unix', '0'), ('last_complete_success_unix', '0'), ('last_run_error_count', '0')
+				('last_attempt_unix', '0'), ('last_complete_success_unix', '0'), ('last_run_error_count', '0'),
+				('assistant_role_mode', '0'), ('assistant_indexed', '0'), ('assistant_indexed_providers', '')
 				ON CONFLICT(key) DO NOTHING`, history.ExtractorVersion); err != nil {
 				return fmt.Errorf("record history metadata: %w", err)
 			}
-			if version == 7 {
+			if version >= 7 {
 				if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES('sampling_ready',
 					CASE WHEN EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prompts) THEN '0' ELSE '1' END)
 					ON CONFLICT(key) DO NOTHING`); err != nil {
@@ -401,6 +428,124 @@ func (s *Store) Meta(key string) (string, error) {
 		return "", fmt.Errorf("read history metadata %q: %w", key, err)
 	}
 	return value, nil
+}
+
+// AssistantIndexingEnabled reports the role corpus written by the last index run.
+func (s *Store) AssistantIndexingEnabled() (bool, error) {
+	value, err := s.Meta("assistant_indexed")
+	return value == "1", err
+}
+
+// AssistantIndexingProviders returns provider scopes completed under the
+// current assistant consent mode.
+func (s *Store) AssistantIndexingProviders() ([]history.Provider, error) {
+	value, err := s.Meta("assistant_indexed_providers")
+	if err != nil {
+		return nil, err
+	}
+	providers := []history.Provider{}
+	for _, provider := range strings.Split(value, ",") {
+		switch history.Provider(provider) {
+		case history.ProviderCodex, history.ProviderClaude:
+			providers = append(providers, history.Provider(provider))
+		}
+	}
+	return providers, nil
+}
+
+// ConfigureAssistantIndexing applies an explicit index run's consent mode.
+// Enabling reuses extractor-version staleness and keeps assistant queries
+// disabled until a complete-scope run succeeds. Disabling removes all
+// assistant plaintext and FTS rows at once.
+func (s *Store) ConfigureAssistantIndexing(enabled bool) error {
+	return s.Transaction(func(tx *Tx) error {
+		var current string
+		err := tx.tx.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='assistant_role_mode'),'0')`).Scan(&current)
+		if err != nil {
+			return err
+		}
+		target := "0"
+		if enabled {
+			target = "1"
+		}
+		if current == target {
+			return nil
+		}
+		if enabled {
+			for _, statement := range []string{
+				`UPDATE source_heads SET extractor_version=0`,
+				`UPDATE preserved_snapshots SET extractor_version=0`,
+				`UPDATE vault_bundle_state SET extractor_version=0 WHERE last_success_unix>0`,
+			} {
+				if _, err := tx.tx.Exec(statement); err != nil {
+					return fmt.Errorf("mark history role corpus stale: %w", err)
+				}
+			}
+		} else {
+			if err := tx.tombstoneAssistantPrompts(); err != nil {
+				return err
+			}
+			if _, err := tx.tx.Exec(`DELETE FROM prompts WHERE role='assistant'`); err != nil {
+				return fmt.Errorf("prune assistant history prompts: %w", err)
+			}
+		}
+		if err := tx.SetMeta("assistant_role_mode", target); err != nil {
+			return err
+		}
+		if err := tx.SetMeta("assistant_indexed", "0"); err != nil {
+			return err
+		}
+		if err := tx.SetMeta("assistant_indexed_providers", ""); err != nil {
+			return err
+		}
+		return tx.advanceGenerationIf(true)
+	})
+}
+
+// MarkAssistantIndexingComplete exposes assistant rows after a successful
+// complete-scope provider and vault run.
+func (s *Store) MarkAssistantIndexingComplete(providers ...history.Provider) error {
+	if len(providers) == 0 {
+		providers = []history.Provider{history.ProviderCodex, history.ProviderClaude}
+	}
+	return s.Transaction(func(tx *Tx) error {
+		var mode, indexed, storedProviders string
+		if err := tx.tx.QueryRow(`SELECT
+			COALESCE((SELECT value FROM meta WHERE key='assistant_role_mode'),'0'),
+			COALESCE((SELECT value FROM meta WHERE key='assistant_indexed'),'0'),
+			COALESCE((SELECT value FROM meta WHERE key='assistant_indexed_providers'),'')`).Scan(&mode, &indexed, &storedProviders); err != nil {
+			return err
+		}
+		if mode != "1" {
+			return nil
+		}
+		completed := map[history.Provider]bool{}
+		for _, provider := range strings.Split(storedProviders, ",") {
+			completed[history.Provider(provider)] = true
+		}
+		for _, provider := range providers {
+			if provider == history.ProviderCodex || provider == history.ProviderClaude {
+				completed[provider] = true
+			}
+		}
+		ordered := []string{}
+		for _, provider := range []history.Provider{history.ProviderCodex, history.ProviderClaude} {
+			if completed[provider] {
+				ordered = append(ordered, string(provider))
+			}
+		}
+		providerValue := strings.Join(ordered, ",")
+		if indexed == "1" && providerValue == storedProviders {
+			return nil
+		}
+		if err := tx.SetMeta("assistant_indexed", "1"); err != nil {
+			return err
+		}
+		if err := tx.SetMeta("assistant_indexed_providers", providerValue); err != nil {
+			return err
+		}
+		return tx.advanceGenerationIf(true)
+	})
 }
 
 // ResolvePublicID returns the current opaque ID for an active or retired ID.

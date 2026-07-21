@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS prompts (
 
 CREATE INDEX IF NOT EXISTS prompts_sample_key_idx ON prompts(sample_key, public_id);
 CREATE INDEX IF NOT EXISTS prompts_session_sample_key_idx ON prompts(session_id, sample_key, public_id);
+CREATE INDEX IF NOT EXISTS prompts_role_timestamp_idx ON prompts(role, timestamp, public_id);
 
 CREATE TABLE IF NOT EXISTS sample_groups (
 	unit_kind TEXT NOT NULL CHECK (unit_kind IN ('prompt','session')),
@@ -320,10 +321,11 @@ CREATE INDEX IF NOT EXISTS prompts_session_idx ON prompts(session_id);
 CREATE INDEX IF NOT EXISTS occurrences_prompt_idx ON occurrences(prompt_id);
 CREATE INDEX IF NOT EXISTS occurrences_source_idx ON occurrences(source_head_id);
 CREATE INDEX IF NOT EXISTS occurrences_snapshot_idx ON occurrences(snapshot_id);
+CREATE INDEX IF NOT EXISTS occurrences_role_idx ON occurrences(role, prompt_id);
 CREATE INDEX IF NOT EXISTS prompt_tombstones_source_idx ON prompt_tombstones(source_head_id, deleted_at DESC);
 
 CREATE VIEW IF NOT EXISTS searchable_prompts AS
-SELECT id, clean_text FROM prompts WHERE searchable = 1;
+SELECT id, clean_text FROM prompts WHERE searchable = 1 AND role IN ('user','assistant');
 
 CREATE VIRTUAL TABLE IF NOT EXISTS prompt_fts USING fts5(
     clean_text,
@@ -332,17 +334,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS prompt_fts USING fts5(
     tokenize='unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS prompts_ai AFTER INSERT ON prompts WHEN new.searchable = 1 BEGIN
+CREATE TRIGGER IF NOT EXISTS prompts_ai AFTER INSERT ON prompts WHEN new.searchable = 1 AND new.role IN ('user','assistant') BEGIN
     INSERT INTO prompt_fts(rowid, clean_text) VALUES (new.id, new.clean_text);
 END;
-CREATE TRIGGER IF NOT EXISTS prompts_ad AFTER DELETE ON prompts WHEN old.searchable = 1 BEGIN
+CREATE TRIGGER IF NOT EXISTS prompts_ad AFTER DELETE ON prompts WHEN old.searchable = 1 AND old.role IN ('user','assistant') BEGIN
     INSERT INTO prompt_fts(prompt_fts, rowid, clean_text) VALUES ('delete', old.id, old.clean_text);
 END;
-CREATE TRIGGER IF NOT EXISTS prompts_au AFTER UPDATE OF clean_text, searchable ON prompts BEGIN
-    INSERT INTO prompt_fts(prompt_fts, rowid, clean_text)
-        SELECT 'delete', old.id, old.clean_text WHERE old.searchable = 1;
-    INSERT INTO prompt_fts(rowid, clean_text)
-        SELECT new.id, new.clean_text WHERE new.searchable = 1;
+CREATE TRIGGER IF NOT EXISTS prompts_au AFTER UPDATE OF clean_text, searchable, role ON prompts BEGIN
+	INSERT INTO prompt_fts(prompt_fts, rowid, clean_text)
+		SELECT 'delete', old.id, old.clean_text WHERE old.searchable = 1 AND old.role IN ('user','assistant');
+	INSERT INTO prompt_fts(rowid, clean_text)
+		SELECT new.id, new.clean_text WHERE new.searchable = 1 AND new.role IN ('user','assistant');
 END;
 
 CREATE TRIGGER IF NOT EXISTS occurrences_ai AFTER INSERT ON occurrences BEGIN

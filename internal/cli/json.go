@@ -23,6 +23,7 @@ type jsonFilters struct {
 	Since      *string `json:"since"`
 	Until      *string `json:"until"`
 	ThreadKind *string `json:"thread_kind,omitempty"`
+	Role       *string `json:"role,omitempty"`
 }
 
 type jsonEnvelope struct {

@@ -50,6 +50,9 @@ type Health struct {
 	Sessions                int
 	SourceHeads             int
 	Prompts                 int
+	UserPrompts             int
+	AssistantPrompts        int
+	AssistantIndexed        bool
 	Occurrences             int
 	LiveSources             int
 	ProviderArchiveSources  int
@@ -65,6 +68,10 @@ type Health struct {
 	BrokenSkippedBundles    int
 	CoverageFirst           string
 	CoverageLast            string
+	UserCoverageFirst       string
+	UserCoverageLast        string
+	AssistantCoverageFirst  string
+	AssistantCoverageLast   string
 	StaleSources            int
 	ErrorSources            int
 	MissingSources          int
@@ -333,6 +340,7 @@ func InspectHealth(path string) (Health, error) {
 
 var healthQuery = `SELECT
 		(SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM prompts),
+		(SELECT COUNT(*) FROM prompts WHERE role='user'),(SELECT COUNT(*) FROM prompts WHERE role='assistant'),
 		(SELECT COUNT(*) FROM occurrences),(SELECT COUNT(*) FROM source_heads WHERE source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads WHERE source_kind='codex_archive'),
 		(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations WHERE kind='vault'),
@@ -356,6 +364,10 @@ var healthQuery = `SELECT
 			SELECT ps.last_ts FROM preserved_snapshots ps WHERE ps.last_ts IS NOT NULL AND ps.last_ts<>''
 				AND EXISTS(SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND l.available=1)
 		) ORDER BY ` + sqliteTimestampKey("last_ts") + ` DESC LIMIT 1),''),
+		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
+		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
+		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
+		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
 		((SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?)+
 		 (SELECT COUNT(*) FROM vault_bundle_state WHERE last_success_unix>0 AND extractor_version<>?)+
 		 (SELECT COUNT(*) FROM preserved_snapshots WHERE extractor_version<>?)),
@@ -366,7 +378,8 @@ var healthQuery = `SELECT
 		COALESCE((SELECT value FROM meta WHERE key='last_run_error_count'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_error_summary'),''),
 		COALESCE((SELECT value FROM meta WHERE key='sampling_ready'),'0'),
-		COALESCE((SELECT value FROM meta WHERE key='index_generation'),'0')`
+		COALESCE((SELECT value FROM meta WHERE key='index_generation'),'0'),
+		COALESCE((SELECT value FROM meta WHERE key='assistant_indexed'),'0')`
 
 type rowScanner interface {
 	Scan(...any) error
@@ -374,14 +387,15 @@ type rowScanner interface {
 
 func scanHealth(row rowScanner, value *Health) error {
 	return row.Scan(
-		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.Occurrences, &value.LiveSources,
+		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.UserPrompts, &value.AssistantPrompts, &value.Occurrences, &value.LiveSources,
 		&value.ProviderArchiveSources, &value.PreservedSnapshots, &value.VaultLocations,
 		&value.ProviderLiveOnly, &value.ProviderArchiveOnly, &value.VaultOnly, &value.ExactLiveAndVaulted,
 		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,
 		&value.BrokenSkippedBundles, &value.CoverageFirst, &value.CoverageLast,
+		&value.UserCoverageFirst, &value.UserCoverageLast, &value.AssistantCoverageFirst, &value.AssistantCoverageLast,
 		&value.StaleSources, &value.ErrorSources, &value.MissingSources,
 		&value.LastIndexUnix, &value.LastAttemptUnix, &value.LastCompleteSuccessUnix, &value.LastRunErrorCount, &value.LastErrorSummary,
-		&value.SamplingReady, &value.IndexGeneration)
+		&value.SamplingReady, &value.IndexGeneration, &value.AssistantIndexed)
 }
 
 func parseOptionalTime(value string) *time.Time {

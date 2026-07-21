@@ -37,8 +37,12 @@ type Options struct {
 	LockHeld  bool
 	// SkipRunRecord lets a combined provider+vault command record one scope-wide
 	// attempt after both independent source kinds finish.
-	SkipRunRecord bool
-	NarrowSource  bool
+	SkipRunRecord  bool
+	NarrowSource   bool
+	IndexAssistant bool
+	// CompleteAssistantScope is true only when every configured provider and
+	// vault source is included in the enclosing run.
+	CompleteAssistantScope bool
 }
 
 // Issue is bounded non-content failure or warning detail.
@@ -105,6 +109,9 @@ func Index(options Options) (Summary, error) {
 	}
 	attempt := now()
 	selected := selectedProviders(options.Providers)
+	if err := options.Store.ConfigureAssistantIndexing(options.IndexAssistant); err != nil {
+		return summary, err
+	}
 	if err := options.Store.PrepareSampling(); err != nil {
 		return summary, fmt.Errorf("prepare history sampling index: %w", err)
 	}
@@ -136,7 +143,7 @@ func Index(options Options) (Summary, error) {
 			summary.SkippedSources++
 			continue
 		}
-		indexed, indexErr := indexFile(options.Store, file, checkpoint, found, kind)
+		indexed, indexErr := indexFile(options.Store, file, checkpoint, found, kind, options.IndexAssistant)
 		if indexErr != nil {
 			recordError(options.Store, provider, file.Path, indexErr, &summary)
 			continue
@@ -200,6 +207,15 @@ func Index(options Options) (Summary, error) {
 	summary.Duration = time.Since(started)
 	if summary.ErrorCount > 0 {
 		return summary, PartialError{Count: summary.ErrorCount}
+	}
+	if options.IndexAssistant && options.CompleteAssistantScope {
+		completedProviders := options.Providers
+		if len(completedProviders) == 0 {
+			completedProviders = []history.Provider{history.ProviderCodex, history.ProviderClaude}
+		}
+		if err := options.Store.MarkAssistantIndexingComplete(completedProviders...); err != nil {
+			return summary, err
+		}
 	}
 	return summary, nil
 }
@@ -352,7 +368,7 @@ type indexedFile struct {
 	Kind        fileKind
 }
 
-func indexFile(database *historystore.Store, file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, kind fileKind) (indexedFile, error) {
+func indexFile(database *historystore.Store, file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, kind fileKind, indexAssistant bool) (indexedFile, error) {
 	position := jsonl.Position{}
 	if kind == fileAppend {
 		position = jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}
@@ -362,7 +378,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	var accumulator *extractionAccumulator
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		accumulator, err = newExtractionAccumulator(source, checkpoint, kind)
+		accumulator, err = newExtractionAccumulator(source, checkpoint, kind, indexAssistant)
 		if err != nil {
 			return indexedFile{}, err
 		}
@@ -540,13 +556,15 @@ type extractionAccumulator struct {
 	promptIndex map[string]int
 	codexState  codex.State
 	claudeState claude.State
+	options     history.ExtractionOptions
 }
 
-func newExtractionAccumulator(source history.SourceReference, checkpoint historystore.Checkpoint, kind fileKind) (*extractionAccumulator, error) {
+func newExtractionAccumulator(source history.SourceReference, checkpoint historystore.Checkpoint, kind fileKind, indexAssistant bool) (*extractionAccumulator, error) {
 	value := &extractionAccumulator{
 		source:      source,
 		extraction:  history.Extraction{Provider: source.Provider, Source: source},
 		promptIndex: make(map[string]int),
+		options:     history.ExtractionOptions{IndexAssistant: indexAssistant},
 	}
 	if kind == fileAppend {
 		switch source.Provider {
@@ -580,9 +598,9 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 	var part history.Extraction
 	switch a.source.Provider {
 	case history.ProviderCodex:
-		part, a.codexState = codex.ExtractWithState(a.source, records, a.codexState)
+		part, a.codexState = codex.ExtractWithStateOptions(a.source, records, a.codexState, a.options)
 	case history.ProviderClaude:
-		part, a.claudeState = claude.ExtractWithState(a.source, records, a.claudeState)
+		part, a.claudeState = claude.ExtractWithStateOptions(a.source, records, a.claudeState, a.options)
 	default:
 		return fmt.Errorf("unsupported history provider %q", a.source.Provider)
 	}

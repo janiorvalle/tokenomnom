@@ -135,6 +135,7 @@ optional provider root alone does not produce that warning.
 `data.history` reports the rebuildable transcript index without creating it.
 It contains `status`, `database_path`, `database_size_bytes`, schema and
 extractor versions, logical session/source-head/prompt/occurrence counts,
+user and assistant prompt counts and per-role coverage bounds,
 live, provider-archive, preserved-snapshot, and vault-location counts;
 provider-live-only, provider-archive-only, vault-only, exact-live-and-vaulted,
 and unavailable-metadata coverage; indexed vault bundle/version counts;
@@ -142,8 +143,10 @@ broken/skipped bundle counts; stale/error/missing counts; nullable coverage and
 last-index/attempt/complete-success timestamps, `next_due`, and
 `index_generation`. `sampling_ready` is false after an upgrade that still needs
 the explicit corpus-sized sampling backfill; `history index` performs it while
-database open remains bounded. It also reports `auto_index_enabled`, `auto_interval`,
-configured `providers`, and nullable `last_error_summary` without prompt text.
+database open remains bounded. It also reports `auto_index_enabled`,
+`index_assistant_enabled`, whether the stored corpus is `assistant_indexed`,
+`auto_interval`, configured `providers`, and nullable `last_error_summary`
+without prompt text.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
 without aborting its other diagnostics.
@@ -158,6 +161,18 @@ combines Codex `sessions/`, Codex `archived_sessions/`, Claude Code `projects/`,
 and every selected validated vault manifest version. `provider` and `vault`
 narrow that scope. `--full` rebuilds the selected source kinds. Indexing is not
 triggered by usage reports or ordinary syncs.
+
+`history.index_assistant` defaults to false and is the only consent switch; it
+has no environment or flag override. Enabling it marks existing sources stale,
+and the next explicit or scheduled index adds assistant text blocks. Disabling
+it prunes assistant prompt and FTS rows on that index run. Assistant text often
+dwarfs user text and can multiply plaintext storage. `history purge` removes
+all indexed roles. Indexing remains local-only with no model calls or embeddings.
+A narrowed or failed rebuild remains `assistant_indexed=false`; assistant
+queries keep returning the not-indexed warning until a complete `history index`
+run succeeds across the selected providers and their provider/vault sources.
+Scheduled completion follows the configured `history.providers` scope; role
+coverage warnings disclose materially different or missing provider coverage.
 
 Vault traversal holds the vault lock, then the history lock, then one SQLite
 transaction per bundle. Each archive is decompressed once and every yielded
@@ -210,16 +225,21 @@ an error. The default and `all` include root, subagent, and unknown sessions.
 `tokenomnom history search <query> [--provider codex|claude] [--since
 YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
-[--cursor OPAQUE] [--include-text] [--fts-query]
+[--cursor OPAQUE] [--include-text] [--fts-query] [--role user|assistant|any]
 [--root-only | --thread-kind root|subagent|unknown|all] --format json`
 
 The default limit is 50 and the maximum is 500. Default search quotes the
 input as one FTS5 `unicode61` phrase: tokenizer terms must be adjacent and in
 order, punctuation separates terms, and words such as `OR` remain literal.
 `--fts-query` is the only raw boolean, NEAR, or prefix syntax route.
+The role default is `user`. `assistant` searches only explicitly indexed
+assistant text blocks and `any` combines both roles. When assistant indexing is
+off or has not yet run, assistant/any queries return an explicit envelope
+warning; assistant hits remain empty rather than implying the agent never said
+something.
 
 `data.hits` is always an array. Each logical-prompt hit contains `prompt_id`,
-`session_id`, provider and session metadata, nullable timestamp/repository/
+`session_id`, `role`, provider and session metadata, nullable timestamp/repository/
 branch, raw FTS5 `rank` with `rank_direction: "lower_is_better"`, a bounded
 highlighted `snippet`, occurrence and stable source/snapshot IDs, bounded
 `occurrences`, availability, and preferred retrieval source. `text` is present
@@ -230,13 +250,16 @@ index generation.
 
 `data.coverage` contains nullable first/last indexed prompt timestamps plus
 known/unknown repository and branch session counts plus root, subagent, and
-unknown relationship counts. Requests outside date
+unknown relationship counts. `coverage.roles` reports independent user and
+assistant prompt counts/date bounds plus `assistant_indexed` and the completed
+`assistant_providers` scope; materially
+different coverage under `--role any` adds a warning. Requests outside date
 coverage and repository/branch filters that exclude unknown metadata add
 envelope warnings.
 
 ## History Show And Prompts
 
-`tokenomnom history show <prompt-id> --format json` returns one clean human
+`tokenomnom history show <prompt-id> --format json` returns one clean indexed
 prompt with full `text` and metadata. `history show <session-id> --format json`
 returns bounded session metadata. Adding `--prompts [--limit N] [--cursor
 OPAQUE]` returns `data.prompts` with full clean prompt text and `data.page`.
@@ -252,8 +275,9 @@ Raw JSON is capped at 64 MiB to bound encoding memory; omit `--format json` to
 stream larger exact transcripts directly to stdout.
 
 `tokenomnom history prompts` accepts the shared search filters plus
-`--include-text`, `--all-occurrences`, `--limit`, and `--cursor`. It defaults to
-100 deduplicated clean human prompts and bounded snippets. `--all-occurrences`
+`--role user|assistant|any`, `--include-text`, `--all-occurrences`, `--limit`,
+and `--cursor`. It defaults to 100 deduplicated clean user prompts and bounded
+snippets. `--all-occurrences`
 adds at most 20 provenance objects per logical prompt; total occurrence counts
 remain exact and truncation is explicit. Its `data.page`, `coverage`, cursor,
 warning, and optional-text contracts match search.
@@ -270,6 +294,9 @@ grouping it is stratified. The omitted seed is the constant `tokenomnom`.
 Logical prompts and sessions are sampled once regardless of how many live or
 vault occurrences they have. Default items contain metadata and bounded
 snippets; complete clean text requires `--include-text`.
+Sampling deliberately remains user-only in this campaign: it has no `--role`
+filter, so larger assistant messages cannot silently change existing sampling
+behavior. Use assistant search/prompts plus bounded pagination instead.
 
 Each unit has an indexed 64-bit key from SHA-256 of its stable opaque ID. The
 seed hashes to a pivot, selection walks keys at or after the pivot, then wraps
@@ -291,11 +318,13 @@ warnings without scanning excluded rows.
 
 ## History Stats
 
-`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday,hour]
+`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday|hour|role]
 --format json` returns SQL-computed, text-free aggregates: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
 days; total/median prompt byte lengths; provider-live, provider-archive, and
 vault availability; index bytes; and stale/error/oversized counts.
+`data.role_counts` discloses text-free user and assistant logical-prompt,
+occurrence, and byte totals for the consented corpus.
 `data.groups` contains dimension `values` and session/prompt/occurrence/length
 aggregates. Repository/CWD groups always include an explicit `unknown` group.
 Weekday/hour groups and the stats envelope timezone are explicitly UTC.

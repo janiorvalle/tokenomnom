@@ -20,15 +20,16 @@ import (
 
 // VaultOptions configures one explicit immutable-vault indexing pass.
 type VaultOptions struct {
-	Store         *historystore.Store
-	StorePath     string
-	Vault         *vault.Vault
-	Providers     []history.Provider
-	Full          bool
-	Now           func() time.Time
-	LockHeld      bool
-	SkipRunRecord bool
-	After         func(*historystore.Store, VaultSummary) error
+	Store          *historystore.Store
+	StorePath      string
+	Vault          *vault.Vault
+	Providers      []history.Provider
+	Full           bool
+	Now            func() time.Time
+	LockHeld       bool
+	SkipRunRecord  bool
+	After          func(*historystore.Store, VaultSummary) error
+	IndexAssistant bool
 }
 
 // VaultSummary reports archive-atomic backfill work.
@@ -72,6 +73,9 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			if database == nil {
 				return nil, errors.New("history store must be open when its lock is already held")
 			}
+			if err := database.ConfigureAssistantIndexing(options.IndexAssistant); err != nil {
+				return nil, err
+			}
 			return func() {}, nil
 		}
 		path := options.StorePath
@@ -90,6 +94,13 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 				return nil, err
 			}
 			opened = true
+		}
+		if err := database.ConfigureAssistantIndexing(options.IndexAssistant); err != nil {
+			if opened {
+				_ = database.Close()
+			}
+			release()
+			return nil, err
 		}
 		if err := database.PrepareSampling(); err != nil {
 			if opened {
@@ -134,7 +145,7 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			if err != nil {
 				return err
 			}
-			extraction, err := extractVaultMember(member)
+			extraction, err := extractVaultMember(member, options.IndexAssistant)
 			if err != nil {
 				return err
 			}
@@ -216,13 +227,13 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 	return summary, nil
 }
 
-func extractVaultMember(member vault.VerifiedMember) (history.Extraction, error) {
+func extractVaultMember(member vault.VerifiedMember, indexAssistant bool) (history.Extraction, error) {
 	provider := history.Provider(member.Manifest.Provider)
 	source := history.SourceReference{
 		Provider: provider, Kind: history.LocationVault, Path: member.Manifest.SourcePath,
 		RelativePath: member.Manifest.RelPath, Archive: member.Manifest.Archive, VaultVersion: member.Manifest.Version,
 	}
-	accumulator, err := newExtractionAccumulator(source, historystore.Checkpoint{}, fileNew)
+	accumulator, err := newExtractionAccumulator(source, historystore.Checkpoint{}, fileNew, indexAssistant)
 	if err != nil {
 		return history.Extraction{}, err
 	}

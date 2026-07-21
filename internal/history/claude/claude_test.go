@@ -44,6 +44,40 @@ func TestExtractSyntheticTranscriptFork(t *testing.T) {
 	}
 }
 
+func TestExtractAssistantConsentIndexesOnlyTextBlocks(t *testing.T) {
+	var records []jsonl.Record
+	_, err := jsonl.ReadPositioned(filepath.Join("testdata", "history.jsonl"), jsonl.Position{}, func(record jsonl.Record) {
+		record.Raw = append([]byte(nil), record.Raw...)
+		records = append(records, record)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := ExtractWithOptions(history.SourceReference{Provider: history.ProviderClaude, Kind: history.LocationProviderLive, Path: "session.jsonl"}, records, history.ExtractionOptions{IndexAssistant: true})
+	var assistants []history.Prompt
+	for _, prompt := range result.Prompts {
+		if prompt.Role == history.RoleAssistant {
+			assistants = append(assistants, prompt)
+		}
+	}
+	if len(assistants) != 1 || assistants[0].CleanText != "Working." || assistants[0].Model != "claude-test" || assistants[0].Classification != history.ClassificationAssistant || !assistants[0].Searchable {
+		t.Fatalf("assistant prompts = %#v", assistants)
+	}
+}
+
+func TestExtractAssistantRejectsScalarThinkingAndToolOnlyContent(t *testing.T) {
+	records := []jsonl.Record{
+		{Raw: []byte(`{"type":"assistant","uuid":"scalar","sessionId":"session-1","message":{"role":"assistant","content":"not a text block"}}`), LineNumber: 1, EndOffset: 140},
+		{Raw: []byte(`{"type":"assistant","uuid":"blocks","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"secret"},{"type":"tool_use","name":"Read","input":{"path":"private"}}]}}`), LineNumber: 2, StartOffset: 140, EndOffset: 340},
+		{Raw: []byte(`{"type":"assistant","uuid":"meta","sessionId":"session-1","isMeta":true,"message":{"role":"assistant","content":[{"type":"text","text":"injected metadata"}]}}`), LineNumber: 3, StartOffset: 340, EndOffset: 500},
+		{Raw: []byte(`{"type":"assistant","uuid":"compact","sessionId":"session-1","isCompactSummary":true,"message":{"role":"assistant","content":[{"type":"text","text":"compact summary"}]}}`), LineNumber: 4, StartOffset: 500, EndOffset: 680},
+	}
+	result := ExtractWithOptions(history.SourceReference{Provider: history.ProviderClaude, Path: "session.jsonl"}, records, history.ExtractionOptions{IndexAssistant: true})
+	if len(result.Prompts) != 0 || len(result.Diagnostics) != 4 {
+		t.Fatalf("non-text assistant content = %#v", result)
+	}
+}
+
 func TestExtractRootAndSubagentFromProviderPath(t *testing.T) {
 	rootRecord := jsonl.Record{Raw: []byte("{\"type\":\"user\",\"uuid\":\"root-prompt\",\"sessionId\":\"parent\",\"message\":{\"role\":\"user\",\"content\":\"root work\"}}\n"), LineNumber: 1, EndOffset: 130}
 	root := Extract(history.SourceReference{Provider: history.ProviderClaude, Path: "/claude/projects/project/parent.jsonl"}, []jsonl.Record{rootRecord})

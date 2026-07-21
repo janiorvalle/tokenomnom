@@ -26,9 +26,9 @@ func (s *Store) GetPrompt(publicID string) (PromptResult, error) {
 	if err != nil {
 		return PromptResult{}, err
 	}
-	row := s.db.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.timestamp,s.repository_name,s.cwd,s.branch,
+	row := s.db.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sqliteTimestampKey("p.timestamp")+`,substr(p.clean_text,1,2048),p.clean_text
-		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.public_id=? AND p.searchable=1 AND p.role='user'`, resolved)
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.public_id=? AND p.searchable=1 AND p.role IN ('user','assistant')`, resolved)
 	values, err := s.scanPromptRows(&singlePromptRow{row: row}, true, false, true)
 	if err != nil {
 		return PromptResult{}, err
@@ -106,7 +106,7 @@ func (s *Store) SessionPrompts(publicID string, query PromptQuery) (PromptsPage,
 	queryArgs := []any{true}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	rows, err := s.db.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.timestamp,s.repository_name,s.cwd,s.branch,
+	rows, err := s.db.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sortExpr+`,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY (`+sortExpr+`='') ASC,`+sortExpr+` DESC,p.public_id ASC LIMIT ?`, queryArgs...)

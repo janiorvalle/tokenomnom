@@ -118,7 +118,7 @@ func populateSampleStrata(tx samplingExecer) error {
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='vault')
-		FROM prompts p JOIN sessions s ON s.id=p.session_id ORDER BY 1,2`)
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.role='user' ORDER BY 1,2`)
 	if err != nil {
 		return fmt.Errorf("list history sampling metadata: %w", err)
 	}
@@ -169,7 +169,7 @@ func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='vault')
-		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE s.id=? ORDER BY 1,2`, sessionID, sessionID)
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE s.id=? AND p.role='user' ORDER BY 1,2`, sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("read session sampling metadata: %w", err)
 	}
@@ -233,7 +233,7 @@ func (tx *Tx) refreshPromptSampleStrata(promptIDs []int64) error {
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='vault')
-			FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.id=?`, promptID)
+			FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.id=? AND p.role='user'`, promptID)
 		value, err := scanSamplingMetadata(row)
 		if err == sql.ErrNoRows {
 			continue
@@ -933,11 +933,11 @@ func sampleWarnings(query SampleQuery) []string {
 func (s *Store) sampleSessionText(sessionID string, pivot []byte) (*string, error) {
 	var value string
 	err := s.db.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
-		WHERE s.public_id=? AND p.searchable=1 AND p.occurrence_count>0 AND p.sample_key>=?
+		WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key>=?
 		ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	if err == sql.ErrNoRows {
 		err = s.db.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
-			WHERE s.public_id=? AND p.searchable=1 AND p.occurrence_count>0 AND p.sample_key<?
+			WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key<?
 			ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	}
 	if err == sql.ErrNoRows {

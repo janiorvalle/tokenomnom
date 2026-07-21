@@ -204,18 +204,19 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 			vaultSummary.ErrorCount = 1
 		}
 	}
-	runProvider := func(database *historystore.Store) {
+	runProvider := func(database *historystore.Store, completeAssistantScope bool) {
 		providerSummary, providerErr = indexer.Index(indexer.Options{
-			Store: database, Roots: roots, Providers: providers, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true,
+			Store: database, Roots: roots, Providers: providers, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: cfg.History.IndexAssistant,
+			CompleteAssistantScope: completeAssistantScope,
 		})
 		markProviderError()
 	}
 	if vaultSetupErr == nil {
 		vaultSummary, vaultErr = indexer.IndexVault(indexer.VaultOptions{
-			StorePath: historyPath, Vault: instance, Providers: providers, Now: func() time.Time { return attempt }, SkipRunRecord: true,
+			StorePath: historyPath, Vault: instance, Providers: providers, Now: func() time.Time { return attempt }, SkipRunRecord: true, IndexAssistant: cfg.History.IndexAssistant,
 			After: func(database *historystore.Store, current indexer.VaultSummary) error {
 				completedTogether = true
-				runProvider(database)
+				runProvider(database, len(providers) > 0 && current.ErrorCount == 0)
 				return database.RecordScopedRun(attempt, providerSummary.ErrorCount+current.ErrorCount, completeScope)
 			},
 		})
@@ -233,7 +234,7 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 			release()
 			return autoHistoryResult{}, errors.Join(vaultErr, openErr)
 		}
-		runProvider(database)
+		runProvider(database, false)
 		recordErr := database.RecordScopedRun(attempt, providerSummary.ErrorCount+vaultSummary.ErrorCount, completeScope)
 		closeErr := database.Close()
 		release()

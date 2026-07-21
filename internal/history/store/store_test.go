@@ -125,6 +125,10 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	if len(page.Sessions) != 1 || page.Sessions[0].SessionID != before.SessionID || page.Sessions[0].SourceHeadIDs[0] != before.SourceID {
 		t.Fatalf("migration changed stable IDs: before=%+v page=%+v", before, page)
 	}
+	promptPage, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny})
+	if err != nil || len(promptPage.Prompts) != 1 || promptPage.Prompts[0].PromptID != before.PromptIDs["native:p"] || promptPage.Prompts[0].Role != history.RoleUser || matchCount(t, database, "kept") != 1 {
+		t.Fatalf("migration changed prompt role/ID/FTS: before=%+v page=%+v err=%v", before, promptPage, err)
+	}
 	if extractorVersion, err := database.Meta("extractor_version"); err != nil || extractorVersion != fmt.Sprint(history.ExtractorVersion) {
 		t.Fatalf("migrated extractor version=%q err=%v", extractorVersion, err)
 	}
@@ -1516,6 +1520,33 @@ func sourceRef(path string, kind history.LocationKind) history.SourceReference {
 
 func head(source history.SourceReference, hash string, size, lines int64) history.SourceHead {
 	return history.SourceHead{Source: source, ContentSHA256: hash, Size: size, CompleteOffset: size, LineCount: lines, Available: true}
+}
+
+func TestAssistantConsentDisablePrunesRowsAndFTS(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	if err := database.ConfigureAssistantIndexing(true); err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/assistant-prune.jsonl", history.LocationProviderLive)
+	user := prompt("native:user", "user", "user retained", 1)
+	assistant := prompt("native:assistant", "assistant", "assistant removed", 2)
+	assistant.Role = history.RoleAssistant
+	assistant.Classification = history.ClassificationAssistant
+	if _, err := database.ApplySource(extraction("native:assistant-prune", "assistant-prune", source, user, assistant), head(source, "hash", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if matchCount(t, database, "assistant") != 1 {
+		t.Fatal("assistant prompt did not enter FTS")
+	}
+	if err := database.ConfigureAssistantIndexing(false); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := database.Stats()
+	indexed, indexedErr := database.AssistantIndexingEnabled()
+	if err != nil || indexedErr != nil || indexed || stats.Prompts != 1 || matchCount(t, database, "assistant") != 0 || matchCount(t, database, "retained") != 1 {
+		t.Fatalf("assistant prune stats=%+v indexed=%v err=%v indexedErr=%v", stats, indexed, err, indexedErr)
+	}
 }
 
 func prompt(key, nativeID, text string, line int64) history.Prompt {

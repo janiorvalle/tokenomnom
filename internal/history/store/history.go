@@ -171,6 +171,9 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 		if err != nil {
 			return err
 		}
+		if err := tx.restoreSourcePromptIDs(sourceID, promptIDs, promptDBIDs); err != nil {
+			return err
+		}
 		if err := tx.addOccurrences(locationID, sourceID, 0, promptDBIDs, extraction.Prompts, extraction.Occurrences); err != nil {
 			return err
 		}
@@ -668,6 +671,50 @@ func (tx *Tx) restoreVaultPromptIDs(provider history.Provider, sessionID int64, 
 			SELECT id FROM source_heads WHERE provider=? AND session_id=?
 		)`, logicalKey, provider, sessionID); err != nil {
 			return fmt.Errorf("remove restored provider prompt tombstone: %w", err)
+		}
+	}
+	return nil
+}
+
+func (tx *Tx) restoreSourcePromptIDs(sourceID int64, publicIDs map[string]string, databaseIDs map[string]int64) error {
+	rows, err := tx.tx.Query(`SELECT logical_key,prompt_public_id FROM prompt_tombstones
+		WHERE source_head_id=? ORDER BY deleted_at,prompt_public_id`, sourceID)
+	if err != nil {
+		return fmt.Errorf("list source prompt tombstones: %w", err)
+	}
+	tombstones := make(map[string]string)
+	for rows.Next() {
+		var logicalKey, publicID string
+		if err := rows.Scan(&logicalKey, &publicID); err != nil {
+			return fmt.Errorf("scan source prompt tombstone: %w", err)
+		}
+		if _, found := tombstones[logicalKey]; !found {
+			tombstones[logicalKey] = publicID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for logicalKey, restoredID := range tombstones {
+		databaseID, found := databaseIDs[logicalKey]
+		if !found {
+			continue
+		}
+		if currentID := publicIDs[logicalKey]; currentID != restoredID {
+			if err := tx.recordPublicIDAlias(currentID, restoredID, "prompt"); err != nil {
+				return err
+			}
+			if _, err := tx.tx.Exec(`UPDATE prompts SET public_id=?,sample_key=? WHERE id=?`, restoredID, sampleKey(restoredID), databaseID); err != nil {
+				return fmt.Errorf("restore source prompt ID: %w", err)
+			}
+			publicIDs[logicalKey] = restoredID
+		}
+		if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE source_head_id=? AND logical_key=?`, sourceID, logicalKey); err != nil {
+			return fmt.Errorf("remove restored source prompt tombstone: %w", err)
 		}
 	}
 	return nil
@@ -1540,10 +1587,30 @@ func (tx *Tx) tombstoneSourceOrphans(sourceID int64, reason string) error {
 		WHERE sh.id=? GROUP BY sh.id,p.id HAVING p.occurrence_count=COUNT(o.id)`, reason, time.Now().Unix(), sourceID); err != nil {
 		return fmt.Errorf("record bounded history prompt tombstones: %w", err)
 	}
-	if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE source_head_id=? AND id NOT IN (
-		SELECT id FROM prompt_tombstones WHERE source_head_id=? ORDER BY deleted_at DESC,id DESC LIMIT 256
+	if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE source_head_id=? AND reason<>'role-disabled' AND id NOT IN (
+		SELECT id FROM prompt_tombstones WHERE source_head_id=? AND reason<>'role-disabled' ORDER BY deleted_at DESC,id DESC LIMIT 256
 	)`, sourceID, sourceID); err != nil {
 		return fmt.Errorf("bound history prompt tombstones: %w", err)
+	}
+	return nil
+}
+
+func (tx *Tx) tombstoneAssistantPrompts() error {
+	deletedAt := time.Now().Unix()
+	if _, err := tx.tx.Exec(`INSERT INTO prompt_tombstones(source_head_id,provider,source_path,prompt_public_id,logical_key,reason,deleted_at)
+		SELECT sh.id,sh.provider,sh.source_path,p.public_id,p.logical_key,'role-disabled',?
+		FROM prompts p JOIN occurrences o ON o.prompt_id=p.id JOIN source_heads sh ON sh.id=o.source_head_id
+		WHERE p.role='assistant' GROUP BY sh.id,p.id`, deletedAt); err != nil {
+		return fmt.Errorf("tombstone disabled assistant source prompts: %w", err)
+	}
+	if _, err := tx.tx.Exec(`INSERT INTO vault_prompt_tombstones(archive,provider,session_public_id,logical_key,prompt_public_id,deleted_at)
+		SELECT l.archive,ps.provider,s.public_id,p.logical_key,p.public_id,?
+		FROM prompts p JOIN sessions s ON s.id=p.session_id JOIN occurrences o ON o.prompt_id=p.id
+		JOIN locations l ON l.id=o.location_id JOIN preserved_snapshots ps ON ps.id=l.snapshot_id
+		WHERE p.role='assistant' AND l.archive<>''
+		GROUP BY l.archive,ps.provider,s.public_id,p.logical_key,p.public_id
+		ON CONFLICT(archive,provider,session_public_id,logical_key) DO UPDATE SET prompt_public_id=excluded.prompt_public_id,deleted_at=excluded.deleted_at`, deletedAt); err != nil {
+		return fmt.Errorf("tombstone disabled assistant vault prompts: %w", err)
 	}
 	return nil
 }
@@ -1679,5 +1746,7 @@ func normalizedClassification(value history.Classification) history.Classificati
 }
 
 func searchablePrompt(value history.Prompt) bool {
-	return value.Searchable && !value.Oversized && value.Classification == history.ClassificationHuman && value.CleanText != ""
+	searchableRole := (value.Role == history.RoleUser && value.Classification == history.ClassificationHuman) ||
+		(value.Role == history.RoleAssistant && value.Classification == history.ClassificationAssistant)
+	return value.Searchable && !value.Oversized && searchableRole && value.CleanText != ""
 }

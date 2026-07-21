@@ -328,3 +328,158 @@ func TestPromptsShowRawCandidatesStatsAndCoverage(t *testing.T) {
 		t.Fatalf("multi-dimensional unknown groups=%+v", multi.Groups)
 	}
 }
+
+func TestRoleQueriesCursorCoverageAndStatistics(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	if err := database.ConfigureAssistantIndexing(true); err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/roles.jsonl", history.LocationProviderLive)
+	user := prompt("native:user", "user", "shared role phrase", 1)
+	assistant := prompt("native:assistant", "assistant", "shared role phrase", 2)
+	assistant.Role = history.RoleAssistant
+	assistant.Classification = history.ClassificationAssistant
+	extract := extraction("native:roles", "roles", source, user, assistant)
+	if _, err := database.ApplySource(extract, head(source, "roles", 100, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	emptySource := sourceRef("/provider/promptless.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:promptless", "promptless", emptySource), head(emptySource, "promptless", 10, 0), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkAssistantIndexingComplete(); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultPage, err := database.Search(SearchQuery{Query: "shared role phrase"})
+	if err != nil || len(defaultPage.Hits) != 1 || defaultPage.Hits[0].Role != history.RoleUser {
+		t.Fatalf("default role page=%+v err=%v", defaultPage, err)
+	}
+	assistantPage, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Role: "assistant", AssistantConsent: true}, Query: "shared role phrase"})
+	if err != nil || len(assistantPage.Hits) != 1 || assistantPage.Hits[0].Role != history.RoleAssistant {
+		t.Fatalf("assistant role page=%+v err=%v", assistantPage, err)
+	}
+	anyPage, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Role: "any", AssistantConsent: true, Limit: 1}, Query: "shared role phrase"})
+	if err != nil || len(anyPage.Hits) != 1 || !anyPage.Page.HasMore || anyPage.Page.NextCursor == "" || anyPage.Coverage.Roles.User.LogicalPrompts != 1 || anyPage.Coverage.Roles.Assistant.LogicalPrompts != 1 {
+		t.Fatalf("any role page=%+v err=%v", anyPage, err)
+	}
+	if _, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Role: "user", AssistantConsent: true, Cursor: anyPage.Page.NextCursor}, Query: "shared role phrase"}); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("role-mismatched cursor error=%v", err)
+	}
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{AssistantConsent: true}, GroupBy: []string{"role"}})
+	if err != nil || stats.LogicalPrompts != 1 || stats.RoleCounts.User.LogicalPrompts != 1 || stats.RoleCounts.Assistant.LogicalPrompts != 1 || len(stats.Groups) != 2 {
+		t.Fatalf("role stats=%+v err=%v", stats, err)
+	}
+	claudeSource := sourceRef("/provider/claude-user-only.jsonl", history.LocationProviderLive)
+	claudeSource.Provider = history.ProviderClaude
+	if _, err := database.ApplySource(extraction("native:claude-user-only", "claude-user-only", claudeSource, prompt("native:claude-user", "claude-user", "provider-only phrase", 1)), head(claudeSource, "claude-user", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	missingRole, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Provider: history.ProviderClaude, Role: "assistant", AssistantConsent: true}, Query: "provider-only phrase"})
+	if err != nil || len(missingRole.Hits) != 0 || len(missingRole.Warnings) == 0 {
+		t.Fatalf("missing provider role coverage=%+v err=%v", missingRole, err)
+	}
+}
+
+func TestRoleCoverageIgnoresUndatedPromptsForBounds(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/role-bounds.jsonl", history.LocationProviderLive)
+	undated := prompt("native:undated", "undated", "coverage phrase", 1)
+	undated.Timestamp = nil
+	dated := prompt("native:dated", "dated", "coverage phrase", 2)
+	when := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	dated.Timestamp = &when
+	if _, err := database.ApplySource(extraction("native:role-bounds", "role-bounds", source, undated, dated), head(source, "bounds", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	page, err := database.ListPrompts(PromptQuery{})
+	if err != nil || page.Coverage.Roles.User.FirstTimestamp == nil || page.Coverage.Roles.User.LastTimestamp == nil || page.Coverage.Roles.AssistantProviders == nil {
+		t.Fatalf("role bounds page=%+v err=%v", page, err)
+	}
+}
+
+func TestMaterialRoleCoverageDifferenceIncludesFirstBound(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	if err := database.ConfigureAssistantIndexing(true); err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/material-role-bounds.jsonl", history.LocationProviderLive)
+	user := prompt("native:old-user", "old-user", "coverage difference phrase", 1)
+	assistant := prompt("native:recent-assistant", "recent-assistant", "coverage difference phrase", 2)
+	assistant.Role = history.RoleAssistant
+	assistant.Classification = history.ClassificationAssistant
+	oldTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	recentTime := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	user.Timestamp = &oldTime
+	assistant.Timestamp = &recentTime
+	if _, err := database.ApplySource(extraction("native:material-role-bounds", "material-role-bounds", source, user, assistant), head(source, "material-bounds", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkAssistantIndexingComplete(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Role: "any", AssistantConsent: true}, Query: "coverage difference phrase"})
+	if err != nil || len(page.Hits) != 2 || len(page.Warnings) == 0 || !strings.Contains(page.Warnings[0], "coverage differs materially") {
+		t.Fatalf("material role coverage page=%+v err=%v", page, err)
+	}
+}
+
+func TestAssistantQueriesRespectCompletedProviderScope(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	if err := database.ConfigureAssistantIndexing(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range []history.Provider{history.ProviderCodex, history.ProviderClaude} {
+		source := sourceRef("/provider/"+string(provider)+"-assistant.jsonl", history.LocationProviderLive)
+		source.Provider = provider
+		assistant := prompt("native:"+string(provider), string(provider), "scoped assistant phrase", 1)
+		assistant.Role = history.RoleAssistant
+		assistant.Classification = history.ClassificationAssistant
+		if _, err := database.ApplySource(extraction("native:"+string(provider)+"-scope", string(provider)+"-scope", source, assistant), head(source, string(provider), 10, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.MarkAssistantIndexingComplete(history.ProviderCodex); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Role: "assistant", AssistantConsent: true}, Query: "scoped assistant phrase"})
+	if err != nil || len(partial.Hits) != 1 || partial.Hits[0].Provider != history.ProviderCodex || len(partial.Warnings) == 0 || len(partial.Coverage.Roles.AssistantProviders) != 1 {
+		t.Fatalf("partial provider scope=%+v err=%v", partial, err)
+	}
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{AssistantConsent: true}, GroupBy: []string{"role"}})
+	if err != nil || len(stats.Warnings) == 0 || !strings.Contains(strings.Join(stats.Warnings, " "), "indexed only for providers") {
+		t.Fatalf("partial provider stats=%+v err=%v", stats, err)
+	}
+	var assistantStrata int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sample_strata ss JOIN prompts p ON p.id=ss.unit_id WHERE ss.unit_kind='prompt' AND p.role='assistant'`).Scan(&assistantStrata); err != nil || assistantStrata != 0 {
+		t.Fatalf("assistant sample strata=%d err=%v", assistantStrata, err)
+	}
+	claude, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Provider: history.ProviderClaude, Role: "assistant", AssistantConsent: true}, Query: "scoped assistant phrase"})
+	if err != nil || len(claude.Hits) != 0 || len(claude.Warnings) == 0 || !strings.Contains(claude.Warnings[0], "not indexed") {
+		t.Fatalf("uncompleted provider scope=%+v err=%v", claude, err)
+	}
+}
+
+func TestUserCursorIgnoresAssistantConsentConfig(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/user-cursor-consent.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:user-cursor", "user-cursor", source,
+		prompt("native:first", "first", "cursor consent phrase", 1),
+		prompt("native:second", "second", "cursor consent phrase", 2),
+	), head(source, "cursor-consent", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	first, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Limit: 1}, Query: "cursor consent phrase"})
+	if err != nil || first.Page.NextCursor == "" {
+		t.Fatalf("first user cursor=%+v err=%v", first, err)
+	}
+	second, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Limit: 1, Cursor: first.Page.NextCursor, AssistantConsent: true}, Query: "cursor consent phrase"})
+	if err != nil || len(second.Hits) != 1 {
+		t.Fatalf("user cursor after consent change=%+v err=%v", second, err)
+	}
+}

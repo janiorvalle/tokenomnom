@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,34 @@ func TestExtractSyntheticRolloutSubagentOrigin(t *testing.T) {
 	}
 	if len(result.Diagnostics) < 4 {
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
+	}
+}
+
+func TestExtractAssistantConsentIndexesOnlyOutputText(t *testing.T) {
+	records := readRecords(t, filepath.Join("testdata", "history.jsonl"))
+	result := ExtractWithOptions(history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationProviderLive, Path: "rollout.jsonl"}, records, history.ExtractionOptions{IndexAssistant: true})
+	var assistants []history.Prompt
+	for _, prompt := range result.Prompts {
+		if prompt.Role == history.RoleAssistant {
+			assistants = append(assistants, prompt)
+		}
+	}
+	if len(assistants) != 1 || assistants[0].CleanText != "Sure." || assistants[0].Classification != history.ClassificationAssistant || !assistants[0].Searchable {
+		t.Fatalf("assistant prompts = %#v", assistants)
+	}
+	for _, prompt := range result.Prompts {
+		if strings.Contains(prompt.CleanText, "done") || strings.Contains(prompt.CleanText, "shell") {
+			t.Fatalf("tool content became searchable: %#v", prompt)
+		}
+	}
+}
+
+func TestExtractOversizedAssistantIsVisibleAndNotSearchable(t *testing.T) {
+	text := strings.Repeat("a", history.MaxPromptBytes+1)
+	record := jsonl.Record{Raw: []byte(fmt.Sprintf(`{"timestamp":"2026-07-20T12:00:00Z","type":"response_item","payload":{"type":"message","id":"assistant-large","role":"assistant","content":[{"type":"output_text","text":%q}]}}`, text)), LineNumber: 1, EndOffset: int64(len(text) + 200)}
+	result := ExtractWithOptions(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, []jsonl.Record{record}, history.ExtractionOptions{IndexAssistant: true})
+	if len(result.Prompts) != 1 || !result.Prompts[0].Oversized || result.Prompts[0].Searchable || len(result.Prompts[0].CleanText) != len(text) {
+		t.Fatalf("oversized assistant = %#v", result.Prompts)
 	}
 }
 

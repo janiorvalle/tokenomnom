@@ -28,26 +28,40 @@ type StatisticsGroup struct {
 
 // Statistics is a SQL-aggregated, prompt-text-free corpus summary.
 type Statistics struct {
-	LogicalSessions          int               `json:"logical_sessions"`
-	MutableSourceHeads       int               `json:"mutable_source_heads"`
-	PreservedSnapshots       int               `json:"preserved_snapshots"`
-	LogicalPrompts           int               `json:"logical_prompts"`
-	PromptOccurrences        int               `json:"prompt_occurrences"`
-	ActiveDays               int               `json:"active_days"`
-	PromptLengthTotalBytes   int64             `json:"prompt_length_total_bytes"`
-	PromptLengthMedianBytes  float64           `json:"prompt_length_median_bytes"`
-	ProviderLiveAvailable    int               `json:"provider_live_available"`
-	ProviderArchiveAvailable int               `json:"provider_archive_available"`
-	VaultAvailable           int               `json:"vault_available"`
-	IndexSizeBytes           int64             `json:"index_size_bytes"`
-	StaleCount               int               `json:"stale_count"`
-	ErrorCount               int               `json:"error_count"`
-	UnscopedErrorsExcluded   int               `json:"unscoped_errors_excluded"`
-	OversizedCount           int               `json:"oversized_count"`
-	Groups                   []StatisticsGroup `json:"groups"`
-	Coverage                 QueryCoverage     `json:"coverage"`
-	Warnings                 []string          `json:"-"`
-	Generation               int64             `json:"index_generation"`
+	LogicalSessions          int                  `json:"logical_sessions"`
+	MutableSourceHeads       int                  `json:"mutable_source_heads"`
+	PreservedSnapshots       int                  `json:"preserved_snapshots"`
+	LogicalPrompts           int                  `json:"logical_prompts"`
+	PromptOccurrences        int                  `json:"prompt_occurrences"`
+	ActiveDays               int                  `json:"active_days"`
+	PromptLengthTotalBytes   int64                `json:"prompt_length_total_bytes"`
+	PromptLengthMedianBytes  float64              `json:"prompt_length_median_bytes"`
+	ProviderLiveAvailable    int                  `json:"provider_live_available"`
+	ProviderArchiveAvailable int                  `json:"provider_archive_available"`
+	VaultAvailable           int                  `json:"vault_available"`
+	IndexSizeBytes           int64                `json:"index_size_bytes"`
+	StaleCount               int                  `json:"stale_count"`
+	ErrorCount               int                  `json:"error_count"`
+	UnscopedErrorsExcluded   int                  `json:"unscoped_errors_excluded"`
+	OversizedCount           int                  `json:"oversized_count"`
+	RoleCounts               StatisticsRoleCounts `json:"role_counts"`
+	Groups                   []StatisticsGroup    `json:"groups"`
+	Coverage                 QueryCoverage        `json:"coverage"`
+	Warnings                 []string             `json:"-"`
+	Generation               int64                `json:"index_generation"`
+}
+
+// StatisticsRoleCount is a text-free aggregate for one searchable role.
+type StatisticsRoleCount struct {
+	LogicalPrompts    int   `json:"logical_prompts"`
+	PromptOccurrences int   `json:"prompt_occurrences"`
+	PromptLengthBytes int64 `json:"prompt_length_bytes"`
+}
+
+// StatisticsRoleCounts keeps default user totals while disclosing role sizes.
+type StatisticsRoleCounts struct {
+	User      StatisticsRoleCount `json:"user"`
+	Assistant StatisticsRoleCount `json:"assistant"`
 }
 
 // Statistics computes all body-dependent aggregates in SQLite.
@@ -59,6 +73,14 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		return Statistics{}, fmt.Errorf("invalid history source %q", query.Source)
 	}
 	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if query.Role == "" {
+		query.Role = string(history.RoleUser)
+	}
+	var err error
+	query.PromptQuery, err = s.resolvePromptRole(query.PromptQuery)
+	if err != nil {
+		return Statistics{}, err
+	}
 	if !validThreadKindFilter(query.ThreadKind) {
 		return Statistics{}, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
 	}
@@ -66,9 +88,26 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	if err != nil {
 		return Statistics{}, err
 	}
+	groupByRole := false
+	for _, dimension := range dimensions {
+		groupByRole = groupByRole || dimension == "role"
+	}
 	coverage, warnings, err := s.promptCoverage(query.PromptQuery)
 	if err != nil {
 		return Statistics{}, err
+	}
+	if query.AssistantConsent {
+		roleWarningQuery := query.PromptQuery
+		roleWarningQuery.Role = "any"
+		for _, warning := range assistantIndexWarnings(roleWarningQuery) {
+			found := false
+			for _, existing := range warnings {
+				found = found || existing == warning
+			}
+			if !found {
+				warnings = append(warnings, warning)
+			}
+		}
 	}
 	generation, err := s.indexGeneration()
 	if err != nil {
@@ -133,6 +172,24 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	); err != nil {
 		return Statistics{}, fmt.Errorf("read history statistics: %w", err)
 	}
+	roleQuery := query.PromptQuery
+	roleQuery.Role = "any"
+	roleFilters, roleArgs := promptWhere(roleQuery, true, "p", "s")
+	roleStatement := `WITH selected_sessions AS (SELECT s.* FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
+		available_prompts AS (
+			SELECT p.*,(SELECT COUNT(*) FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) AS available_occurrences
+			FROM prompts p JOIN selected_sessions s ON s.id=p.session_id WHERE ` + strings.Join(roleFilters, " AND ") + `)
+		SELECT
+		COUNT(CASE WHEN role='user' THEN 1 END),COALESCE(SUM(CASE WHEN role='user' THEN available_occurrences ELSE 0 END),0),COALESCE(SUM(CASE WHEN role='user' THEN length(CAST(clean_text AS BLOB)) ELSE 0 END),0),
+		COUNT(CASE WHEN role='assistant' THEN 1 END),COALESCE(SUM(CASE WHEN role='assistant' THEN available_occurrences ELSE 0 END),0),COALESCE(SUM(CASE WHEN role='assistant' THEN length(CAST(clean_text AS BLOB)) ELSE 0 END),0)
+		FROM available_prompts`
+	roleQueryArgs := append([]any{}, sessionArgs...)
+	roleQueryArgs = append(roleQueryArgs, roleArgs...)
+	if err := s.db.QueryRow(roleStatement, roleQueryArgs...).Scan(
+		&value.RoleCounts.User.LogicalPrompts, &value.RoleCounts.User.PromptOccurrences, &value.RoleCounts.User.PromptLengthBytes,
+		&value.RoleCounts.Assistant.LogicalPrompts, &value.RoleCounts.Assistant.PromptOccurrences, &value.RoleCounts.Assistant.PromptLengthBytes); err != nil {
+		return Statistics{}, fmt.Errorf("read history role statistics: %w", err)
+	}
 	var unscopedErrors int
 	if err := s.db.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM source_errors se WHERE NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.provider=se.provider AND sh.source_path=se.source_path))+
@@ -152,14 +209,22 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		return Statistics{}, fmt.Errorf("stat history index: %w", statErr)
 	}
 	if len(dimensions) > 0 {
+		groupQuery := query.PromptQuery
+		if groupByRole {
+			groupQuery.Role = "any"
+		}
+		groupFilters, groupPromptArgs := promptWhere(groupQuery, true, "p", "s")
+		groupCTE := `WITH selected_sessions AS (SELECT s.* FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
+			available_prompts AS (
+				SELECT p.*,(SELECT COUNT(*) FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) AS available_occurrences
+				FROM prompts p JOIN selected_sessions s ON s.id=p.session_id WHERE ` + strings.Join(groupFilters, " AND ") + `)`
 		groupArgs := append([]any{}, sessionArgs...)
-		groupArgs = append(groupArgs, promptArgs...)
-		groupArgs = append(groupArgs, promptArgs...)
+		groupArgs = append(groupArgs, groupPromptArgs...)
 		groupSessionsFollowPrompts := promptScopedSessions
 		for _, dimension := range dimensions {
-			groupSessionsFollowPrompts = groupSessionsFollowPrompts || dimension == "weekday" || dimension == "hour"
+			groupSessionsFollowPrompts = groupSessionsFollowPrompts || dimension == "weekday" || dimension == "hour" || dimension == "role"
 		}
-		value.Groups, err = s.statisticsGroups(cte, groupArgs, dimensions, expressions, groupSessionsFollowPrompts)
+		value.Groups, err = s.statisticsGroups(groupCTE, groupArgs, dimensions, expressions, groupSessionsFollowPrompts)
 		if err != nil {
 			return Statistics{}, err
 		}
@@ -181,6 +246,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 		"thread-kind": "s.thread_kind",
 		"weekday":     "CASE strftime('%w',p.timestamp) WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' WHEN '6' THEN 'Saturday' ELSE 'unknown' END",
 		"hour":        "CASE WHEN p.timestamp IS NULL OR p.timestamp='' THEN 'unknown' ELSE strftime('%H',p.timestamp) END",
+		"role":        "p.role",
 	}
 	seen := map[string]bool{}
 	dimensions, expressions := []string{}, []string{}
@@ -191,7 +257,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 		}
 		expression, ok := expressionByDimension[value]
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, repo, cwd, thread-kind, weekday, or hour)", value)
+			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, repo, cwd, thread-kind, weekday, hour, or role)", value)
 		}
 		seen[value] = true
 		dimensions = append(dimensions, value)
