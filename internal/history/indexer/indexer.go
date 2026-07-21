@@ -136,6 +136,13 @@ func Index(options Options) (Summary, error) {
 		}
 		summary.IndexedSources++
 		summary.IndexedPrompts += len(indexed.Prompts)
+		for _, diagnostic := range indexed.Diagnostics {
+			addIssue(&summary, Issue{
+				Provider: string(provider),
+				Path:     file.Path,
+				Error:    fmt.Sprintf("line %d: %s", diagnostic.LineNumber, diagnostic.Message),
+			}, false)
+		}
 		for _, prompt := range indexed.Prompts {
 			if prompt.Oversized {
 				summary.OversizedPrompts++
@@ -308,7 +315,14 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 		return fileRewrite, err
 	}
 	if file.Size == checkpoint.Size && prefix == checkpoint.PrefixFingerprint && tail == checkpoint.TailFingerprint {
-		return fileUnchanged, nil
+		continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
+		if err != nil {
+			return fileRewrite, err
+		}
+		if continuityHash == checkpoint.ContentSHA256 {
+			return fileUnchanged, nil
+		}
+		return fileRewrite, nil
 	}
 	if file.Size > checkpoint.Size && file.Size >= checkpoint.CompleteOffset && prefix == checkpoint.PrefixFingerprint && tail == checkpoint.TailFingerprint {
 		continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
@@ -323,8 +337,9 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 }
 
 type indexedFile struct {
-	Prompts []history.Prompt
-	Kind    fileKind
+	Prompts     []history.Prompt
+	Diagnostics []history.Diagnostic
+	Kind        fileKind
 }
 
 func indexFile(database *historystore.Store, file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, kind fileKind) (indexedFile, error) {
@@ -379,7 +394,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if _, err := database.ApplySourceWithGeneration(extraction, head, mode, advanceGeneration); err != nil {
 		return indexedFile{}, err
 	}
-	return indexedFile{Prompts: extraction.Prompts, Kind: kind}, nil
+	return indexedFile{Prompts: extraction.Prompts, Diagnostics: extraction.Diagnostics, Kind: kind}, nil
 }
 
 var errSourceChanged = errors.New("history source changed during indexing")
@@ -564,6 +579,13 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 		a.extraction.Prompts = append(a.extraction.Prompts, prompt)
 	}
 	a.extraction.Occurrences = append(a.extraction.Occurrences, part.Occurrences...)
+	remainingDiagnostics := maxIssues - len(a.extraction.Diagnostics)
+	if remainingDiagnostics > len(part.Diagnostics) {
+		remainingDiagnostics = len(part.Diagnostics)
+	}
+	if remainingDiagnostics > 0 {
+		a.extraction.Diagnostics = append(a.extraction.Diagnostics, part.Diagnostics[:remainingDiagnostics]...)
+	}
 	return nil
 }
 

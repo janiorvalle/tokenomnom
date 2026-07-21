@@ -212,6 +212,37 @@ func TestRewriteThenAppendRebuildsSource(t *testing.T) {
 	}
 }
 
+func TestSameSizeRewriteWithPreservedMtimeRebuildsSource(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("preserved-mtime.jsonl")
+	initial := codexMeta("preserved-mtime") + codexPrompt("p1", strings.Repeat("x", 100_000))
+	writeFile(t, path, initial)
+	env.index(t, false)
+	checkpoint := env.checkpoint(t, history.ProviderCodex, path)
+
+	rewritten := []byte(initial)
+	rewritten[5_000] = 'y'
+	writeFile(t, path, string(rewritten))
+	checkpointTime := time.Unix(0, checkpoint.ModTimeUnixNano)
+	if err := os.Chtimes(path, checkpointTime, checkpointTime); err != nil {
+		t.Fatal(err)
+	}
+	summary := env.index(t, false)
+	if summary.RewrittenSources != 1 || summary.SkippedSources != 0 {
+		t.Fatalf("preserved-mtime rewrite summary=%+v", summary)
+	}
+}
+
+func TestExtractionDiagnosticsBecomeBoundedWarnings(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("diagnostic.jsonl")
+	writeFile(t, path, codexMeta("diagnostic")+"not-json\n"+codexPrompt("p1", "accepted"))
+	summary := env.index(t, false)
+	if summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") {
+		t.Fatalf("diagnostic summary=%+v", summary)
+	}
+}
+
 func TestRewriteSameSizeAndShrink(t *testing.T) {
 	env := newEnvironment(t)
 	path := env.codexPath("rewrite.jsonl")
