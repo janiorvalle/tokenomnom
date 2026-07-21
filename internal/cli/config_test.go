@@ -64,6 +64,7 @@ func TestConfigShowAnnotatesEffectiveSources(t *testing.T) {
 		`providers = ["codex", "claude"] # default`,
 		`auto = true # default`,
 		`auto_index = false # default`,
+		`index_assistant = false # default`,
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("config show missing %q:\n%s", want, output.String())

@@ -67,19 +67,30 @@ type PendingResponse struct {
 
 // Extract normalizes complete positioned rollout records without DB writes.
 func Extract(source history.SourceReference, records []jsonl.Record) history.Extraction {
-	result, _ := ExtractWithState(source, records, State{})
+	result, _ := ExtractWithStateOptions(source, records, State{}, history.ExtractionOptions{})
+	return result
+}
+
+// ExtractWithOptions normalizes records using explicitly consented roles.
+func ExtractWithOptions(source history.SourceReference, records []jsonl.Record, options history.ExtractionOptions) history.Extraction {
+	result, _ := ExtractWithStateOptions(source, records, State{}, options)
 	return result
 }
 
 // ExtractWithSession carries a previously established session identity across
 // a positioned suffix read where session_meta is no longer present.
 func ExtractWithSession(source history.SourceReference, records []jsonl.Record, prior history.Session) history.Extraction {
-	result, _ := ExtractWithState(source, records, State{Session: prior})
+	result, _ := ExtractWithStateOptions(source, records, State{Session: prior}, history.ExtractionOptions{})
 	return result
 }
 
 // ExtractWithState preserves provider pairing state across a suffix read.
 func ExtractWithState(source history.SourceReference, records []jsonl.Record, state State) (history.Extraction, State) {
+	return ExtractWithStateOptions(source, records, state, history.ExtractionOptions{})
+}
+
+// ExtractWithStateOptions preserves state while applying explicit role consent.
+func ExtractWithStateOptions(source history.SourceReference, records []jsonl.Record, state State, options history.ExtractionOptions) (history.Extraction, State) {
 	result := history.Extraction{Provider: history.ProviderCodex, Source: source, Session: state.Session}
 	if result.Session.ThreadKind == "" {
 		result.Session.ThreadKind = history.ThreadUnknown
@@ -197,6 +208,16 @@ recordsLoop:
 				result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "malformed response_item payload excluded"})
 				continue
 			}
+			if response.Type == "message" && response.Role == "assistant" && options.IndexAssistant {
+				var text []string
+				for _, block := range response.Content {
+					if block.Type == "output_text" && block.Text != "" {
+						text = append(text, block.Text)
+					}
+				}
+				addPrompt(&result, seen, record, "", response.ID, history.RoleAssistant, strings.Join(text, "\n"), item.Timestamp, "response_item.message.output_text", true)
+				continue
+			}
 			if response.Type != "message" || response.Role != "user" {
 				classification := history.ClassificationProviderMetadata
 				if strings.Contains(response.Type, "output") {
@@ -275,8 +296,11 @@ func isSubagentSource(raw json.RawMessage) bool {
 func addPrompt(result *history.Extraction, seen map[string]int, record jsonl.Record, logicalKey, nativeID string, role history.Role, value, timestamp, evidence string, confirmedHuman bool) (history.Prompt, bool) {
 	clean, classification, searchable, oversized := history.CleanHumanText(value)
 	if clean == "" {
-		result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "empty user text excluded"})
+		result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "empty searchable text excluded"})
 		return history.Prompt{}, false
+	}
+	if role == history.RoleAssistant && classification == history.ClassificationHuman {
+		classification = history.ClassificationAssistant
 	}
 	if !confirmedHuman {
 		classification = history.ClassificationProviderMetadata

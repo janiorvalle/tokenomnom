@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 )
@@ -34,6 +35,11 @@ type historyQueryFlags struct {
 	cursor     string
 	threadKind string
 	rootOnly   bool
+	role       string
+}
+
+func (flags *historyQueryFlags) addRole(command *cobra.Command) {
+	command.Flags().StringVar(&flags.role, "role", "user", "filter by message role (user, assistant, or any)")
 }
 
 func (flags *historyQueryFlags) add(command *cobra.Command, defaultLimit int) {
@@ -72,6 +78,9 @@ func (flags historyQueryFlags) validate(command *cobra.Command) error {
 	if flags.threadKind != "all" && flags.threadKind != "root" && flags.threadKind != "subagent" && flags.threadKind != "unknown" {
 		return fmt.Errorf("invalid --thread-kind %q (expected root, subagent, unknown, or all)", flags.threadKind)
 	}
+	if flags.role != "" && flags.role != "user" && flags.role != "assistant" && flags.role != "any" {
+		return fmt.Errorf("invalid --role %q (expected user, assistant, or any)", flags.role)
+	}
 	if command.Flags().Changed("limit") && (flags.limit < 1 || flags.limit > 500) {
 		return errors.New("--limit must be between 1 and 500")
 	}
@@ -85,7 +94,8 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 	}
 	query := historystore.PromptQuery{
 		Provider: history.Provider(flags.provider), CWD: flags.cwd, Repo: flags.repo, Branch: flags.branch,
-		Source: historystore.CatalogSource(flags.source), ThreadKind: flags.effectiveThreadKind(), Limit: limit, Cursor: flags.cursor,
+		Source: historystore.CatalogSource(flags.source), ThreadKind: flags.effectiveThreadKind(), Role: flags.role,
+		AssistantConsent: appconfig.FromContext(command.Context()).Config.History.IndexAssistant, Limit: limit, Cursor: flags.cursor,
 	}
 	if flags.since != "" {
 		value, _ := time.Parse("2006-01-02", flags.since)
@@ -100,7 +110,7 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 }
 
 func (flags historyQueryFlags) jsonFilters() jsonFilters {
-	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until), ThreadKind: optionalString(flags.effectiveThreadKind())}
+	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until), ThreadKind: optionalString(flags.effectiveThreadKind()), Role: optionalString(flags.role)}
 }
 
 func (flags historyQueryFlags) effectiveThreadKind() string {
@@ -115,7 +125,7 @@ func newHistorySearchCommand() *cobra.Command {
 	var includeText, ftsQuery bool
 	command := &cobra.Command{
 		Use:   "search <query>",
-		Short: "Search indexed human prompts",
+		Short: "Search indexed prompts",
 		Args:  cobra.ExactArgs(1),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(args[0]) == "" {
@@ -146,7 +156,11 @@ func newHistorySearchCommand() *cobra.Command {
 				if hit.Rank != nil {
 					rank = fmt.Sprintf("%.8g", *hit.Rank)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettyPreview(hit.Snippet))
+				if flags.role == "user" {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettyPreview(hit.Snippet))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, hit.Role, timestamp, rank, safePrettyPreview(hit.Snippet))
+				}
 				if includeText && hit.Text != nil {
 					fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*hit.Text))
 				}
@@ -157,6 +171,7 @@ func newHistorySearchCommand() *cobra.Command {
 		},
 	}
 	flags.add(command, 50)
+	flags.addRole(command)
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
 	command.Flags().BoolVar(&ftsQuery, "fts-query", false, "interpret query as raw SQLite FTS5 syntax")
 	return command
@@ -167,7 +182,7 @@ func newHistoryPromptsCommand() *cobra.Command {
 	var includeText, allOccurrences bool
 	command := &cobra.Command{
 		Use:     "prompts",
-		Short:   "List indexed human prompts",
+		Short:   "List indexed prompts",
 		Args:    cobra.NoArgs,
 		PreRunE: func(cmd *cobra.Command, _ []string) error { return flags.validate(cmd) },
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -189,7 +204,11 @@ func newHistoryPromptsCommand() *cobra.Command {
 				if prompt.Timestamp != nil {
 					timestamp = *prompt.Timestamp
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", prompt.PromptID, prompt.Provider, timestamp, safePrettyPreview(prompt.Snippet))
+				if flags.role == "user" {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", prompt.PromptID, prompt.Provider, timestamp, safePrettyPreview(prompt.Snippet))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", prompt.PromptID, prompt.Provider, prompt.Role, timestamp, safePrettyPreview(prompt.Snippet))
+				}
 				if includeText && prompt.Text != nil {
 					fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*prompt.Text))
 				}
@@ -200,6 +219,7 @@ func newHistoryPromptsCommand() *cobra.Command {
 		},
 	}
 	flags.add(command, 100)
+	flags.addRole(command)
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
 	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded source and snapshot occurrence provenance")
 	return command
@@ -339,6 +359,7 @@ func newHistoryStatsCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Sessions: %d\nPrompts: %d\nOccurrences: %d\nActive days: %d\nPrompt bytes: %d (median %.1f)\nIndex bytes: %d\n",
 				value.LogicalSessions, value.LogicalPrompts, value.PromptOccurrences, value.ActiveDays,
 				value.PromptLengthTotalBytes, value.PromptLengthMedianBytes, value.IndexSizeBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Role prompts: user=%d assistant=%d\n", value.RoleCounts.User.LogicalPrompts, value.RoleCounts.Assistant.LogicalPrompts)
 			if slices.Contains(groups, "weekday") || slices.Contains(groups, "hour") {
 				fmt.Fprintln(cmd.OutOrStdout(), "Time grouping: UTC")
 			}
@@ -356,7 +377,7 @@ func newHistoryStatsCommand() *cobra.Command {
 	flags.add(command, 100)
 	_ = command.Flags().MarkHidden("limit")
 	_ = command.Flags().MarkHidden("cursor")
-	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, thread-kind, weekday, and/or hour")
+	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, thread-kind, weekday, hour, and/or role")
 	return command
 }
 

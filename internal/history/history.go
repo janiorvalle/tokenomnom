@@ -5,7 +5,7 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 2
+	ExtractorVersion = 3
 	// RelationshipRuleVersion identifies the deterministic provider rules used
 	// to classify threads and extract conversational relationships.
 	RelationshipRuleVersion = 1
@@ -47,6 +47,7 @@ type Classification string
 
 const (
 	ClassificationHuman            Classification = "human"
+	ClassificationAssistant        Classification = "assistant"
 	ClassificationSystemInjected   Classification = "system_injected"
 	ClassificationToolResult       Classification = "tool_result"
 	ClassificationLocalCommand     Classification = "local_command"
@@ -54,6 +55,11 @@ const (
 	ClassificationProviderMetadata Classification = "provider_metadata"
 	ClassificationUnknown          Classification = "unknown"
 )
+
+// ExtractionOptions controls explicitly consented searchable roles.
+type ExtractionOptions struct {
+	IndexAssistant bool
+}
 
 // Confidence describes how directly a normalized value is supported.
 type Confidence string

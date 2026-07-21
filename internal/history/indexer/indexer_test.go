@@ -442,6 +442,79 @@ func TestExtractorVersionRebuild(t *testing.T) {
 	}
 }
 
+func TestAssistantConsentRebuildsAndDisablePrunes(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("assistant-consent.jsonl")
+	writeFile(t, path, codexMeta("assistant-consent")+codexPrompt("p1", "user baseline")+codexAssistant("a1", "assistant proposal"))
+	env.index(t, false)
+	before, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny})
+	if err != nil || len(before.Prompts) != 1 || env.health(t).AssistantPrompts != 0 {
+		t.Fatalf("default corpus page=%+v health=%+v err=%v", before, env.health(t), err)
+	}
+	userID := before.Prompts[0].PromptID
+
+	enabled, err := Index(Options{Store: env.database, Roots: env.roots, IndexAssistant: true})
+	if err != nil || enabled.RewrittenSources != 1 {
+		t.Fatalf("assistant rebuild summary=%+v err=%v", enabled, err)
+	}
+	health := env.health(t)
+	if health.AssistantIndexed || health.UserPrompts != 1 || health.AssistantPrompts != 1 || health.StaleSources != 0 {
+		t.Fatalf("partial assistant health = %+v", health)
+	}
+	partial, err := env.database.Search(historystore.SearchQuery{PromptQuery: historystore.PromptQuery{Role: "assistant", AssistantConsent: true}, Query: "assistant proposal"})
+	if err != nil || len(partial.Hits) != 0 || len(partial.Warnings) == 0 {
+		t.Fatalf("partial assistant search=%+v err=%v", partial, err)
+	}
+	completed, err := Index(Options{Store: env.database, Roots: env.roots, IndexAssistant: true, CompleteAssistantScope: true})
+	if err != nil || completed.SkippedSources != 1 {
+		t.Fatalf("assistant completion summary=%+v err=%v", completed, err)
+	}
+	health = env.health(t)
+	if !health.AssistantIndexed || health.UserPrompts != 1 || health.AssistantPrompts != 1 || health.StaleSources != 0 {
+		t.Fatalf("assistant health = %+v", health)
+	}
+	catalog, err := env.database.ListCatalog(historystore.CatalogQuery{Source: historystore.CatalogSourceAny})
+	if err != nil || len(catalog.Sessions) != 1 || catalog.Sessions[0].LogicalPromptCount != 1 || catalog.Sessions[0].OccurrenceCount != 1 {
+		t.Fatalf("user-default catalog=%+v err=%v", catalog, err)
+	}
+	assistant, err := env.database.Search(historystore.SearchQuery{PromptQuery: historystore.PromptQuery{Role: "assistant", AssistantConsent: true}, Query: "assistant proposal"})
+	if err != nil || len(assistant.Hits) != 1 || assistant.Hits[0].Role != history.RoleAssistant {
+		t.Fatalf("assistant search=%+v err=%v", assistant, err)
+	}
+	assistantID := assistant.Hits[0].PromptID
+	defaults, err := env.database.Search(historystore.SearchQuery{Query: "assistant proposal"})
+	if err != nil || len(defaults.Hits) != 0 {
+		t.Fatalf("default role changed: page=%+v err=%v", defaults, err)
+	}
+	afterEnable, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny})
+	if err != nil || len(afterEnable.Prompts) != 1 || afterEnable.Prompts[0].PromptID != userID {
+		t.Fatalf("user ID changed after role rebuild: before=%+v after=%+v err=%v", before, afterEnable, err)
+	}
+
+	disabled, err := Index(Options{Store: env.database, Roots: env.roots})
+	if err != nil || disabled.SkippedSources != 1 {
+		t.Fatalf("assistant prune summary=%+v err=%v", disabled, err)
+	}
+	health = env.health(t)
+	if health.AssistantIndexed || health.AssistantPrompts != 0 || health.UserPrompts != 1 {
+		t.Fatalf("assistant prune health = %+v", health)
+	}
+	notIndexed, err := env.database.Search(historystore.SearchQuery{PromptQuery: historystore.PromptQuery{Role: "assistant", AssistantConsent: false}, Query: "assistant proposal"})
+	if err != nil || len(notIndexed.Hits) != 0 || len(notIndexed.Warnings) == 0 || !strings.Contains(notIndexed.Warnings[0], "assistant content is not indexed") {
+		t.Fatalf("disabled assistant search=%+v err=%v", notIndexed, err)
+	}
+	if _, err := Index(Options{Store: env.database, Roots: env.roots, IndexAssistant: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Index(Options{Store: env.database, Roots: env.roots, IndexAssistant: true, CompleteAssistantScope: true}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := env.database.Search(historystore.SearchQuery{PromptQuery: historystore.PromptQuery{Role: "assistant", AssistantConsent: true}, Query: "assistant proposal"})
+	if err != nil || len(restored.Hits) != 1 || restored.Hits[0].PromptID != assistantID {
+		t.Fatalf("restored assistant ID=%+v want=%s err=%v", restored, assistantID, err)
+	}
+}
+
 func TestConcurrentIndexAttempts(t *testing.T) {
 	env := newEnvironment(t)
 	release, err := historystore.Lock(env.database.Path())
@@ -594,6 +667,10 @@ func codexMeta(sessionID string) string {
 
 func codexPrompt(id, text string) string {
 	return fmt.Sprintf("{\"timestamp\":\"2026-07-20T12:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"client_id\":%q,\"message\":%q}}\n", id, text)
+}
+
+func codexAssistant(id, text string) string {
+	return fmt.Sprintf("{\"timestamp\":\"2026-07-20T12:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":%q,\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":%q}]}}\n", id, text)
 }
 
 func claudePrompt(sessionID, messageID, text string) string {

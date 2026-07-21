@@ -74,6 +74,7 @@ func writeEffectiveConfig(cmd *cobra.Command, loaded appconfig.Loaded) {
 	writeConfigString(w, "auto_interval", cfg.Vault.AutoInterval, sources[appconfig.KeyVaultAutoInterval])
 	fmt.Fprintln(w, "\n[history]")
 	writeConfigBool(w, "auto_index", cfg.History.AutoIndex, sources[appconfig.KeyHistoryAutoIndex])
+	writeConfigBool(w, "index_assistant", cfg.History.IndexAssistant, sources[appconfig.KeyHistoryAssistant])
 	writeConfigString(w, "auto_interval", cfg.History.AutoInterval, sources[appconfig.KeyHistoryInterval])
 	writeConfigStrings(w, "providers", cfg.History.Providers, sources[appconfig.KeyHistoryProviders])
 	fmt.Fprintln(w, "\n[schedule]")

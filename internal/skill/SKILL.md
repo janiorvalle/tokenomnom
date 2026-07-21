@@ -33,6 +33,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 - Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets, then retrieve selected evidence with `history show`.
+- Agent proposal/claim search: first check `doctor.data.history.index_assistant_enabled` and `assistant_indexed`, then use `history search "literal phrase" --role assistant --format json`; report the not-indexed warning honestly.
 - User-initiated transcript search: add `--root-only` only when the question is specifically about sessions the user started.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
 - Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; use `--include-text` only when complete clean prompts are necessary.
@@ -46,7 +47,7 @@ Provider, model, and explicit date filters are available on report commands.
 - Usage sync freshness says when token accounting last scanned provider logs.
 - Vault archive freshness says which byte-exact transcripts have been preserved;
   settled-file rules and the archive schedule can make it lag recent activity.
-- History-index freshness says which clean human prompts are currently covered
+- History-index freshness says which clean user and explicitly consented assistant prompts are currently covered
   by `history search`, `history list`, `history prompts`, and `history stats`.
 
 ## Mining
@@ -64,6 +65,8 @@ For "what did I work on" or "how did I prompt X":
    exact adjacent language. Follow `data.page.next_cursor` with identical filters.
    Literal search treats punctuation as token separation; use `--fts-query`
    only when boolean, NEAR, or prefix syntax is actually required.
+   Use `--role assistant` only for what the agent proposed or claimed;
+   `--role any` combines indexed roles. The default remains `--role user`.
 5. For broad corpus questions without known language, use deterministic
    stratified sampling: `tokenomnom history sample --group-by month,repo
    --count 25 --format json`. The default seed is stable; state the strata and
@@ -81,15 +84,15 @@ For "what did I work on" or "how did I prompt X":
    extend outside indexed coverage. Repository and branch metadata are
    Codex-complete but Claude-partial; prefer `--cwd` for cross-provider
    completeness and disclose that limitation in the final answer.
-9. Read `data.coverage.thread_kind.unknown`, disclose unknown relationship
+9. Read `data.coverage.roles` and `data.coverage.thread_kind.unknown`, disclose unknown relationship
    coverage. Root/subagent classification is evidence-backed but is not
    complete for every provider version or transcript, and state the searched
    index coverage in the final answer.
 
 Do not traverse provider directories unless tokenomnom reports an unsupported schema or index failure
-that prevents this workflow. The
-index contains clean human user prompts only at this stage; do not claim that
-search covers assistant, system, developer, tool-call, or tool-result text.
+that prevents this workflow. Assistant coverage exists only after explicit
+consent and indexing. Never claim that search covers system, developer,
+thinking, tool-call, or tool-result text.
 
 ## Reading JSON
 

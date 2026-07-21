@@ -87,12 +87,13 @@ tokenomnom export --out usage.csv
 Every report accepts provider, model, and date filters. `--no-sync` uses the
 stored data immediately when you are making several queries in a row.
 
-Build the local human-prompt history index explicitly and inspect its health:
+Build the local user-prompt history index explicitly and inspect its health:
 
 ```sh
 tokenomnom history index
 tokenomnom history search "do not implement" --since 2026-07-01
 tokenomnom history search "delegated task" --thread-kind subagent
+tokenomnom history search "proposed approach" --role assistant
 tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
@@ -118,10 +119,15 @@ Sampling walks indexed SHA-256 keys from a deterministic seed rather than
 sorting the corpus randomly. It defaults to 25 logical prompts, caps results at
 100, and stratifies deterministically when `--group-by month,repo,thread-kind`
 is supplied. Full prompt text still requires `--include-text`.
-Indexing is never run implicitly by usage reports or normal syncs. `history.db`
-contains derived plaintext prompt content and metadata, may be more sensitive
-than `usage.db`, and is excluded from automatic backups. Protect the state
-directory as you would the provider transcripts. `tokenomnom history purge` removes it without touching
+Indexing is never run implicitly by usage reports or normal syncs. User prompts
+remain the default corpus. Setting `history.index_assistant = true` is explicit
+consent to store assistant text blocks too; the next explicit or scheduled
+`history index` re-extracts affected sources. Assistant text typically dwarfs
+user text and can multiply plaintext storage. Disabling the setting prunes
+assistant rows on the next index run. `history.db` may be more sensitive than
+`usage.db` and is excluded from automatic backups. Protect the state directory
+as you would provider transcripts. `tokenomnom history purge` removes all indexed
+user and assistant plaintext without touching
 `usage.db`, provider transcripts, vault bundles, or config.
 
 ## Agents
@@ -207,6 +213,7 @@ auto_interval = "24h"
 
 [history]
 auto_index = false
+index_assistant = false
 auto_interval = "24h"
 providers = ["codex", "claude"]
 
@@ -226,6 +233,8 @@ from the source logs.
 `reports.charts = false` is the config equivalent of `--no-chart`,
 `reports.daily_last` supplies Daily's default `--last`, and
 `reports.default_provider` may be empty, `codex`, or `claude`.
+`history.index_assistant` has no environment variable or command-line override;
+enable it only in config, then run `history index`.
 
 After each successful sync, tokenomnom creates a due online SQLite backup.
 The default directory is `~/.local/share/tokenomnom/backups` on macOS and

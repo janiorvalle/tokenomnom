@@ -382,6 +382,79 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	}
 }
 
+func TestHistoryAssistantRoleConsentWorkflow(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	configDir := filepath.Join(root, "config")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	fixture := historyCodexFixture("roles", "roleword user") +
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"response_item","payload":{"type":"message","id":"assistant-1","role":"assistant","content":[{"type":"output_text","text":"roleword assistant proposal"}]}}` + "\n"
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "2026", "07", "roles.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	assertNotIndexed := func() {
+		t.Helper()
+		output, err := executeReport([]string{"history", "search", "roleword", "--role", "assistant", "--format", "json"}, codexDir, claudeDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelope := decodeEnvelope(t, output)
+		var page historystore.SearchPage
+		if json.Unmarshal(envelope.Data, &page) != nil || len(page.Hits) != 0 || len(envelope.Warnings) == 0 || !strings.Contains(envelope.Warnings[0], "assistant content is not indexed") {
+			t.Fatalf("assistant disabled envelope=%+v page=%+v", envelope, page)
+		}
+	}
+	assertNotIndexed()
+	writeTextFixture(t, filepath.Join(configDir, "config.toml"), "[history]\nindex_assistant = true\n")
+	assertNotIndexed()
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--provider", "codex"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	assertNotIndexed()
+
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeReport([]string{"history", "search", "roleword", "--role", "assistant", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistant historystore.SearchPage
+	if json.Unmarshal(decodeEnvelope(t, output).Data, &assistant) != nil || len(assistant.Hits) != 1 || assistant.Hits[0].Role != history.RoleAssistant {
+		t.Fatalf("assistant enabled page=%+v", assistant)
+	}
+	output, err = executeReport([]string{"history", "search", "roleword", "--role", "any", "--format", "json"}, codexDir, claudeDir)
+	var any historystore.SearchPage
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &any) != nil || len(any.Hits) != 2 {
+		t.Fatalf("any role err=%v page=%+v", err, any)
+	}
+	pretty, err := executeReport([]string{"history", "search", "roleword", "--role", "any"}, codexDir, claudeDir)
+	if err != nil || !strings.Contains(pretty, "\tuser\t") || !strings.Contains(pretty, "\tassistant\t") {
+		t.Fatalf("any role pretty output=%q err=%v", pretty, err)
+	}
+	pretty, err = executeReport([]string{"history", "prompts", "--role", "any"}, codexDir, claudeDir)
+	if err != nil || !strings.Contains(pretty, "\tuser\t") || !strings.Contains(pretty, "\tassistant\t") {
+		t.Fatalf("any role prompts output=%q err=%v", pretty, err)
+	}
+
+	writeTextFixture(t, filepath.Join(configDir, "config.toml"), "[history]\nindex_assistant = false\n")
+	assertNotIndexed()
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	statusOutput, err := executeReport([]string{"history", "status", "--format", "json"}, codexDir, claudeDir)
+	var status jsonHistoryHealth
+	if err != nil || json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status) != nil || status.AssistantIndexed || status.AssistantLogicalPrompts != 0 {
+		t.Fatalf("assistant prune err=%v status=%+v", err, status)
+	}
+}
+
 func TestHistoryRawFallsBackToExactVaultSnapshot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))

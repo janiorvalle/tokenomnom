@@ -19,18 +19,23 @@ const maxPromptProvenanceIDs = 100
 
 // PromptQuery selects a bounded page of available human prompts.
 type PromptQuery struct {
-	Provider       history.Provider
-	Since          *time.Time
-	Until          *time.Time
-	CWD            string
-	Repo           string
-	Branch         string
-	Source         CatalogSource
-	ThreadKind     string
-	Limit          int
-	Cursor         string
-	IncludeText    bool
-	AllOccurrences bool
+	Provider                 history.Provider
+	Role                     string
+	AssistantConsent         bool
+	Since                    *time.Time
+	Until                    *time.Time
+	CWD                      string
+	Repo                     string
+	Branch                   string
+	Source                   CatalogSource
+	ThreadKind               string
+	Limit                    int
+	Cursor                   string
+	IncludeText              bool
+	AllOccurrences           bool
+	assistantIndexed         bool
+	assistantProviders       []history.Provider
+	assistantCoveragePartial bool
 }
 
 // SearchQuery adds an FTS expression to the shared prompt filters.
@@ -54,6 +59,22 @@ type QueryCoverage struct {
 	Repository     FieldCoverage      `json:"repository"`
 	Branch         FieldCoverage      `json:"branch"`
 	ThreadKind     ThreadKindCoverage `json:"thread_kind"`
+	Roles          RoleQueryCoverage  `json:"roles"`
+}
+
+// RoleCoverage discloses searchable prompt counts and date bounds per role.
+type RoleCoverage struct {
+	LogicalPrompts int     `json:"logical_prompts"`
+	FirstTimestamp *string `json:"first_timestamp"`
+	LastTimestamp  *string `json:"last_timestamp"`
+}
+
+// RoleQueryCoverage reports independently bounded user and assistant corpora.
+type RoleQueryCoverage struct {
+	AssistantIndexed   bool               `json:"assistant_indexed"`
+	AssistantProviders []history.Provider `json:"assistant_providers"`
+	User               RoleCoverage       `json:"user"`
+	Assistant          RoleCoverage       `json:"assistant"`
 }
 
 // PromptOccurrence is bounded provenance for one exact prompt occurrence.
@@ -76,6 +97,7 @@ type PromptResult struct {
 	PromptID                    string                `json:"prompt_id"`
 	SessionID                   string                `json:"session_id"`
 	Provider                    history.Provider      `json:"provider"`
+	Role                        history.Role          `json:"role"`
 	Timestamp                   *string               `json:"timestamp"`
 	RepositoryName              *string               `json:"repository_name"`
 	CWD                         string                `json:"cwd,omitempty"`
@@ -119,24 +141,26 @@ type PromptsPage struct {
 }
 
 type promptCursor struct {
-	Version    int           `json:"v"`
-	Kind       string        `json:"kind"`
-	Generation int64         `json:"generation"`
-	Provider   string        `json:"provider"`
-	Since      string        `json:"since"`
-	Until      string        `json:"until"`
-	CWD        string        `json:"cwd"`
-	Repo       string        `json:"repo"`
-	Branch     string        `json:"branch"`
-	Source     CatalogSource `json:"source"`
-	ThreadKind string        `json:"thread_kind"`
-	Query      string        `json:"query,omitempty"`
-	FTSQuery   bool          `json:"fts_query,omitempty"`
-	Limit      int           `json:"limit"`
-	RankBits   string        `json:"rank_bits,omitempty"`
-	Unknown    bool          `json:"unknown"`
-	Timestamp  string        `json:"timestamp"`
-	PromptID   string        `json:"prompt_id"`
+	Version          int           `json:"v"`
+	Kind             string        `json:"kind"`
+	Generation       int64         `json:"generation"`
+	Provider         string        `json:"provider"`
+	Role             string        `json:"role"`
+	AssistantConsent bool          `json:"assistant_consent"`
+	Since            string        `json:"since"`
+	Until            string        `json:"until"`
+	CWD              string        `json:"cwd"`
+	Repo             string        `json:"repo"`
+	Branch           string        `json:"branch"`
+	Source           CatalogSource `json:"source"`
+	ThreadKind       string        `json:"thread_kind"`
+	Query            string        `json:"query,omitempty"`
+	FTSQuery         bool          `json:"fts_query,omitempty"`
+	Limit            int           `json:"limit"`
+	RankBits         string        `json:"rank_bits,omitempty"`
+	Unknown          bool          `json:"unknown"`
+	Timestamp        string        `json:"timestamp"`
+	PromptID         string        `json:"prompt_id"`
 }
 
 // Search returns literal phrase search by default. Raw FTS5 syntax is accepted
@@ -146,6 +170,11 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 		return SearchPage{}, errors.New("history search query must not be empty")
 	}
 	query.PromptQuery, _ = normalizePromptQuery(query.PromptQuery, 50)
+	var err error
+	query.PromptQuery, err = s.resolvePromptRole(query.PromptQuery)
+	if err != nil {
+		return SearchPage{}, err
+	}
 	if err := validatePromptQuery(query.PromptQuery); err != nil {
 		return SearchPage{}, err
 	}
@@ -172,14 +201,14 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
 	args = append([]any{match, query.IncludeText}, args...)
 	statement := `WITH matched AS (
-		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.timestamp,
+		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.timestamp,
 			s.repository_name,s.cwd,s.branch,bm25(prompt_fts) AS rank,
 			` + sqliteTimestampKey("p.timestamp") + ` AS sort_ts,
 			snippet(prompt_fts,0,'[',']',' ... ',24) AS snippet,
 			CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
 		FROM prompt_fts JOIN prompts p ON p.id=prompt_fts.rowid JOIN sessions s ON s.id=p.session_id
 		WHERE prompt_fts MATCH ? AND ` + strings.Join(where, " AND ") + `)
-		SELECT id,prompt_id,session_id,provider,timestamp,repository_name,cwd,branch,rank,sort_ts,snippet,full_text
+		SELECT id,prompt_id,session_id,provider,role,timestamp,repository_name,cwd,branch,rank,sort_ts,snippet,full_text
 		FROM matched`
 	// IncludeText precedes MATCH in SQL, so repair the argument order.
 	args[0], args[1] = args[1], args[0]
@@ -226,6 +255,11 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 // ListPrompts returns clean logical human prompts without FTS ranking.
 func (s *Store) ListPrompts(query PromptQuery) (PromptsPage, error) {
 	query, _ = normalizePromptQuery(query, 100)
+	var err error
+	query, err = s.resolvePromptRole(query)
+	if err != nil {
+		return PromptsPage{}, err
+	}
 	if err := validatePromptQuery(query); err != nil {
 		return PromptsPage{}, err
 	}
@@ -258,7 +292,7 @@ func (s *Store) ListPrompts(query PromptQuery) (PromptsPage, error) {
 	queryArgs := []any{query.IncludeText}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.timestamp,s.repository_name,s.cwd,s.branch,
+	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,` + sortExpr + `,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY (` + sortExpr + `='') ASC,` + sortExpr + ` DESC,p.public_id ASC LIMIT ?`
@@ -292,11 +326,35 @@ func normalizePromptQuery(query PromptQuery, defaultLimit int) (PromptQuery, boo
 		query.Source = CatalogSourceAny
 	}
 	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if query.Role == "" {
+		query.Role = string(history.RoleUser)
+	}
 	usedDefault := query.Limit == 0 && query.Cursor == ""
 	if usedDefault {
 		query.Limit = defaultLimit
 	}
 	return query, usedDefault
+}
+
+func (s *Store) resolvePromptRole(query PromptQuery) (PromptQuery, error) {
+	providers, err := s.AssistantIndexingProviders()
+	if err != nil {
+		return query, err
+	}
+	if !query.AssistantConsent {
+		return query, nil
+	}
+	query.assistantProviders = append([]history.Provider(nil), providers...)
+	if query.Provider != "" {
+		for _, provider := range providers {
+			query.assistantIndexed = query.assistantIndexed || provider == query.Provider
+		}
+		query.assistantCoveragePartial = !query.assistantIndexed
+	} else {
+		query.assistantIndexed = len(providers) > 0
+		query.assistantCoveragePartial = len(providers) < 2
+	}
+	return query, nil
 }
 
 func validatePromptQuery(query PromptQuery) error {
@@ -305,6 +363,9 @@ func validatePromptQuery(query PromptQuery) error {
 	}
 	if !validThreadKindFilter(query.ThreadKind) {
 		return fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
+	if query.Role != string(history.RoleUser) && query.Role != string(history.RoleAssistant) && query.Role != "any" {
+		return fmt.Errorf("invalid history role %q", query.Role)
 	}
 	if query.Limit != 0 && (query.Limit < 1 || query.Limit > 500) {
 		return errors.New("history prompt limit must be between 1 and 500")
@@ -318,8 +379,36 @@ func literalFTSQuery(value string) string {
 
 func promptWhere(query PromptQuery, includeMetadataFilters bool, promptAlias, sessionAlias string) ([]string, []any) {
 	p, s := promptAlias+".", sessionAlias+"."
-	where := []string{p + "searchable=1", p + "role='user'", `EXISTS(SELECT 1 FROM occurrences qo JOIN locations ql ON ql.id=qo.location_id WHERE qo.prompt_id=` + p + `id AND ql.available=1)`}
+	where := []string{p + "searchable=1", `EXISTS(SELECT 1 FROM occurrences qo JOIN locations ql ON ql.id=qo.location_id WHERE qo.prompt_id=` + p + `id AND ql.available=1)`}
 	args := []any{}
+	assistantProviderClause := "1=0"
+	if len(query.assistantProviders) > 0 {
+		placeholders := make([]string, 0, len(query.assistantProviders))
+		for _, provider := range query.assistantProviders {
+			placeholders = append(placeholders, "?")
+			args = append(args, provider)
+		}
+		assistantProviderClause = s + "provider IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	switch query.Role {
+	case string(history.RoleAssistant):
+		if query.assistantIndexed {
+			where = append(where, p+"role='assistant' AND "+assistantProviderClause)
+		} else {
+			args = args[:0]
+			where = append(where, "1=0")
+		}
+	case "any":
+		if query.assistantIndexed {
+			where = append(where, "("+p+"role='user' OR ("+p+"role='assistant' AND "+assistantProviderClause+"))")
+		} else {
+			args = args[:0]
+			where = append(where, p+"role='user'")
+		}
+	default:
+		args = args[:0]
+		where = append(where, p+"role='user'")
+	}
 	if query.Provider != "" {
 		where = append(where, s+"provider=?")
 		args = append(args, query.Provider)
@@ -384,7 +473,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 		var timestamp, repo, cwd, branch, snippet, text sql.NullString
 		var rank sql.NullFloat64
 		var sortTimestamp string
-		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &timestamp, &repo, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
+		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &value.Role, &timestamp, &repo, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				_ = rows.Close()
 				return []PromptResult{}, nil
@@ -562,6 +651,26 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	coverageWhere, coverageArgs := promptWhere(coverageQuery, false, "p", "s")
 	var coverage QueryCoverage
 	coverage.FirstTimestamp, coverage.LastTimestamp = optionalCatalogString(first), optionalCatalogString(last)
+	coverage.Roles.AssistantIndexed = query.assistantIndexed
+	coverage.Roles.AssistantProviders = append([]history.Provider{}, query.assistantProviders...)
+	roleQuery := base
+	roleQuery.Role = "any"
+	roleWhere, roleArgs := promptWhere(roleQuery, true, "p", "s")
+	var userFirst, userLast, assistantFirst, assistantLast sql.NullString
+	if err := s.db.QueryRow(`SELECT
+		COUNT(CASE WHEN p.role='user' THEN 1 END),
+		MIN(CASE WHEN p.role='user' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END),
+		MAX(CASE WHEN p.role='user' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END),
+		COUNT(CASE WHEN p.role='assistant' THEN 1 END),
+		MIN(CASE WHEN p.role='assistant' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END),
+		MAX(CASE WHEN p.role='assistant' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END)
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(roleWhere, " AND "), roleArgs...).Scan(
+		&coverage.Roles.User.LogicalPrompts, &userFirst, &userLast,
+		&coverage.Roles.Assistant.LogicalPrompts, &assistantFirst, &assistantLast); err != nil {
+		return QueryCoverage{}, nil, fmt.Errorf("read history role coverage: %w", err)
+	}
+	coverage.Roles.User.FirstTimestamp, coverage.Roles.User.LastTimestamp = optionalCatalogString(userFirst), optionalCatalogString(userLast)
+	coverage.Roles.Assistant.FirstTimestamp, coverage.Roles.Assistant.LastTimestamp = optionalCatalogString(assistantFirst), optionalCatalogString(assistantLast)
 	if err := s.db.QueryRow(`SELECT
 		COUNT(DISTINCT CASE WHEN s.repository_name IS NOT NULL AND s.repository_name<>'' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.repository_name IS NULL OR s.repository_name='' THEN s.id END),
@@ -582,11 +691,46 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 		return QueryCoverage{}, nil, fmt.Errorf("read history query thread coverage: %w", err)
 	}
 	warnings := coverageWarnings(query, coverage)
+	if (query.Role == "any" || query.Role == string(history.RoleAssistant)) && query.assistantIndexed && materiallyDifferentRoleCoverage(coverage.Roles) {
+		warnings = append(warnings, "user and assistant role coverage differs materially; qualify conclusions using data.coverage.roles")
+	}
 	return coverage, warnings, nil
 }
 
+func materiallyDifferentRoleCoverage(coverage RoleQueryCoverage) bool {
+	if coverage.User.LogicalPrompts == 0 || coverage.Assistant.LogicalPrompts == 0 {
+		return coverage.User.LogicalPrompts != coverage.Assistant.LogicalPrompts
+	}
+	largerCount := max(coverage.User.LogicalPrompts, coverage.Assistant.LogicalPrompts)
+	countDifference := coverage.User.LogicalPrompts - coverage.Assistant.LogicalPrompts
+	if countDifference < 0 {
+		countDifference = -countDifference
+	}
+	if countDifference*5 > largerCount {
+		return true
+	}
+	return materiallyDifferentRoleBound(coverage.User.FirstTimestamp, coverage.Assistant.FirstTimestamp) ||
+		materiallyDifferentRoleBound(coverage.User.LastTimestamp, coverage.Assistant.LastTimestamp)
+}
+
+func materiallyDifferentRoleBound(user, assistant *string) bool {
+	if user == nil || assistant == nil {
+		return user != nil || assistant != nil
+	}
+	userTime, userErr := time.Parse(time.RFC3339Nano, *user)
+	assistantTime, assistantErr := time.Parse(time.RFC3339Nano, *assistant)
+	if userErr != nil || assistantErr != nil {
+		return *user != *assistant
+	}
+	difference := userTime.Sub(assistantTime)
+	if difference < 0 {
+		difference = -difference
+	}
+	return difference > 24*time.Hour
+}
+
 func coverageWarnings(query PromptQuery, coverage QueryCoverage) []string {
-	warnings := []string{}
+	warnings := assistantIndexWarnings(query)
 	if query.Repo != "" && coverage.Repository.Unknown > 0 {
 		warnings = append(warnings, fmt.Sprintf("--repo excluded %d session(s) with unknown repository metadata; repository coverage is Codex-complete and Claude-partial", coverage.Repository.Unknown))
 	}
@@ -622,8 +766,23 @@ func coverageWarnings(query PromptQuery, coverage QueryCoverage) []string {
 	return warnings
 }
 
+func assistantIndexWarnings(query PromptQuery) []string {
+	warnings := []string{}
+	if (query.Role == string(history.RoleAssistant) || query.Role == "any") && !query.assistantIndexed {
+		warnings = append(warnings, "assistant content is not indexed; set history.index_assistant=true and run tokenomnom history index")
+	}
+	if (query.Role == string(history.RoleAssistant) || query.Role == "any") && query.assistantCoveragePartial && query.assistantIndexed {
+		providers := make([]string, 0, len(query.assistantProviders))
+		for _, provider := range query.assistantProviders {
+			providers = append(providers, string(provider))
+		}
+		warnings = append(warnings, "assistant content is indexed only for providers: "+strings.Join(providers, ", ")+"; other provider coverage is unavailable")
+	}
+	return warnings
+}
+
 func newPromptCursor(kind string, query PromptQuery, generation int64, search string, fts bool, result PromptResult) promptCursor {
-	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
+	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Role: query.Role, AssistantConsent: cursorAssistantConsent(query), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
 	if result.Timestamp == nil {
 		cursor.Unknown = true
 	} else {
@@ -649,7 +808,7 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 	if cursor.Generation != generation {
 		return promptCursor{}, errors.New("history cursor is stale because the index generation changed")
 	}
-	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.Query != search || cursor.FTSQuery != fts {
+	if cursor.Provider != string(query.Provider) || cursor.Role != query.Role || cursor.AssistantConsent != cursorAssistantConsent(query) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.Query != search || cursor.FTSQuery != fts {
 		return promptCursor{}, errors.New("history cursor does not match the requested filters or query mode")
 	}
 	if cursor.Limit < 1 || cursor.Limit > 500 || cursor.PromptID == "" || (cursor.Unknown && cursor.Timestamp != "") || (!cursor.Unknown && !validCatalogTimestamp(cursor.Timestamp)) {
@@ -661,6 +820,10 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 		}
 	}
 	return cursor, nil
+}
+
+func cursorAssistantConsent(query PromptQuery) bool {
+	return query.Role != string(history.RoleUser) && query.AssistantConsent
 }
 
 func (cursor promptCursor) rank() (float64, error) {

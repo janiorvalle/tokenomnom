@@ -37,6 +37,7 @@ const (
 	KeyVaultAuto         = "vault.auto"
 	KeyVaultAutoInterval = "vault.auto_interval"
 	KeyHistoryAutoIndex  = "history.auto_index"
+	KeyHistoryAssistant  = "history.index_assistant"
 	KeyHistoryInterval   = "history.auto_interval"
 	KeyHistoryProviders  = "history.providers"
 	KeyScheduleInterval  = "schedule.interval"
@@ -46,7 +47,7 @@ var keys = []string{
 	KeyCodexDir, KeyClaudeDir, KeyTimezone, KeyColor, KeyCharts, KeyDailyLast,
 	KeyDefaultProvider, KeyBackupEnabled, KeyBackupInterval, KeyBackupDir, KeyBackupKeep,
 	KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval,
-	KeyHistoryAutoIndex, KeyHistoryInterval, KeyHistoryProviders,
+	KeyHistoryAutoIndex, KeyHistoryAssistant, KeyHistoryInterval, KeyHistoryProviders,
 	KeyScheduleInterval,
 }
 
@@ -96,9 +97,10 @@ type Schedule struct {
 }
 
 type History struct {
-	AutoIndex    bool     `toml:"auto_index" json:"auto_index"`
-	AutoInterval string   `toml:"auto_interval" json:"auto_interval"`
-	Providers    []string `toml:"providers" json:"providers"`
+	AutoIndex      bool     `toml:"auto_index" json:"auto_index"`
+	IndexAssistant bool     `toml:"index_assistant" json:"index_assistant"`
+	AutoInterval   string   `toml:"auto_interval" json:"auto_interval"`
+	Providers      []string `toml:"providers" json:"providers"`
 }
 
 func Defaults() Config {

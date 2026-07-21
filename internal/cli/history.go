@@ -45,6 +45,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 		Short: "Incrementally index provider transcript history",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			indexAssistant := appconfig.FromContext(cmd.Context()).Config.History.IndexAssistant
 			providers, err := historyProviders(provider)
 			if err != nil {
 				return err
@@ -97,7 +98,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			if source == "provider" {
 				err = runHistoryLocked(func(database *historystore.Store) error {
 					providerSummary, providerErr = indexer.Index(indexer.Options{
-						Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true,
+						Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true, IndexAssistant: indexAssistant,
 					})
 					markProviderError()
 					return database.RecordScopedRun(attempt, providerSummary.ErrorCount, false)
@@ -112,14 +113,15 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					vaultErr = openErr
 				} else {
 					vaultSummary, vaultErr = indexer.IndexVault(indexer.VaultOptions{
-						StorePath: path, Vault: instance, Providers: providers, Full: full, Now: func() time.Time { return attempt }, SkipRunRecord: source == "all",
+						StorePath: path, Vault: instance, Providers: providers, Full: full, Now: func() time.Time { return attempt }, SkipRunRecord: source == "all", IndexAssistant: indexAssistant,
 						After: func(database *historystore.Store, current indexer.VaultSummary) error {
 							combinedComplete = true
 							if source != "all" {
 								return nil
 							}
 							providerSummary, providerErr = indexer.Index(indexer.Options{
-								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true,
+								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
+								CompleteAssistantScope: provider == "" && current.ErrorCount == 0,
 							})
 							markProviderError()
 							return database.RecordScopedRun(attempt, providerSummary.ErrorCount+current.ErrorCount, provider == "")
@@ -132,7 +134,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					err = runHistoryLocked(func(database *historystore.Store) error {
 						if source == "all" {
 							providerSummary, providerErr = indexer.Index(indexer.Options{
-								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true,
+								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
 							})
 							markProviderError()
 							return database.RecordScopedRun(attempt, providerSummary.ErrorCount+vaultSummary.ErrorCount, provider == "")
@@ -473,6 +475,7 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Sessions:", health.Sessions)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Source heads:", health.SourceHeads)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Prompts:", health.Prompts)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "User/assistant:", health.UserPrompts, health.AssistantPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Occurrences:", health.Occurrences)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Vault snapshots:", health.PreservedSnapshots)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "Vault bundles/versions:", health.IndexedVaultBundles, health.IndexedVaultVersions)
@@ -481,6 +484,8 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 		coverage = dashIfEmpty(health.CoverageFirst) + " to " + dashIfEmpty(health.CoverageLast)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Coverage:", coverage)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "User coverage:", dashIfEmpty(health.UserCoverageFirst), dashIfEmpty(health.UserCoverageLast))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "Assistant coverage:", dashIfEmpty(health.AssistantCoverageFirst), dashIfEmpty(health.AssistantCoverageLast))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d / %d\n", "Stale/error/missing:", health.StaleSources, health.ErrorSources, health.MissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last index:", stringValue(optionalUnix(health.LastIndexUnix)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Index generation:", health.IndexGeneration)
@@ -495,6 +500,8 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 		}
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Auto-index enabled:", yesNo(cfg.AutoIndex))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Index assistant:", yesNo(cfg.IndexAssistant))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Assistant indexed:", yesNo(health.AssistantIndexed))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Auto interval:", cfg.AutoInterval)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last attempt:", stringValue(optionalUnix(health.LastAttemptUnix)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last success:", stringValue(optionalUnix(health.LastCompleteSuccessUnix)))
@@ -507,51 +514,60 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 }
 
 type jsonHistoryHealth struct {
-	Status                 string   `json:"status"`
-	DatabasePath           string   `json:"database_path"`
-	DatabaseSizeBytes      int64    `json:"database_size_bytes"`
-	SchemaVersion          int      `json:"schema_version"`
-	ExtractorVersion       int      `json:"extractor_version"`
-	LogicalSessions        int      `json:"logical_sessions"`
-	SourceHeads            int      `json:"source_heads"`
-	LogicalPrompts         int      `json:"logical_prompts"`
-	Occurrences            int      `json:"occurrences"`
-	LiveSources            int      `json:"live_sources"`
-	ProviderArchiveSources int      `json:"provider_archive_sources"`
-	PreservedSnapshots     int      `json:"preserved_snapshots"`
-	VaultLocations         int      `json:"vault_locations"`
-	ProviderLiveOnly       int      `json:"provider_live_only"`
-	ProviderArchiveOnly    int      `json:"provider_archive_only"`
-	VaultOnly              int      `json:"vault_only"`
-	ExactLiveAndVaulted    int      `json:"exact_live_and_vaulted"`
-	UnavailableMetadata    int      `json:"unavailable_metadata"`
-	IndexedVaultBundles    int      `json:"indexed_vault_bundles"`
-	IndexedVaultVersions   int      `json:"indexed_vault_versions"`
-	BrokenSkippedBundles   int      `json:"broken_skipped_bundles"`
-	CoverageFirst          *string  `json:"coverage_first"`
-	CoverageLast           *string  `json:"coverage_last"`
-	StaleSources           int      `json:"stale_sources"`
-	ErrorSources           int      `json:"error_sources"`
-	MissingSources         int      `json:"missing_sources"`
-	LastIndex              *string  `json:"last_index"`
-	LastAttempt            *string  `json:"last_attempt"`
-	LastCompleteSuccess    *string  `json:"last_complete_success"`
-	LastRunErrorCount      int      `json:"last_run_error_count"`
-	LastErrorSummary       *string  `json:"last_error_summary"`
-	AutoIndexEnabled       bool     `json:"auto_index_enabled"`
-	AutoInterval           string   `json:"auto_interval"`
-	Providers              []string `json:"providers"`
-	NextDue                *string  `json:"next_due"`
-	SamplingReady          bool     `json:"sampling_ready"`
-	IndexGeneration        int64    `json:"index_generation"`
-	InspectionError        *string  `json:"inspection_error"`
+	Status                  string   `json:"status"`
+	DatabasePath            string   `json:"database_path"`
+	DatabaseSizeBytes       int64    `json:"database_size_bytes"`
+	SchemaVersion           int      `json:"schema_version"`
+	ExtractorVersion        int      `json:"extractor_version"`
+	LogicalSessions         int      `json:"logical_sessions"`
+	SourceHeads             int      `json:"source_heads"`
+	LogicalPrompts          int      `json:"logical_prompts"`
+	UserLogicalPrompts      int      `json:"user_logical_prompts"`
+	AssistantLogicalPrompts int      `json:"assistant_logical_prompts"`
+	Occurrences             int      `json:"occurrences"`
+	LiveSources             int      `json:"live_sources"`
+	ProviderArchiveSources  int      `json:"provider_archive_sources"`
+	PreservedSnapshots      int      `json:"preserved_snapshots"`
+	VaultLocations          int      `json:"vault_locations"`
+	ProviderLiveOnly        int      `json:"provider_live_only"`
+	ProviderArchiveOnly     int      `json:"provider_archive_only"`
+	VaultOnly               int      `json:"vault_only"`
+	ExactLiveAndVaulted     int      `json:"exact_live_and_vaulted"`
+	UnavailableMetadata     int      `json:"unavailable_metadata"`
+	IndexedVaultBundles     int      `json:"indexed_vault_bundles"`
+	IndexedVaultVersions    int      `json:"indexed_vault_versions"`
+	BrokenSkippedBundles    int      `json:"broken_skipped_bundles"`
+	CoverageFirst           *string  `json:"coverage_first"`
+	CoverageLast            *string  `json:"coverage_last"`
+	UserCoverageFirst       *string  `json:"user_coverage_first"`
+	UserCoverageLast        *string  `json:"user_coverage_last"`
+	AssistantCoverageFirst  *string  `json:"assistant_coverage_first"`
+	AssistantCoverageLast   *string  `json:"assistant_coverage_last"`
+	StaleSources            int      `json:"stale_sources"`
+	ErrorSources            int      `json:"error_sources"`
+	MissingSources          int      `json:"missing_sources"`
+	LastIndex               *string  `json:"last_index"`
+	LastAttempt             *string  `json:"last_attempt"`
+	LastCompleteSuccess     *string  `json:"last_complete_success"`
+	LastRunErrorCount       int      `json:"last_run_error_count"`
+	LastErrorSummary        *string  `json:"last_error_summary"`
+	AutoIndexEnabled        bool     `json:"auto_index_enabled"`
+	IndexAssistantEnabled   bool     `json:"index_assistant_enabled"`
+	AssistantIndexed        bool     `json:"assistant_indexed"`
+	AutoInterval            string   `json:"auto_interval"`
+	Providers               []string `json:"providers"`
+	NextDue                 *string  `json:"next_due"`
+	SamplingReady           bool     `json:"sampling_ready"`
+	IndexGeneration         int64    `json:"index_generation"`
+	InspectionError         *string  `json:"inspection_error"`
 }
 
 func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 	return jsonHistoryHealth{
 		Status: historyStatusValue(health), DatabasePath: health.Path, DatabaseSizeBytes: health.SizeBytes,
 		SchemaVersion: health.SchemaVersion, ExtractorVersion: health.ExtractorVersion, LogicalSessions: health.Sessions,
-		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, Occurrences: health.Occurrences,
+		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, UserLogicalPrompts: health.UserPrompts,
+		AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,
 		LiveSources: health.LiveSources, ProviderArchiveSources: health.ProviderArchiveSources,
 		PreservedSnapshots: health.PreservedSnapshots, VaultLocations: health.VaultLocations,
 		ProviderLiveOnly: health.ProviderLiveOnly, ProviderArchiveOnly: health.ProviderArchiveOnly,
@@ -559,6 +575,8 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 		UnavailableMetadata: health.UnavailableMetadata, IndexedVaultBundles: health.IndexedVaultBundles,
 		IndexedVaultVersions: health.IndexedVaultVersions, BrokenSkippedBundles: health.BrokenSkippedBundles,
 		CoverageFirst: optionalString(health.CoverageFirst), CoverageLast: optionalString(health.CoverageLast),
+		UserCoverageFirst: optionalString(health.UserCoverageFirst), UserCoverageLast: optionalString(health.UserCoverageLast),
+		AssistantCoverageFirst: optionalString(health.AssistantCoverageFirst), AssistantCoverageLast: optionalString(health.AssistantCoverageLast),
 		StaleSources: health.StaleSources, ErrorSources: health.ErrorSources, MissingSources: health.MissingSources,
 		LastIndex: optionalUnix(health.LastIndexUnix), LastAttempt: optionalUnix(health.LastAttemptUnix),
 		LastCompleteSuccess: optionalUnix(health.LastCompleteSuccessUnix), SamplingReady: health.SamplingReady, IndexGeneration: health.IndexGeneration,
@@ -572,6 +590,7 @@ func configuredHistoryHealth(cmd *cobra.Command, health historystore.Health) jso
 	value := historyHealthJSON(health)
 	cfg := appconfig.FromContext(cmd.Context()).Config.History
 	value.AutoIndexEnabled = cfg.AutoIndex
+	value.IndexAssistantEnabled = cfg.IndexAssistant
 	value.AutoInterval = cfg.AutoInterval
 	value.Providers = append([]string(nil), cfg.Providers...)
 	if cfg.AutoIndex {

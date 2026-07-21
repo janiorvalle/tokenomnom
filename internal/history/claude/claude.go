@@ -48,19 +48,30 @@ type State struct {
 
 // Extract normalizes complete positioned transcript records without DB writes.
 func Extract(source history.SourceReference, records []jsonl.Record) history.Extraction {
-	return ExtractWithSession(source, records, history.Session{})
+	return ExtractWithOptions(source, records, history.ExtractionOptions{})
+}
+
+// ExtractWithOptions normalizes records using explicitly consented roles.
+func ExtractWithOptions(source history.SourceReference, records []jsonl.Record, options history.ExtractionOptions) history.Extraction {
+	result, _ := ExtractWithStateOptions(source, records, State{}, options)
+	return result
 }
 
 // ExtractWithSession carries a previously established session identity across
 // a positioned suffix read.
 func ExtractWithSession(source history.SourceReference, records []jsonl.Record, prior history.Session) history.Extraction {
-	result, _ := ExtractWithState(source, records, State{Session: prior})
+	result, _ := ExtractWithStateOptions(source, records, State{Session: prior}, history.ExtractionOptions{})
 	return result
 }
 
 // ExtractWithState preserves the extractor's stop decision across streamed
 // records and later suffix reads.
 func ExtractWithState(source history.SourceReference, records []jsonl.Record, state State) (history.Extraction, State) {
+	return ExtractWithStateOptions(source, records, state, history.ExtractionOptions{})
+}
+
+// ExtractWithStateOptions preserves state while applying explicit role consent.
+func ExtractWithStateOptions(source history.SourceReference, records []jsonl.Record, state State, options history.ExtractionOptions) (history.Extraction, State) {
 	result := history.Extraction{Provider: history.ProviderClaude, Source: source, Session: state.Session}
 	sourceFact := claudeSourceFact(source.Path)
 	if result.Session.ThreadKind == "" {
@@ -114,9 +125,14 @@ recordsLoop:
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationProviderMetadata, Message: "sidechain record excluded"})
 			continue
 		}
-		if item.Type != "user" {
+		assistant := options.IndexAssistant && item.Type == "assistant"
+		if item.Type != "user" && !assistant {
 			classification := history.ClassificationProviderMetadata
-			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "non-user transcript record excluded"})
+			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "non-searchable transcript record excluded"})
+			continue
+		}
+		if assistant && (item.IsMeta || item.Compact) {
+			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationAgentInstruction, Message: "assistant metadata record excluded"})
 			continue
 		}
 
@@ -125,11 +141,21 @@ recordsLoop:
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "malformed nested message excluded"})
 			continue
 		}
-		if msg.Role != "user" {
-			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "non-user nested message role excluded"})
+		expectedRole := "user"
+		role := history.RoleUser
+		if assistant {
+			expectedRole = "assistant"
+			role = history.RoleAssistant
+		}
+		if msg.Role != expectedRole {
+			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "mismatched nested message role excluded"})
 			continue
 		}
 		text, toolResult := textContent(msg.Content)
+		if assistant {
+			text = textBlockContent(msg.Content)
+			toolResult = false
+		}
 		classification := history.ClassificationHuman
 		searchable := true
 		oversized := false
@@ -146,12 +172,19 @@ recordsLoop:
 		default:
 			clean, classification, searchable, oversized = history.CleanHumanText(text)
 		}
+		if assistant && classification == history.ClassificationHuman {
+			classification = history.ClassificationAssistant
+		}
 		if clean == "" {
-			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "empty user text excluded"})
+			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "empty searchable text excluded"})
 			continue
 		}
 		key := history.MessageIdentityKey(item.UUID, record.LineNumber, clean)
-		prompt := history.Prompt{LogicalKey: key, NativeMessageID: item.UUID, ParentNativeMessageID: item.ParentUUID, Role: history.RoleUser, CleanText: clean, Classification: classification, Searchable: searchable, Oversized: oversized, Timestamp: parseTime(item.Timestamp), Model: msg.Model, Evidence: "user.message.content", Confidence: history.ConfidenceExact}
+		evidence := "user.message.content"
+		if assistant {
+			evidence = "assistant.message.content.text"
+		}
+		prompt := history.Prompt{LogicalKey: key, NativeMessageID: item.UUID, ParentNativeMessageID: item.ParentUUID, Role: role, CleanText: clean, Classification: classification, Searchable: searchable, Oversized: oversized, Timestamp: parseTime(item.Timestamp), Model: msg.Model, Evidence: evidence, Confidence: history.ConfidenceExact}
 		if index, ok := seen[key]; ok {
 			if history.CanonicalPromptWins(prompt, result.Prompts[index]) {
 				result.Prompts[index] = prompt
@@ -273,6 +306,20 @@ func textContent(raw json.RawMessage) (string, bool) {
 		}
 	}
 	return strings.Join(text, "\n"), toolResult
+}
+
+func textBlockContent(raw json.RawMessage) string {
+	var blocks []contentBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	text := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "text" && block.Text != "" {
+			text = append(text, block.Text)
+		}
+	}
+	return strings.Join(text, "\n")
 }
 
 func parseTime(value string) *time.Time {
