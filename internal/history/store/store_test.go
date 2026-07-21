@@ -220,6 +220,46 @@ func TestIdentityAppendFullReindexAndSourceRewrite(t *testing.T) {
 	}
 }
 
+func TestRewriteRetainsBoundedTombstonesWithoutPromptText(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/tombstones.jsonl", history.LocationProviderLive)
+	prompts := make([]history.Prompt, 0, 300)
+	for index := range 300 {
+		prompts = append(prompts, prompt(fmt.Sprintf("native:old-%03d", index), fmt.Sprintf("old-%03d", index), fmt.Sprintf("private prompt %03d", index), int64(index+1)))
+	}
+	if _, err := database.ApplySource(extraction("native:old-session", "old-session", source, prompts...), head(source, "old-hash", 1000, 300), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	replacement := extraction("native:new-session", "new-session", source, prompt("native:new", "new", "replacement", 1))
+	if _, err := database.ApplySource(replacement, head(source, "new-hash", 20, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM prompt_tombstones`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 256 {
+		t.Fatalf("tombstone count = %d, want 256", count)
+	}
+	rows, err := database.db.Query(`PRAGMA table_info(prompt_tombstones)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "clean_text" {
+			t.Fatal("tombstones retain prompt text")
+		}
+	}
+}
+
 func TestApplySourceRejectsMismatchedExtractionReference(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()

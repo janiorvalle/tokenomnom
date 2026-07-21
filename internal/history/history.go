@@ -103,13 +103,17 @@ type Session struct {
 
 // SourceHead is the mutable current state of a provider transcript.
 type SourceHead struct {
-	Source         SourceReference
-	ContentSHA256  string
-	Size           int64
-	ModTimeUnix    int64
-	CompleteOffset int64
-	LineCount      int64
-	Available      bool
+	Source            SourceReference
+	ContentSHA256     string
+	ContentHashState  string
+	PrefixFingerprint string
+	TailFingerprint   string
+	ExtractorState    string
+	Size              int64
+	ModTimeUnix       int64
+	CompleteOffset    int64
+	LineCount         int64
+	Available         bool
 	// VerifiedContinuity permits identity promotion during a full reindex when
 	// the caller has proven this head evolves the previously indexed source.
 	VerifiedContinuity bool

@@ -38,6 +38,12 @@ type Stats struct {
 
 // ApplySource reconciles one mutable provider source head and its occurrences.
 func (s *Store) ApplySource(extraction history.Extraction, head history.SourceHead, mode ApplyMode) (ApplyResult, error) {
+	return s.ApplySourceWithGeneration(extraction, head, mode, true)
+}
+
+// ApplySourceWithGeneration reconciles a source and optionally advances the
+// query cursor generation in the same commit.
+func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head history.SourceHead, mode ApplyMode, advanceGeneration bool) (ApplyResult, error) {
 	if mode != ApplyAppend && mode != ApplyReplace {
 		return ApplyResult{}, fmt.Errorf("invalid history source apply mode %d", mode)
 	}
@@ -79,6 +85,13 @@ func (s *Store) ApplySource(extraction history.Extraction, head history.SourceHe
 			return err
 		}
 		if mode == ApplyReplace || !head.Available {
+			reason := "rewrite"
+			if !head.Available {
+				reason = "missing"
+			}
+			if err := tx.tombstoneSourceOrphans(sourceID, reason); err != nil {
+				return err
+			}
 			if err := tx.deleteSourceOccurrences(sourceID); err != nil {
 				return err
 			}
@@ -88,7 +101,10 @@ func (s *Store) ApplySource(extraction history.Extraction, head history.SourceHe
 				return fmt.Errorf("remove prompts from unavailable source: %w", err)
 			}
 			result = ApplyResult{SessionID: sessionPublicID, SourceID: sourcePublicID, PromptIDs: map[string]string{}}
-			return tx.finishSourceSessionReconciliation(preferredSessionID, sessionID)
+			if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
+				return err
+			}
+			return tx.advanceGenerationIf(advanceGeneration)
 		}
 		promptIDs, promptDBIDs, err := tx.ensurePrompts(sessionID, extraction.Prompts)
 		if err != nil {
@@ -98,12 +114,18 @@ func (s *Store) ApplySource(extraction history.Extraction, head history.SourceHe
 			return err
 		}
 		if mode == ApplyReplace {
+			if err := tx.removeRestoredTombstones(sourceID); err != nil {
+				return err
+			}
 			if _, err := tx.tx.Exec(`DELETE FROM prompts WHERE occurrence_count=0`); err != nil {
 				return fmt.Errorf("remove unpreserved prompts: %w", err)
 			}
 		}
 		result = ApplyResult{SessionID: sessionPublicID, SourceID: sourcePublicID, PromptIDs: promptIDs}
-		return tx.finishSourceSessionReconciliation(preferredSessionID, sessionID)
+		if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
+			return err
+		}
+		return tx.advanceGenerationIf(advanceGeneration)
 	})
 	return result, err
 }
@@ -113,6 +135,16 @@ func normalizedSourceKind(kind history.LocationKind) history.LocationKind {
 		return history.LocationProviderLive
 	}
 	return kind
+}
+
+func providerSourceKind(provider history.Provider, kind history.LocationKind) string {
+	if provider == history.ProviderClaude {
+		return "claude_project"
+	}
+	if normalizedSourceKind(kind) == history.LocationProviderArchive {
+		return "codex_archive"
+	}
+	return "codex_live"
 }
 
 // PreserveSnapshot records immutable exact bytes at a durable location.
@@ -182,7 +214,7 @@ func (s *Store) RelocateSource(provider history.Provider, oldPath string, source
 		if err := tx.tx.QueryRow(`SELECT id FROM source_heads WHERE provider=? AND source_path=?`, provider, oldPath).Scan(&sourceID); err != nil {
 			return fmt.Errorf("find source to relocate: %w", err)
 		}
-		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_path=?, available=1 WHERE id=?`, source.Path, sourceID); err != nil {
+		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_path=?,source_kind=?,available=1 WHERE id=?`, source.Path, providerSourceKind(provider, source.Kind), sourceID); err != nil {
 			return fmt.Errorf("relocate source head: %w", err)
 		}
 		if _, err := tx.tx.Exec(`UPDATE locations SET available=0 WHERE source_head_id=?`, sourceID); err != nil {
@@ -198,7 +230,7 @@ func (s *Store) RelocateSource(provider history.Provider, oldPath string, source
 		if _, err := tx.tx.Exec(`DELETE FROM locations WHERE source_head_id=? AND id<>? AND available=0 AND NOT EXISTS (SELECT 1 FROM occurrences WHERE occurrences.location_id=locations.id)`, sourceID, locationID); err != nil {
 			return fmt.Errorf("remove retired source locations: %w", err)
 		}
-		return nil
+		return tx.advanceGenerationIf(true)
 	})
 }
 
@@ -679,9 +711,10 @@ func (tx *Tx) ensureSourceHead(sessionID int64, provider history.Provider, head 
 		if err != nil {
 			return 0, "", err
 		}
-		result, err := tx.tx.Exec(`INSERT INTO source_heads(public_id,provider,source_path,session_id,current_sha256,size,mtime_unix,complete_offset,line_count,available,first_ts,last_ts,extractor_version,indexed_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, head.Source.Path, sessionID, head.ContentSHA256, head.Size,
-			head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), timeText(firstTimestamp), timeText(lastTimestamp), history.ExtractorVersion, time.Now().Unix())
+		result, err := tx.tx.Exec(`INSERT INTO source_heads(public_id,provider,source_path,source_kind,session_id,current_sha256,content_hash_state,prefix_fingerprint,tail_fingerprint,extractor_state,size,mtime_unix,complete_offset,line_count,available,first_ts,last_ts,extractor_version,indexed_at,last_attempt_unix,last_error)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, head.Source.Path, providerSourceKind(provider, head.Source.Kind), sessionID, head.ContentSHA256,
+			head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState, head.Size,
+			head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), timeText(firstTimestamp), timeText(lastTimestamp), history.ExtractorVersion, time.Now().Unix(), time.Now().Unix(), "")
 		if err != nil {
 			return 0, "", fmt.Errorf("insert history source head: %w", err)
 		}
@@ -699,8 +732,9 @@ func (tx *Tx) ensureSourceHead(sessionID int64, provider history.Provider, head 
 		firstTS = earliestTimestamp(existingFirstTS.String, firstTS)
 		lastTS = latestTimestamp(existingLastTS.String, lastTS)
 	}
-	_, err = tx.tx.Exec(`UPDATE source_heads SET session_id=?,current_sha256=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,available=?,first_ts=?,last_ts=?,extractor_version=?,indexed_at=? WHERE id=?`,
-		sessionID, head.ContentSHA256, head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), nullableTimestamp(firstTS), nullableTimestamp(lastTS), history.ExtractorVersion, time.Now().Unix(), id)
+	_, err = tx.tx.Exec(`UPDATE source_heads SET session_id=?,source_kind=?,current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,available=?,first_ts=?,last_ts=?,extractor_version=?,indexed_at=?,last_attempt_unix=?,last_error='' WHERE id=?`,
+		sessionID, providerSourceKind(provider, head.Source.Kind), head.ContentSHA256, head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState,
+		head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), nullableTimestamp(firstTS), nullableTimestamp(lastTS), history.ExtractorVersion, time.Now().Unix(), time.Now().Unix(), id)
 	if err != nil {
 		return 0, "", fmt.Errorf("update history source head: %w", err)
 	}
@@ -955,6 +989,42 @@ func (tx *Tx) deleteOccurrences(predicate string, id int64, label string) error 
 		if err := tx.refreshPromptCanonical(promptID); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (tx *Tx) tombstoneSourceOrphans(sourceID int64, reason string) error {
+	if _, err := tx.tx.Exec(`INSERT INTO prompt_tombstones(source_head_id,provider,source_path,prompt_public_id,logical_key,reason,deleted_at)
+		SELECT sh.id,sh.provider,sh.source_path,p.public_id,p.logical_key,?,?
+		FROM source_heads sh JOIN occurrences o ON o.source_head_id=sh.id JOIN prompts p ON p.id=o.prompt_id
+		WHERE sh.id=? GROUP BY sh.id,p.id HAVING p.occurrence_count=COUNT(o.id)`, reason, time.Now().Unix(), sourceID); err != nil {
+		return fmt.Errorf("record bounded history prompt tombstones: %w", err)
+	}
+	if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE source_head_id=? AND id NOT IN (
+		SELECT id FROM prompt_tombstones WHERE source_head_id=? ORDER BY deleted_at DESC,id DESC LIMIT 256
+	)`, sourceID, sourceID); err != nil {
+		return fmt.Errorf("bound history prompt tombstones: %w", err)
+	}
+	return nil
+}
+
+func (tx *Tx) removeRestoredTombstones(sourceID int64) error {
+	if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE source_head_id=? AND EXISTS (
+		SELECT 1 FROM prompts WHERE prompts.public_id=prompt_tombstones.prompt_public_id AND prompts.occurrence_count>0
+	)`, sourceID); err != nil {
+		return fmt.Errorf("remove restored history prompt tombstones: %w", err)
+	}
+	return nil
+}
+
+func (tx *Tx) advanceGenerationIf(advance bool) error {
+	if !advance {
+		return nil
+	}
+	_, err := tx.tx.Exec(`INSERT INTO meta(key,value) VALUES('index_generation','1')
+		ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1`)
+	if err != nil {
+		return fmt.Errorf("advance history index generation: %w", err)
 	}
 	return nil
 }
