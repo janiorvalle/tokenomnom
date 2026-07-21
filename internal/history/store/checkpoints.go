@@ -134,9 +134,9 @@ func (s *Store) UpdateCheckpointOnly(head history.SourceHead) error {
 func (s *Store) MarkSourceMissing(provider history.Provider, path string) (bool, error) {
 	changed := false
 	err := s.Transaction(func(tx *Tx) error {
-		var sourceID int64
+		var sourceID, sessionID int64
 		var available bool
-		if err := tx.tx.QueryRow(`SELECT id,available FROM source_heads WHERE provider=? AND source_path=?`, provider, path).Scan(&sourceID, &available); err != nil {
+		if err := tx.tx.QueryRow(`SELECT id,session_id,available FROM source_heads WHERE provider=? AND source_path=?`, provider, path).Scan(&sourceID, &sessionID, &available); err != nil {
 			if err == sql.ErrNoRows {
 				return nil
 			}
@@ -161,6 +161,9 @@ func (s *Store) MarkSourceMissing(provider history.Provider, path string) (bool,
 			return fmt.Errorf("mark history source location missing: %w", err)
 		}
 		if err := tx.clearSourceError(provider, path); err != nil {
+			return err
+		}
+		if err := tx.recomputeSessionBounds(sessionID); err != nil {
 			return err
 		}
 		changed = true

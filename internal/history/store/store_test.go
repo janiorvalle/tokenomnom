@@ -899,6 +899,37 @@ func TestSourceReplacementRecomputesSessionTimestampBounds(t *testing.T) {
 	}
 }
 
+func TestMissingSourceRecomputesSessionTimestampBounds(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	olderSource := sourceRef("/older.jsonl", history.LocationProviderLive)
+	older := extraction("native:session", "session", olderSource, prompt("native:old", "old", "older", 1))
+	olderFirst, olderLast := base.Add(-2*time.Hour), base.Add(-time.Hour)
+	older.Session.FirstTimestamp, older.Session.LastTimestamp = &olderFirst, &olderLast
+	if _, err := database.ApplySource(older, head(olderSource, "older", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	newerSource := sourceRef("/newer.jsonl", history.LocationProviderLive)
+	newer := extraction("native:session", "session", newerSource, prompt("native:new", "new", "newer", 1))
+	newerFirst, newerLast := base, base.Add(time.Hour)
+	newer.Session.FirstTimestamp, newer.Session.LastTimestamp = &newerFirst, &newerLast
+	if _, err := database.ApplySource(newer, head(newerSource, "newer", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := database.MarkSourceMissing(history.ProviderCodex, olderSource.Path)
+	if err != nil || !changed {
+		t.Fatalf("mark missing changed=%v err=%v", changed, err)
+	}
+	var first, last string
+	if err := database.db.QueryRow(`SELECT first_ts,last_ts FROM sessions WHERE identity_key='native:session'`).Scan(&first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if first != newerFirst.Format(time.RFC3339Nano) || last != newerLast.Format(time.RFC3339Nano) {
+		t.Fatalf("bounds after missing source = %q..%q", first, last)
+	}
+}
+
 func TestSessionMetadataIsIndependentOfIndexOrder(t *testing.T) {
 	type metadata struct {
 		cwd, repositoryRoot, repositoryName, repositoryIdentity string

@@ -71,6 +71,39 @@ func TestInitialClaudeAppend(t *testing.T) {
 	}
 }
 
+func TestStreamingExtractionStopsAfterSessionConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     func(*environment) string
+		contents string
+	}{
+		{
+			name: "codex",
+			path: func(env *environment) string { return env.codexPath("conflict.jsonl") },
+			contents: codexMeta("session-one") + codexPrompt("p1", "accepted") +
+				codexMeta("session-two") + codexPrompt("p2", "excluded"),
+		},
+		{
+			name: "claude",
+			path: func(env *environment) string {
+				return filepath.Join(env.claudeRoot, "projects", "repo", "conflict.jsonl")
+			},
+			contents: claudePrompt("session-one", "p1", "accepted") +
+				claudePrompt("session-two", "p2", "excluded") + claudePrompt("session-one", "p3", "also excluded"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := newEnvironment(t)
+			writeFile(t, test.path(env), test.contents)
+			summary := env.index(t, false)
+			if summary.IndexedPrompts != 1 || env.health(t).Prompts != 1 {
+				t.Fatalf("conflicting stream summary=%+v health=%+v", summary, env.health(t))
+			}
+		})
+	}
+}
+
 func TestPartialTrailingLineCompletion(t *testing.T) {
 	env := newEnvironment(t)
 	path := env.codexPath("partial.jsonl")

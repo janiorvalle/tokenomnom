@@ -141,7 +141,7 @@ func Index(options Options) (Summary, error) {
 				summary.OversizedPrompts++
 			}
 		}
-		switch kind {
+		switch indexed.Kind {
 		case fileNew:
 			summary.NewSources++
 		case fileAppend:
@@ -324,6 +324,7 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 
 type indexedFile struct {
 	Prompts []history.Prompt
+	Kind    fileKind
 }
 
 func indexFile(database *historystore.Store, file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, kind fileKind) (indexedFile, error) {
@@ -365,7 +366,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 		if err := database.UpdateCheckpointOnly(head); err != nil {
 			return indexedFile{}, err
 		}
-		return indexedFile{}, nil
+		return indexedFile{Kind: kind}, nil
 	}
 	mode := historystore.ApplyReplace
 	if kind == fileAppend {
@@ -378,7 +379,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if _, err := database.ApplySourceWithGeneration(extraction, head, mode, advanceGeneration); err != nil {
 		return indexedFile{}, err
 	}
-	return indexedFile{Prompts: extraction.Prompts}, nil
+	return indexedFile{Prompts: extraction.Prompts, Kind: kind}, nil
 }
 
 var errSourceChanged = errors.New("history source changed during indexing")
@@ -500,11 +501,11 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 }
 
 type extractionAccumulator struct {
-	source        history.SourceReference
-	extraction    history.Extraction
-	promptIndex   map[string]int
-	codexState    codex.State
-	claudeSession history.Session
+	source      history.SourceReference
+	extraction  history.Extraction
+	promptIndex map[string]int
+	codexState  codex.State
+	claudeState claude.State
 }
 
 func newExtractionAccumulator(source history.SourceReference, checkpoint historystore.Checkpoint, kind fileKind) (*extractionAccumulator, error) {
@@ -523,9 +524,9 @@ func newExtractionAccumulator(source history.SourceReference, checkpoint history
 				}
 			}
 		case history.ProviderClaude:
-			value.claudeSession = checkpoint.Session
+			value.claudeState.Session = checkpoint.Session
 			if checkpoint.ExtractorState != "" {
-				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &value.claudeSession); err != nil {
+				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &value.claudeState); err != nil {
 					return nil, fmt.Errorf("decode Claude history extractor state for %q: %w", source.Path, err)
 				}
 			}
@@ -547,8 +548,7 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 	case history.ProviderCodex:
 		part, a.codexState = codex.ExtractWithState(a.source, records, a.codexState)
 	case history.ProviderClaude:
-		part = claude.ExtractWithSession(a.source, records, a.claudeSession)
-		a.claudeSession = part.Session
+		part, a.claudeState = claude.ExtractWithState(a.source, records, a.claudeState)
 	default:
 		return fmt.Errorf("unsupported history provider %q", a.source.Provider)
 	}
@@ -572,7 +572,7 @@ func (a *extractionAccumulator) result() (history.Extraction, string, error) {
 	if a.source.Provider == history.ProviderCodex {
 		state = a.codexState
 	} else {
-		state = a.claudeSession
+		state = a.claudeState
 	}
 	encoded, err := json.Marshal(state)
 	return a.extraction, string(encoded), err
