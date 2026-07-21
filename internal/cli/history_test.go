@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 )
@@ -414,6 +415,97 @@ func TestHistoryShowRejectsSessionPaginationWithoutPrompts(t *testing.T) {
 }
 
 func historyCodexFixture(sessionID, prompt string) string {
-	return `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `"}}` + "\n" +
+	return `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `","thread_source":"user","source":"cli"}}` + "\n" +
 		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"` + prompt + `"}}` + "\n"
+}
+
+func TestHistoryThreadKindTruthTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "2026", "07", "root.jsonl"), historyCodexFixture("root-session", "threadtest root"))
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "2026", "07", "subagent.jsonl"),
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"child-session","parent_thread_id":"root-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"root-session","depth":1}}}}}`+"\n"+
+			`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"threadtest delegated"}}`+"\n")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "2026", "07", "unknown.jsonl"),
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"unknown-session","source":"cli"}}`+"\n"+
+			`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"threadtest unknown"}}`+"\n")
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		flags []string
+		want  int
+		kind  history.ThreadKind
+	}{
+		{name: "default", want: 3},
+		{name: "all", flags: []string{"--thread-kind", "all"}, want: 3},
+		{name: "root-only", flags: []string{"--root-only"}, want: 1, kind: history.ThreadRoot},
+		{name: "root", flags: []string{"--thread-kind", "root"}, want: 1, kind: history.ThreadRoot},
+		{name: "subagent", flags: []string{"--thread-kind", "subagent"}, want: 1, kind: history.ThreadSubagent},
+		{name: "unknown", flags: []string{"--thread-kind", "unknown"}, want: 1, kind: history.ThreadUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listArgs := append([]string{"history", "list", "--format", "json"}, test.flags...)
+			output, err := executeReport(listArgs, codexDir, claudeDir)
+			var list historystore.CatalogPage
+			if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &list) != nil || len(list.Sessions) != test.want {
+				t.Fatalf("list flags=%v err=%v page=%+v", test.flags, err, list)
+			}
+			searchArgs := append([]string{"history", "search", "threadtest", "--format", "json"}, test.flags...)
+			output, err = executeReport(searchArgs, codexDir, claudeDir)
+			var search historystore.SearchPage
+			if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &search) != nil || len(search.Hits) != test.want {
+				t.Fatalf("search flags=%v err=%v page=%+v", test.flags, err, search)
+			}
+			promptArgs := append([]string{"history", "prompts", "--format", "json"}, test.flags...)
+			output, err = executeReport(promptArgs, codexDir, claudeDir)
+			var prompts historystore.PromptsPage
+			if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &prompts) != nil || len(prompts.Prompts) != test.want {
+				t.Fatalf("prompts flags=%v err=%v page=%+v", test.flags, err, prompts)
+			}
+			statsArgs := append([]string{"history", "stats", "--format", "json"}, test.flags...)
+			output, err = executeReport(statsArgs, codexDir, claudeDir)
+			var stats historystore.Statistics
+			if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &stats) != nil || stats.LogicalSessions != test.want {
+				t.Fatalf("stats flags=%v err=%v stats=%+v", test.flags, err, stats)
+			}
+			if test.kind != "" && (list.Sessions[0].ThreadKind != test.kind || search.Hits[0].ThreadKind != test.kind || prompts.Prompts[0].ThreadKind != test.kind) {
+				t.Fatalf("thread kind list=%q search=%q prompts=%q want=%q", list.Sessions[0].ThreadKind, search.Hits[0].ThreadKind, prompts.Prompts[0].ThreadKind, test.kind)
+			}
+			if list.Coverage.Repository.Unknown != test.want || search.Coverage.Repository.Unknown != test.want ||
+				prompts.Coverage.Repository.Unknown != test.want || stats.Coverage.Repository.Unknown != test.want {
+				t.Fatalf("metadata coverage list=%+v search=%+v prompts=%+v stats=%+v want=%d", list.Coverage, search.Coverage, prompts.Coverage, stats.Coverage, test.want)
+			}
+			if list.Coverage.ThreadKind.Root != 1 || list.Coverage.ThreadKind.Subagent != 1 || list.Coverage.ThreadKind.Unknown != 1 {
+				t.Fatalf("thread coverage should disclose the full selected corpus: %+v", list.Coverage.ThreadKind)
+			}
+			if test.kind == history.ThreadSubagent && (len(list.Sessions[0].Relationships) != 1 ||
+				list.Sessions[0].Relationships[0].ResolutionState != history.ResolutionResolved ||
+				list.Sessions[0].Relationships[0].Evidence != "session_meta.source.subagent") {
+				t.Fatalf("subagent JSON relationship=%+v", list.Sessions[0].Relationships)
+			}
+		})
+	}
+
+	output, err := executeReport([]string{"history", "stats", "--group-by", "thread-kind", "--format", "json"}, codexDir, claudeDir)
+	var grouped historystore.Statistics
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &grouped) != nil || len(grouped.Groups) != 3 {
+		t.Fatalf("thread-kind groups err=%v stats=%+v", err, grouped)
+	}
+	for _, command := range [][]string{{"history", "list"}, {"history", "search", "threadtest"}, {"history", "prompts"}, {"history", "stats"}} {
+		args := append(command, "--root-only", "--thread-kind", "all")
+		if _, err := executeReport(args, codexDir, claudeDir); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("flags %v error=%v", args, err)
+		}
+	}
+	if _, err := executeReport([]string{"history", "list", "--include-subagents"}, codexDir, claudeDir); err == nil {
+		t.Fatal("removed --include-subagents flag unexpectedly exists")
+	}
 }

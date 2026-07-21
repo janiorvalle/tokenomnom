@@ -95,7 +95,13 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; UPDATE meta SET value='2' WHERE key='schema_version'`); err != nil {
+	if _, err := database.db.Exec(`DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; DROP TABLE session_thread_supports; DROP TABLE session_relation_supports; DROP TRIGGER session_relations_parent_delete; DROP TABLE session_relations;
+		ALTER TABLE sessions DROP COLUMN thread_evidence;
+		ALTER TABLE sessions DROP COLUMN thread_confidence;
+		ALTER TABLE sessions DROP COLUMN thread_rule_version;
+		ALTER TABLE sessions DROP COLUMN forked_from_message_id;
+		UPDATE meta SET value='2' WHERE key='schema_version';
+		UPDATE meta SET value='1' WHERE key='extractor_version'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
@@ -112,6 +118,9 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	}
 	if len(page.Sessions) != 1 || page.Sessions[0].SessionID != before.SessionID || page.Sessions[0].SourceHeadIDs[0] != before.SourceID {
 		t.Fatalf("migration changed stable IDs: before=%+v page=%+v", before, page)
+	}
+	if extractorVersion, err := database.Meta("extractor_version"); err != nil || extractorVersion != fmt.Sprint(history.ExtractorVersion) {
+		t.Fatalf("migrated extractor version=%q err=%v", extractorVersion, err)
 	}
 }
 
@@ -132,6 +141,46 @@ func TestHealthCountsStaleVaultSnapshotsAndBundleCheckpoints(t *testing.T) {
 	health, err := database.Health()
 	if err != nil || health.StaleSources != 2 {
 		t.Fatalf("stale vault health=%+v err=%v", health, err)
+	}
+}
+
+func TestExtractorVersionRehomesStaleSnapshotSessionIdentity(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := history.SourceReference{
+		Provider: history.ProviderClaude, Kind: history.LocationVault, Path: "/vault/subagent.jsonl",
+		Archive: "claude/relationships.tar.zst", RelativePath: "project/parent/subagents/agent-child.jsonl", VaultVersion: 1,
+	}
+	snapshot := history.PreservedSnapshot{Provider: history.ProviderClaude, ContentSHA256: "relationship-snapshot", Size: 42}
+	parent := extraction("native:parent", "parent", source, prompt("native:p", "p", "old identity", 1))
+	if _, err := database.ApplySnapshotBundle(source.Archive, "before", []SnapshotInput{{Extraction: parent, Snapshot: snapshot}}, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var snapshotPublicID, parentPublicID, promptPublicID string
+	if err := database.db.QueryRow(`SELECT ps.public_id,s.public_id,p.public_id FROM preserved_snapshots ps JOIN sessions s ON s.id=ps.session_id
+		JOIN prompts p ON p.session_id=s.id WHERE ps.content_sha256=?`, snapshot.ContentSHA256).Scan(&snapshotPublicID, &parentPublicID, &promptPublicID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE preserved_snapshots SET extractor_version=1; UPDATE vault_bundle_state SET extractor_version=1`); err != nil {
+		t.Fatal(err)
+	}
+	child := extraction("native:parent/subagents/agent-child", "parent/subagents/agent-child", source, prompt("native:p", "p", "old identity", 1))
+	child.Session.ThreadKind = history.ThreadSubagent
+	child.Session.ParentNativeSessionID = "parent"
+	if _, err := database.ApplySnapshotBundle(source.Archive, "after", []SnapshotInput{{Extraction: child, Snapshot: snapshot}}, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var afterSnapshotID, childPublicID, afterPromptID string
+	if err := database.db.QueryRow(`SELECT ps.public_id,s.public_id,p.public_id FROM preserved_snapshots ps JOIN sessions s ON s.id=ps.session_id
+		JOIN prompts p ON p.session_id=s.id WHERE ps.content_sha256=?`, snapshot.ContentSHA256).Scan(&afterSnapshotID, &childPublicID, &afterPromptID); err != nil {
+		t.Fatal(err)
+	}
+	if afterSnapshotID != snapshotPublicID || childPublicID != parentPublicID || afterPromptID != promptPublicID {
+		t.Fatalf("snapshot identity before=%q/%q/%q after=%q/%q/%q", snapshotPublicID, parentPublicID, promptPublicID, afterSnapshotID, childPublicID, afterPromptID)
+	}
+	var oldSessionCount int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE public_id=?`, parentPublicID).Scan(&oldSessionCount); err != nil || oldSessionCount != 1 {
+		t.Fatalf("stale snapshot session count=%d err=%v", oldSessionCount, err)
 	}
 }
 

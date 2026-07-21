@@ -402,6 +402,14 @@ func TestExtractorVersionRebuild(t *testing.T) {
 	path := env.codexPath("stale.jsonl")
 	writeFile(t, path, codexMeta("stale-session")+codexPrompt("p1", "stale prompt"))
 	env.index(t, false)
+	beforeSession, err := env.database.ListCatalog(historystore.CatalogQuery{Source: historystore.CatalogSourceAny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforePrompts, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	raw, err := sql.Open("sqlite", env.database.Path())
 	if err != nil {
@@ -423,6 +431,14 @@ func TestExtractorVersionRebuild(t *testing.T) {
 	summary := env.index(t, false)
 	if summary.RewrittenSources != 1 || env.health(t).StaleSources != 0 || env.health(t).Prompts != 1 {
 		t.Fatalf("extractor rebuild summary=%+v health=%+v", summary, env.health(t))
+	}
+	afterSession, err := env.database.ListCatalog(historystore.CatalogQuery{Source: historystore.CatalogSourceAny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterPrompts, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny})
+	if err != nil || beforeSession.Sessions[0].SessionID != afterSession.Sessions[0].SessionID || beforePrompts.Prompts[0].PromptID != afterPrompts.Prompts[0].PromptID {
+		t.Fatalf("extractor rebuild changed stable IDs: before=%+v/%+v after=%+v/%+v err=%v", beforeSession, beforePrompts, afterSession, afterPrompts, err)
 	}
 }
 

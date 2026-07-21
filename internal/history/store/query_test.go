@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -183,12 +184,55 @@ func TestSearchCursorBindsQueryModeFiltersAndGeneration(t *testing.T) {
 	if _, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Cursor: first.Page.NextCursor}, Query: "alpha", FTSQuery: true}); err == nil || !strings.Contains(err.Error(), "query mode") {
 		t.Fatalf("cursor query reuse error=%v", err)
 	}
+	if _, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, ThreadKind: "root", Cursor: first.Page.NextCursor}, Query: "alpha beta"}); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("cursor thread-kind reuse error=%v", err)
+	}
 	extraSource := sourceRef("/provider/new-generation.jsonl", history.LocationProviderLive)
 	if _, err := database.ApplySource(extraction("native:new", "new", extraSource, prompt("native:p", "p", "alpha beta", 1)), head(extraSource, "new", 10, 1), ApplyReplace); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Cursor: first.Page.NextCursor}, Query: "alpha beta"}); err == nil || !strings.Contains(err.Error(), "generation changed") {
 		t.Fatalf("stale search cursor error=%v", err)
+	}
+}
+
+func TestPromptCursorsUseSQLiteSortKeyForOffsetTimestamp(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index := range 3 {
+		source := sourceRef(fmt.Sprintf("/provider/prompt-offset-%d.jsonl", index), history.LocationProviderLive)
+		when := time.Date(2026, 7, 21, 12-index, 0, 0, 0, time.UTC)
+		value := prompt("native:p", "p", "offset cursor", 1)
+		value.Timestamp = &when
+		extract := extraction(fmt.Sprintf("native:prompt-offset-%d", index), fmt.Sprintf("prompt-offset-%d", index), source, value)
+		extract.Session.FirstTimestamp, extract.Session.LastTimestamp = &when, &when
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("hash-%d", index), 10, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`UPDATE prompts SET timestamp='2026-07-21T12:00:00.123-04:00' WHERE session_id=(SELECT id FROM sessions WHERE native_session_id='prompt-offset-0')`); err != nil {
+		t.Fatal(err)
+	}
+	firstPrompts, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny, Limit: 1})
+	if err != nil || firstPrompts.Page.NextCursor == "" {
+		t.Fatalf("first prompts page err=%v page=%+v", err, firstPrompts)
+	}
+	secondPrompts, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny, Cursor: firstPrompts.Page.NextCursor})
+	if err != nil || len(secondPrompts.Prompts) != 1 || secondPrompts.Prompts[0].PromptID == firstPrompts.Prompts[0].PromptID {
+		t.Fatalf("prompt offset continuation err=%v page=%+v", err, secondPrompts)
+	}
+	firstSearch, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Limit: 1}, Query: "offset cursor"})
+	if err != nil || firstSearch.Page.NextCursor == "" {
+		t.Fatalf("first search page err=%v page=%+v", err, firstSearch)
+	}
+	secondSearch, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Cursor: firstSearch.Page.NextCursor}, Query: "offset cursor"})
+	if err != nil || len(secondSearch.Hits) != 1 || secondSearch.Hits[0].PromptID == firstSearch.Hits[0].PromptID {
+		t.Fatalf("search offset continuation err=%v page=%+v", err, secondSearch)
+	}
+	since := time.Date(2026, 7, 21, 15, 0, 0, 0, time.UTC)
+	filtered, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny, Since: &since})
+	if err != nil || len(filtered.Prompts) != 1 || filtered.Prompts[0].PromptID != firstPrompts.Prompts[0].PromptID {
+		t.Fatalf("prompt offset instant filter err=%v page=%+v", err, filtered)
 	}
 }
 

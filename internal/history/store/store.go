@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	SchemaVersion = 5
+	SchemaVersion = 6
 	DatabaseName  = "history.db"
 )
 
@@ -138,6 +138,10 @@ func (s *Store) initialize() error {
 	if err := sqliteutil.Migrate(s.db, historyMigrationPlan()); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`INSERT INTO meta(key,value) VALUES('extractor_version',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, history.ExtractorVersion); err != nil {
+		return fmt.Errorf("record current history extractor version: %w", err)
+	}
 	return validateSchema(s.db)
 }
 
@@ -202,6 +206,82 @@ CREATE TABLE vault_prompt_tombstones (
 `,
 			5: `
 ALTER TABLE vault_bundle_state ADD COLUMN last_error_invalidates INTEGER NOT NULL DEFAULT 0 CHECK (last_error_invalidates IN (0, 1));
+`,
+			6: `
+ALTER TABLE sessions ADD COLUMN thread_evidence TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN thread_confidence TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE sessions ADD COLUMN thread_rule_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN forked_from_message_id TEXT;
+CREATE TABLE session_relations (
+	id INTEGER PRIMARY KEY,
+	provider TEXT NOT NULL,
+	parent_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+	child_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	relation_kind TEXT NOT NULL CHECK (relation_kind IN ('subagent', 'fork')),
+	parent_native_session_id TEXT NOT NULL DEFAULT '',
+	parent_native_message_id TEXT NOT NULL DEFAULT '',
+	provider_native_value TEXT NOT NULL DEFAULT '',
+	evidence TEXT NOT NULL,
+	confidence TEXT NOT NULL CHECK (confidence IN ('exact', 'derived', 'unknown')),
+	rule_version INTEGER NOT NULL,
+	resolution_state TEXT NOT NULL CHECK (resolution_state IN ('resolved', 'unresolved')),
+	CHECK ((parent_session_id IS NOT NULL AND resolution_state='resolved') OR
+	       (parent_session_id IS NULL AND resolution_state='unresolved'))
+);
+CREATE UNIQUE INDEX session_relations_resolved_unique
+	ON session_relations(parent_session_id, child_session_id, relation_kind)
+	WHERE parent_session_id IS NOT NULL;
+CREATE UNIQUE INDEX session_relations_unresolved_unique
+	ON session_relations(provider, child_session_id, relation_kind, parent_native_session_id)
+	WHERE parent_session_id IS NULL;
+CREATE INDEX session_relations_parent_native_idx
+	ON session_relations(provider, parent_native_session_id)
+	WHERE parent_session_id IS NULL AND parent_native_session_id<>'';
+CREATE INDEX session_relations_child_idx ON session_relations(child_session_id);
+CREATE TRIGGER session_relations_parent_delete BEFORE DELETE ON sessions BEGIN
+	UPDATE session_relations SET parent_session_id=NULL,resolution_state='unresolved'
+		WHERE parent_session_id=old.id;
+END;
+CREATE TABLE session_relation_supports (
+	id INTEGER PRIMARY KEY,
+	relation_id INTEGER NOT NULL REFERENCES session_relations(id) ON DELETE CASCADE,
+	source_head_id INTEGER REFERENCES source_heads(id) ON DELETE CASCADE,
+	snapshot_id INTEGER REFERENCES preserved_snapshots(id) ON DELETE CASCADE,
+	parent_native_message_id TEXT NOT NULL DEFAULT '',
+	provider_native_value TEXT NOT NULL DEFAULT '',
+	evidence TEXT NOT NULL,
+	confidence TEXT NOT NULL CHECK (confidence IN ('exact','derived','unknown')),
+	rule_version INTEGER NOT NULL,
+	CHECK ((source_head_id IS NOT NULL AND snapshot_id IS NULL) OR
+	       (source_head_id IS NULL AND snapshot_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX session_relation_supports_source_unique
+	ON session_relation_supports(relation_id,source_head_id) WHERE source_head_id IS NOT NULL;
+CREATE UNIQUE INDEX session_relation_supports_snapshot_unique
+	ON session_relation_supports(relation_id,snapshot_id) WHERE snapshot_id IS NOT NULL;
+CREATE INDEX session_relation_supports_source_idx ON session_relation_supports(source_head_id);
+CREATE INDEX session_relation_supports_snapshot_idx ON session_relation_supports(snapshot_id);
+CREATE TABLE session_thread_supports (
+	id INTEGER PRIMARY KEY,
+	session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	source_head_id INTEGER REFERENCES source_heads(id) ON DELETE CASCADE,
+	snapshot_id INTEGER REFERENCES preserved_snapshots(id) ON DELETE CASCADE,
+	thread_kind TEXT NOT NULL CHECK (thread_kind IN ('root','subagent','unknown')),
+	evidence TEXT NOT NULL DEFAULT '',
+	confidence TEXT NOT NULL CHECK (confidence IN ('exact','derived','unknown')),
+	rule_version INTEGER NOT NULL DEFAULT 0,
+	parent_native_session_id TEXT NOT NULL DEFAULT '',
+	forked_from_session_id TEXT NOT NULL DEFAULT '',
+	forked_from_message_id TEXT NOT NULL DEFAULT '',
+	originator TEXT NOT NULL DEFAULT '',
+	CHECK ((source_head_id IS NOT NULL AND snapshot_id IS NULL) OR
+	       (source_head_id IS NULL AND snapshot_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX session_thread_supports_source_unique
+	ON session_thread_supports(source_head_id) WHERE source_head_id IS NOT NULL;
+CREATE UNIQUE INDEX session_thread_supports_snapshot_unique
+	ON session_thread_supports(snapshot_id) WHERE snapshot_id IS NOT NULL;
+CREATE INDEX session_thread_supports_session_idx ON session_thread_supports(session_id);
 `,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, _ int) error {

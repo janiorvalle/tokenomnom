@@ -97,6 +97,9 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 		if err != nil {
 			return err
 		}
+		if err := tx.promoteClaudeSubagentSessionIdentity(extraction.Provider, extraction.Session, preferredSessionID); err != nil {
+			return err
+		}
 		allowPromotion, err := tx.sourceAllowsFallbackPromotion(extraction.Provider, head, mode)
 		if err != nil {
 			return err
@@ -112,6 +115,19 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 		if err != nil {
 			return err
 		}
+		threadChanged, err := tx.reconcileSessionThreadSupport(sessionID, extraction.Session, sourceID, 0)
+		if err != nil {
+			return err
+		}
+		reconciledRelationship, err := tx.reconcileSessionRelationships(extraction.Provider, sessionID, extraction.Relationships, sourceID, 0)
+		if err != nil {
+			return err
+		}
+		resolvedRelationship, err := tx.resolveRelationshipsForParent(sessionID)
+		if err != nil {
+			return err
+		}
+		relationshipChanged := threadChanged || reconciledRelationship || resolvedRelationship
 		locationID, err := tx.ensureSourceLocation(sourceID, extraction.Provider, head.Source, head.Available)
 		if err != nil {
 			return err
@@ -139,7 +155,7 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 			if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 				return err
 			}
-			return tx.advanceGenerationIf(advanceGeneration)
+			return tx.advanceGenerationIf(advanceGeneration || relationshipChanged)
 		}
 		promptIDs, promptDBIDs, err := tx.ensurePrompts(sessionID, extraction.Prompts)
 		if err != nil {
@@ -163,7 +179,7 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 		if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 			return err
 		}
-		return tx.advanceGenerationIf(advanceGeneration)
+		return tx.advanceGenerationIf(advanceGeneration || relationshipChanged)
 	})
 	return result, err
 }
@@ -454,6 +470,44 @@ func (tx *Tx) ensureSnapshotSession(provider history.Provider, value history.Ses
 	return tx.ensureSession(provider, value, preferredID, true)
 }
 
+func (tx *Tx) promoteClaudeSubagentSessionIdentity(provider history.Provider, value history.Session, preferredID int64) error {
+	if provider != history.ProviderClaude || value.ThreadKind != history.ThreadSubagent || preferredID == 0 || value.IdentityKey == "" {
+		return nil
+	}
+	var currentIdentity string
+	if err := tx.tx.QueryRow(`SELECT identity_key FROM sessions WHERE id=?`, preferredID).Scan(&currentIdentity); err != nil {
+		return fmt.Errorf("read Claude subagent session identity: %w", err)
+	}
+	if currentIdentity == value.IdentityKey {
+		return nil
+	}
+	var targetExists bool
+	if err := tx.tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE provider=? AND identity_key=? AND id<>?)`,
+		provider, value.IdentityKey, preferredID).Scan(&targetExists); err != nil {
+		return fmt.Errorf("find corrected Claude subagent session identity: %w", err)
+	}
+	if targetExists {
+		return nil
+	}
+	var nonSubagentSupports int
+	if err := tx.tx.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM source_heads WHERE session_id=? AND replace(source_path,'\','/') NOT LIKE '%/subagents/%')+
+		(SELECT COUNT(*) FROM preserved_snapshots ps WHERE ps.session_id=? AND NOT EXISTS(
+			SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND replace(
+				CASE WHEN l.relative_path<>'' THEN l.relative_path ELSE l.source_path END,'\','/') LIKE '%/subagents/%'))`,
+		preferredID, preferredID).Scan(&nonSubagentSupports); err != nil {
+		return fmt.Errorf("classify existing Claude subagent session supports: %w", err)
+	}
+	if nonSubagentSupports != 0 {
+		return nil
+	}
+	if _, err := tx.tx.Exec(`UPDATE sessions SET identity_key=?,native_session_id=?,fallback_key=? WHERE id=?`,
+		value.IdentityKey, nullText(value.NativeSessionID), value.FallbackKey, preferredID); err != nil {
+		return fmt.Errorf("promote corrected Claude subagent session identity: %w", err)
+	}
+	return nil
+}
+
 func (tx *Tx) preserveSnapshot(extraction history.Extraction, snapshot history.PreservedSnapshot) (ApplyResult, error) {
 	if snapshot.Provider == "" {
 		snapshot.Provider = extraction.Provider
@@ -474,12 +528,24 @@ func (tx *Tx) preserveSnapshot(extraction history.Extraction, snapshot history.P
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	if err := tx.promoteClaudeSubagentSessionIdentity(extraction.Provider, extraction.Session, preferredSessionID); err != nil {
+		return ApplyResult{}, err
+	}
 	sessionID, sessionPublicID, err := tx.ensureSnapshotSession(extraction.Provider, extraction.Session, preferredSessionID)
 	if err != nil {
 		return ApplyResult{}, err
 	}
 	snapshotID, snapshotPublicID, err := tx.ensureSnapshot(sessionID, snapshot)
 	if err != nil {
+		return ApplyResult{}, err
+	}
+	if _, err := tx.reconcileSessionThreadSupport(sessionID, extraction.Session, 0, snapshotID); err != nil {
+		return ApplyResult{}, err
+	}
+	if _, err := tx.reconcileSessionRelationships(extraction.Provider, sessionID, extraction.Relationships, 0, snapshotID); err != nil {
+		return ApplyResult{}, err
+	}
+	if _, err := tx.resolveRelationshipsForParent(sessionID); err != nil {
 		return ApplyResult{}, err
 	}
 	_, err = tx.ensureSnapshotLocation(snapshotID, extraction.Source)
@@ -511,6 +577,9 @@ func (tx *Tx) preserveSnapshot(extraction history.Extraction, snapshot history.P
 		return ApplyResult{}, fmt.Errorf("remove unpreserved prompts: %w", err)
 	}
 	if err := tx.recomputeSessionBounds(sessionID); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 		return ApplyResult{}, err
 	}
 	return ApplyResult{SessionID: sessionPublicID, SourceID: snapshotPublicID, PromptIDs: promptIDs}, nil
@@ -808,6 +877,15 @@ func (tx *Tx) mergeSessions(recipientID, donorID int64) error {
 			return fmt.Errorf("move donor %s: %w", table, err)
 		}
 	}
+	if _, err := tx.tx.Exec(`UPDATE session_thread_supports SET session_id=? WHERE session_id=?`, recipientID, donorID); err != nil {
+		return fmt.Errorf("move history thread supports: %w", err)
+	}
+	if _, err := tx.refreshCanonicalSessionThreadSupport(recipientID); err != nil {
+		return err
+	}
+	if err := tx.rehomeSessionRelationships(recipientID, donorID); err != nil {
+		return err
+	}
 	if _, err := tx.tx.Exec(`DELETE FROM sessions WHERE id=?`, donorID); err != nil {
 		return fmt.Errorf("remove merged history session: %w", err)
 	}
@@ -829,8 +907,10 @@ func (tx *Tx) recordPublicIDAlias(alias, canonical, kind string) error {
 
 type storedSessionMetadata struct {
 	nativeSessionID, cwd, repositoryRoot, repositoryName, repositoryIdentity sql.NullString
-	branch, parentNativeSessionID, forkedFromSessionID, originator, evidence sql.NullString
-	fallbackKey, threadKind, confidence, firstTS, lastTS                     string
+	branch, threadEvidence, parentNativeSessionID, forkedFromSessionID       sql.NullString
+	forkedFromMessageID, originator, evidence                                sql.NullString
+	fallbackKey, threadKind, threadConfidence, confidence, firstTS, lastTS   string
+	threadRuleVersion                                                        int
 }
 
 func (tx *Tx) mergeSessionMetadata(recipientID, donorID int64) error {
@@ -847,18 +927,24 @@ func (tx *Tx) mergeSessionMetadata(recipientID, donorID int64) error {
 
 func (tx *Tx) readSessionMetadata(id int64) (storedSessionMetadata, error) {
 	var value storedSessionMetadata
-	err := tx.tx.QueryRow(`SELECT native_session_id,fallback_key,cwd,repository_root,repository_name,repository_identity,branch,thread_kind,parent_native_session_id,forked_from_session_id,originator,evidence,confidence,COALESCE(first_ts,''),COALESCE(last_ts,'') FROM sessions WHERE id=?`, id).Scan(
+	err := tx.tx.QueryRow(`SELECT native_session_id,fallback_key,cwd,repository_root,repository_name,repository_identity,branch,
+		thread_kind,thread_evidence,thread_confidence,thread_rule_version,parent_native_session_id,forked_from_session_id,
+		forked_from_message_id,originator,evidence,confidence,COALESCE(first_ts,''),COALESCE(last_ts,'') FROM sessions WHERE id=?`, id).Scan(
 		&value.nativeSessionID, &value.fallbackKey, &value.cwd, &value.repositoryRoot, &value.repositoryName,
-		&value.repositoryIdentity, &value.branch, &value.threadKind, &value.parentNativeSessionID,
-		&value.forkedFromSessionID, &value.originator, &value.evidence, &value.confidence, &value.firstTS, &value.lastTS)
+		&value.repositoryIdentity, &value.branch, &value.threadKind, &value.threadEvidence, &value.threadConfidence,
+		&value.threadRuleVersion, &value.parentNativeSessionID, &value.forkedFromSessionID, &value.forkedFromMessageID,
+		&value.originator, &value.evidence, &value.confidence, &value.firstTS, &value.lastTS)
 	return value, err
 }
 
 func (tx *Tx) writeSessionMetadata(id int64, value storedSessionMetadata) error {
-	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,branch=?,thread_kind=?,parent_native_session_id=?,forked_from_session_id=?,originator=?,evidence=?,confidence=?,first_ts=?,last_ts=? WHERE id=?`,
+	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,branch=?,
+		thread_kind=?,thread_evidence=?,thread_confidence=?,thread_rule_version=?,parent_native_session_id=?,forked_from_session_id=?,forked_from_message_id=?,
+		originator=?,evidence=?,confidence=?,first_ts=?,last_ts=? WHERE id=?`,
 		nullStringValue(value.nativeSessionID), value.fallbackKey, nullStringValue(value.cwd), nullStringValue(value.repositoryRoot),
 		nullStringValue(value.repositoryName), nullStringValue(value.repositoryIdentity), nullStringValue(value.branch), value.threadKind,
-		nullStringValue(value.parentNativeSessionID), nullStringValue(value.forkedFromSessionID), nullStringValue(value.originator), nullStringValue(value.evidence), value.confidence,
+		value.threadEvidence.String, value.threadConfidence, value.threadRuleVersion, nullStringValue(value.parentNativeSessionID),
+		nullStringValue(value.forkedFromSessionID), nullStringValue(value.forkedFromMessageID), nullStringValue(value.originator), nullStringValue(value.evidence), value.confidence,
 		nullableTimestamp(value.firstTS), nullableTimestamp(value.lastTS), id)
 	if err != nil {
 		return fmt.Errorf("write deterministic history session metadata: %w", err)
@@ -885,13 +971,22 @@ func mergeStoredSessionMetadata(existing, candidate storedSessionMetadata) store
 	existing.branch = choose(existing.branch, candidate.branch)
 	existing.parentNativeSessionID = choose(existing.parentNativeSessionID, candidate.parentNativeSessionID)
 	existing.forkedFromSessionID = choose(existing.forkedFromSessionID, candidate.forkedFromSessionID)
+	existing.forkedFromMessageID = choose(existing.forkedFromMessageID, candidate.forkedFromMessageID)
 	existing.originator = choose(existing.originator, candidate.originator)
 	existing.evidence = choose(existing.evidence, candidate.evidence)
 	if existing.fallbackKey == "" || (candidate.fallbackKey != "" && candidateWins) {
 		existing.fallbackKey = candidate.fallbackKey
 	}
-	if existing.threadKind == string(history.ThreadUnknown) || (candidate.threadKind != string(history.ThreadUnknown) && candidateWins) {
+	threadWins := candidate.threadKind != string(history.ThreadUnknown) && (existing.threadKind == string(history.ThreadUnknown) ||
+		confidenceRank(candidate.threadConfidence) > confidenceRank(existing.threadConfidence) ||
+		(confidenceRank(candidate.threadConfidence) == confidenceRank(existing.threadConfidence) &&
+			(threadKindRank(candidate.threadKind) > threadKindRank(existing.threadKind) ||
+				(threadKindRank(candidate.threadKind) == threadKindRank(existing.threadKind) && candidateWins))))
+	if threadWins {
 		existing.threadKind = candidate.threadKind
+		existing.threadEvidence = candidate.threadEvidence
+		existing.threadConfidence = candidate.threadConfidence
+		existing.threadRuleVersion = candidate.threadRuleVersion
 	}
 	if confidenceRank(candidate.confidence) > confidenceRank(existing.confidence) || (candidate.confidence == existing.confidence && candidateWins) {
 		existing.confidence = candidate.confidence
@@ -899,6 +994,17 @@ func mergeStoredSessionMetadata(existing, candidate storedSessionMetadata) store
 	existing.firstTS = earliestTimestamp(existing.firstTS, candidate.firstTS)
 	existing.lastTS = latestTimestamp(existing.lastTS, candidate.lastTS)
 	return existing
+}
+
+func threadKindRank(value string) int {
+	switch history.ThreadKind(value) {
+	case history.ThreadSubagent:
+		return 2
+	case history.ThreadRoot:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func storedSessionMetadataWins(candidate, existing storedSessionMetadata) bool {
@@ -931,7 +1037,7 @@ func sessionMetadataKey(value storedSessionMetadata) string {
 	parts := []string{
 		value.nativeSessionID.String, value.cwd.String, value.repositoryRoot.String, value.repositoryName.String,
 		value.repositoryIdentity.String, value.branch.String, value.threadKind, value.parentNativeSessionID.String, value.forkedFromSessionID.String,
-		value.originator.String, value.evidence.String,
+		value.forkedFromMessageID.String, value.originator.String, value.evidence.String,
 	}
 	return strings.Join(parts, "\x00")
 }
@@ -961,8 +1067,12 @@ func sessionMetadata(value history.Session) storedSessionMetadata {
 		repositoryIdentity:    toNullString(value.RepositoryIdentity),
 		branch:                toNullString(value.Branch),
 		threadKind:            string(normalizedThreadKind(value.ThreadKind)),
+		threadEvidence:        toNullString(value.ThreadEvidence),
+		threadConfidence:      string(normalizedConfidence(value.ThreadConfidence)),
+		threadRuleVersion:     value.ThreadRuleVersion,
 		parentNativeSessionID: toNullString(value.ParentNativeSessionID),
 		forkedFromSessionID:   toNullString(value.ForkedFromSessionID),
+		forkedFromMessageID:   toNullString(value.ForkedFromMessageID),
 		originator:            toNullString(value.Originator),
 		evidence:              toNullString(value.Evidence),
 		confidence:            string(normalizedConfidence(value.Confidence)),
@@ -1040,12 +1150,13 @@ func (tx *Tx) ensureSession(provider history.Provider, value history.Session, pr
 		}
 		result, err := tx.tx.Exec(`INSERT INTO sessions(
 			public_id, provider, identity_key, native_session_id, fallback_key, cwd,
-			repository_root, repository_name, repository_identity, branch, thread_kind,
-			parent_native_session_id, forked_from_session_id, originator, evidence, confidence, first_ts, last_ts)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
+			repository_root, repository_name, repository_identity, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
+			parent_native_session_id, forked_from_session_id, forked_from_message_id, originator, evidence, confidence, first_ts, last_ts)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
 			nullText(value.NativeSessionID), value.FallbackKey, nullText(value.CWD),
 			nullText(value.RepositoryRoot), nullText(value.RepositoryName), nullText(value.RepositoryIdentity),
-			nullText(value.Branch), normalizedThreadKind(value.ThreadKind), nullText(value.ParentNativeSessionID), nullText(value.ForkedFromSessionID),
+			nullText(value.Branch), normalizedThreadKind(value.ThreadKind), value.ThreadEvidence, normalizedConfidence(value.ThreadConfidence), value.ThreadRuleVersion,
+			nullText(value.ParentNativeSessionID), nullText(value.ForkedFromSessionID), nullText(value.ForkedFromMessageID),
 			nullText(value.Originator), nullText(value.Evidence), normalizedConfidence(value.Confidence),
 			timeText(value.FirstTimestamp), timeText(value.LastTimestamp))
 		if err != nil {
@@ -1134,11 +1245,19 @@ func (tx *Tx) ensureSnapshot(sessionID int64, value history.PreservedSnapshot) (
 	err := tx.tx.QueryRow(`SELECT id,public_id,session_id,size,first_ts,last_ts,extractor_version FROM preserved_snapshots WHERE provider=? AND content_sha256=?`, value.Provider, value.ContentSHA256).Scan(
 		&id, &publicID, &existingSessionID, &existingSize, &existingFirstTS, &existingLastTS, &existingExtractorVersion)
 	if err == nil {
-		if existingSessionID != sessionID || existingSize != value.Size {
+		if existingSize != value.Size {
 			return 0, "", fmt.Errorf("preserved snapshot %s conflicts with immutable session or size", value.ContentSHA256)
 		}
 		if existingExtractorVersion > history.ExtractorVersion {
 			return 0, "", fmt.Errorf("preserved snapshot %s uses newer extractor version %d", value.ContentSHA256, existingExtractorVersion)
+		}
+		if existingSessionID != sessionID {
+			if existingExtractorVersion == history.ExtractorVersion {
+				return 0, "", fmt.Errorf("preserved snapshot %s conflicts with immutable session or size", value.ContentSHA256)
+			}
+			if _, err := tx.tx.Exec(`UPDATE preserved_snapshots SET session_id=? WHERE id=?`, sessionID, id); err != nil {
+				return 0, "", fmt.Errorf("rehome stale preserved snapshot session: %w", err)
+			}
 		}
 		firstTS, lastTS := timestampString(value.FirstTS), timestampString(value.LastTS)
 		if existingExtractorVersion == history.ExtractorVersion {

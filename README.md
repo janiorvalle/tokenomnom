@@ -92,6 +92,8 @@ Build the local human-prompt history index explicitly and inspect its health:
 ```sh
 tokenomnom history index
 tokenomnom history search "do not implement" --since 2026-07-01
+tokenomnom history search "delegated task" --thread-kind subagent
+tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
 tokenomnom history stats --group-by provider
@@ -107,6 +109,9 @@ enables raw FTS5 syntax. Results are bounded snippets unless `--include-text` or
 `history show` is requested, and raw retrieval revalidates exact indexed bytes.
 Repository/branch filters are complete for Codex but partial for Claude Code;
 use `--cwd` for cross-provider completeness and read JSON coverage warnings.
+Root/subagent filters use direct provider evidence or versioned deterministic
+provider rules; missing parent metadata remains explicitly `unknown`, and
+unresolved native parent IDs remain inspectable in JSON relationship details.
 Indexing is never run implicitly by usage reports or normal syncs. `history.db` is derived
 plaintext local data; `tokenomnom history purge` removes it without touching
 `usage.db`, provider transcripts, vault bundles, or config.

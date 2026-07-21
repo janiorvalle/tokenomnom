@@ -32,6 +32,10 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		"prefer `--cwd`",
 		"Do not traverse provider directories",
 		"clean human user prompts only",
+		"--root-only",
+		"--thread-kind subagent",
+		"coverage.thread_kind.unknown",
+		"unknown relationship",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Errorf("embedded skill missing %q", fragment)

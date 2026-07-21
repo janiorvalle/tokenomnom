@@ -18,10 +18,11 @@ import (
 const reportSchema = "tokenomnom.report/v1"
 
 type jsonFilters struct {
-	Provider *string `json:"provider"`
-	Model    *string `json:"model"`
-	Since    *string `json:"since"`
-	Until    *string `json:"until"`
+	Provider   *string `json:"provider"`
+	Model      *string `json:"model"`
+	Since      *string `json:"since"`
+	Until      *string `json:"until"`
+	ThreadKind *string `json:"thread_kind,omitempty"`
 }
 
 type jsonEnvelope struct {

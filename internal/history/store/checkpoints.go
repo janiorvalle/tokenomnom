@@ -84,7 +84,9 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 		sh.last_error,sh.available,s.identity_key,COALESCE(s.native_session_id,''),s.fallback_key,
 		COALESCE(s.cwd,''),COALESCE(s.repository_root,''),COALESCE(s.repository_name,''),
 		COALESCE(s.repository_identity,''),COALESCE(s.branch,''),s.thread_kind,
+		COALESCE(s.thread_evidence,''),s.thread_confidence,s.thread_rule_version,
 		COALESCE(s.parent_native_session_id,''),COALESCE(s.forked_from_session_id,''),
+		COALESCE(s.forked_from_message_id,''),
 		COALESCE(s.originator,''),COALESCE(s.evidence,''),s.confidence,s.first_ts,s.last_ts
 		FROM source_heads sh JOIN sessions s ON s.id=sh.session_id ORDER BY sh.provider,sh.source_path`)
 	if err != nil {
@@ -102,8 +104,9 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 			&value.ExtractorVersion, &value.IndexedAtUnix, &value.LastAttemptUnix, &value.LastError, &available,
 			&value.Session.IdentityKey, &value.Session.NativeSessionID, &value.Session.FallbackKey, &value.Session.CWD,
 			&value.Session.RepositoryRoot, &value.Session.RepositoryName, &value.Session.RepositoryIdentity,
-			&value.Session.Branch, &value.Session.ThreadKind, &value.Session.ParentNativeSessionID,
-			&value.Session.ForkedFromSessionID, &value.Session.Originator, &value.Session.Evidence,
+			&value.Session.Branch, &value.Session.ThreadKind, &value.Session.ThreadEvidence,
+			&value.Session.ThreadConfidence, &value.Session.ThreadRuleVersion, &value.Session.ParentNativeSessionID,
+			&value.Session.ForkedFromSessionID, &value.Session.ForkedFromMessageID, &value.Session.Originator, &value.Session.Evidence,
 			&value.Session.Confidence, &firstTS, &lastTS); err != nil {
 			return nil, fmt.Errorf("scan history checkpoint: %w", err)
 		}

@@ -23,6 +23,7 @@ type sessionMeta struct {
 	ParentThreadID string          `json:"parent_thread_id"`
 	CWD            string          `json:"cwd"`
 	Originator     string          `json:"originator"`
+	ThreadSource   string          `json:"thread_source"`
 	Timestamp      string          `json:"timestamp"`
 	Source         json.RawMessage `json:"source"`
 	Git            *struct {
@@ -83,10 +84,14 @@ func ExtractWithState(source history.SourceReference, records []jsonl.Record, st
 	if result.Session.ThreadKind == "" {
 		result.Session.ThreadKind = history.ThreadUnknown
 	}
+	if result.Session.ThreadConfidence == "" {
+		result.Session.ThreadConfidence = history.ConfidenceUnknown
+	}
 	if result.Session.Confidence == "" {
 		result.Session.Confidence = history.ConfidenceUnknown
 	}
 	if state.Stopped {
+		result.Relationships = sessionRelationships(result.Session)
 		return result, state
 	}
 	var firstRecord []byte
@@ -133,9 +138,21 @@ recordsLoop:
 			if meta.ForkedFromID != "" {
 				result.Session.ForkedFromSessionID = meta.ForkedFromID
 			}
-			if isSubagentSource(meta.Source) {
+			if meta.ThreadSource == "user" {
+				result.Session.ThreadKind = history.ThreadRoot
+				result.Session.ThreadEvidence = "session_meta.thread_source=user"
+				result.Session.ThreadConfidence = history.ConfidenceExact
+				result.Session.ThreadRuleVersion = history.RelationshipRuleVersion
+			}
+			if meta.ThreadSource == "subagent" || isSubagentSource(meta.Source) {
 				result.Session.ThreadKind = history.ThreadSubagent
 				result.Session.ParentNativeSessionID = meta.ParentThreadID
+				result.Session.ThreadEvidence = "session_meta.thread_source=subagent"
+				if isSubagentSource(meta.Source) {
+					result.Session.ThreadEvidence = "session_meta.source.subagent"
+				}
+				result.Session.ThreadConfidence = history.ConfidenceExact
+				result.Session.ThreadRuleVersion = history.RelationshipRuleVersion
 			}
 			if meta.Git != nil {
 				if meta.Git.Branch != "" {
@@ -210,8 +227,28 @@ recordsLoop:
 	if result.Session.IdentityKey == "" || foundSessionMeta || (strings.HasPrefix(result.Session.FallbackKey, "source-path:") && len(firstRecord) > 0) {
 		result.Session.IdentityKey, result.Session.FallbackKey = history.SessionIdentityKey(history.ProviderCodex, result.Session.NativeSessionID, source.Path, firstRecord)
 	}
+	result.Relationships = sessionRelationships(result.Session)
 	state.Session = result.Session
 	return result, state
+}
+
+func sessionRelationships(session history.Session) []history.Relationship {
+	relationships := []history.Relationship{}
+	if session.ThreadKind == history.ThreadSubagent && session.ParentNativeSessionID != "" {
+		relationships = append(relationships, history.Relationship{
+			Kind: history.RelationSubagent, ParentNativeSessionID: session.ParentNativeSessionID,
+			ProviderNativeValue: session.ParentNativeSessionID, Evidence: session.ThreadEvidence,
+			Confidence: session.ThreadConfidence, RuleVersion: history.RelationshipRuleVersion,
+		})
+	}
+	if session.ForkedFromSessionID != "" {
+		relationships = append(relationships, history.Relationship{
+			Kind: history.RelationFork, ParentNativeSessionID: session.ForkedFromSessionID,
+			ProviderNativeValue: session.ForkedFromSessionID, Evidence: "session_meta.forked_from_id",
+			Confidence: history.ConfidenceExact, RuleVersion: history.RelationshipRuleVersion,
+		})
+	}
+	return relationships
 }
 
 func pairingSignature(cleanText string) string {

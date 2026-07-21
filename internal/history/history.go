@@ -5,7 +5,10 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 1
+	ExtractorVersion = 2
+	// RelationshipRuleVersion identifies the deterministic provider rules used
+	// to classify threads and extract conversational relationships.
+	RelationshipRuleVersion = 1
 	// MaxPromptBytes is the largest prompt indexed as complete text.
 	MaxPromptBytes = 1 << 20
 )
@@ -70,6 +73,23 @@ const (
 	ThreadUnknown  ThreadKind = "unknown"
 )
 
+// RelationKind identifies a provider-evidenced conversational relationship.
+type RelationKind string
+
+const (
+	RelationSubagent RelationKind = "subagent"
+	RelationFork     RelationKind = "fork"
+)
+
+// ResolutionState reports whether a provider-native parent has been matched
+// to an indexed logical session.
+type ResolutionState string
+
+const (
+	ResolutionResolved   ResolutionState = "resolved"
+	ResolutionUnresolved ResolutionState = "unresolved"
+)
+
 // SourceReference identifies a provider file or immutable vault member.
 type SourceReference struct {
 	Provider     Provider
@@ -92,13 +112,29 @@ type Session struct {
 	RepositoryIdentity    string
 	Branch                string
 	ThreadKind            ThreadKind
+	ThreadEvidence        string
+	ThreadConfidence      Confidence
+	ThreadRuleVersion     int
 	ParentNativeSessionID string
 	ForkedFromSessionID   string
+	ForkedFromMessageID   string
 	Originator            string
 	Evidence              string
 	Confidence            Confidence
 	FirstTimestamp        *time.Time
 	LastTimestamp         *time.Time
+}
+
+// Relationship is one provider-native edge emitted by an extractor. The
+// child is the extraction's logical session and is assigned by the store.
+type Relationship struct {
+	Kind                  RelationKind
+	ParentNativeSessionID string
+	ParentNativeMessageID string
+	ProviderNativeValue   string
+	Evidence              string
+	Confidence            Confidence
+	RuleVersion           int
 }
 
 // SourceHead is the mutable current state of a provider transcript.
@@ -163,12 +199,13 @@ type Diagnostic struct {
 
 // Extraction is the complete provider-neutral result for one source read.
 type Extraction struct {
-	Provider    Provider
-	Source      SourceReference
-	Session     Session
-	Prompts     []Prompt
-	Occurrences []Occurrence
-	Diagnostics []Diagnostic
+	Provider      Provider
+	Source        SourceReference
+	Session       Session
+	Relationships []Relationship
+	Prompts       []Prompt
+	Occurrences   []Occurrence
+	Diagnostics   []Diagnostic
 }
 
 // CanonicalPromptWins applies the provider-neutral ordering used when more

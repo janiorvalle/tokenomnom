@@ -52,6 +52,10 @@ func (s *Store) GetSession(publicID string) (CatalogSession, error) {
 	if err != nil {
 		return CatalogSession{}, fmt.Errorf("get history session: %w", err)
 	}
+	value.Relationships, value.RelationshipsTruncated, err = s.sessionRelationships(value.databaseID)
+	if err != nil {
+		return CatalogSession{}, err
+	}
 	return value, nil
 }
 

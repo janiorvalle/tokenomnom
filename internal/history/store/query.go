@@ -26,6 +26,7 @@ type PromptQuery struct {
 	Repo           string
 	Branch         string
 	Source         CatalogSource
+	ThreadKind     string
 	Limit          int
 	Cursor         string
 	IncludeText    bool
@@ -48,10 +49,11 @@ type PageMetadata struct {
 
 // QueryCoverage discloses indexed date and provider-uneven metadata coverage.
 type QueryCoverage struct {
-	FirstTimestamp *string       `json:"first_timestamp"`
-	LastTimestamp  *string       `json:"last_timestamp"`
-	Repository     FieldCoverage `json:"repository"`
-	Branch         FieldCoverage `json:"branch"`
+	FirstTimestamp *string            `json:"first_timestamp"`
+	LastTimestamp  *string            `json:"last_timestamp"`
+	Repository     FieldCoverage      `json:"repository"`
+	Branch         FieldCoverage      `json:"branch"`
+	ThreadKind     ThreadKindCoverage `json:"thread_kind"`
 }
 
 // PromptOccurrence is bounded provenance for one exact prompt occurrence.
@@ -70,25 +72,32 @@ type PromptOccurrence struct {
 
 // PromptResult is one logical human prompt, not one snapshot occurrence.
 type PromptResult struct {
-	PromptID                    string             `json:"prompt_id"`
-	SessionID                   string             `json:"session_id"`
-	Provider                    history.Provider   `json:"provider"`
-	Timestamp                   *string            `json:"timestamp"`
-	RepositoryName              *string            `json:"repository_name"`
-	CWD                         string             `json:"cwd,omitempty"`
-	Branch                      *string            `json:"branch"`
-	Rank                        *float64           `json:"rank,omitempty"`
-	RankDirection               string             `json:"rank_direction,omitempty"`
-	Snippet                     string             `json:"snippet"`
-	Text                        *string            `json:"text,omitempty"`
-	OccurrenceCount             int                `json:"occurrence_count"`
-	SourceHeadIDs               []string           `json:"source_head_ids"`
-	PreservedSnapshotIDs        []string           `json:"preserved_snapshot_ids"`
-	Occurrences                 []PromptOccurrence `json:"occurrences"`
-	OccurrenceMetadataTruncated bool               `json:"occurrence_metadata_truncated"`
-	ProvenanceIDsTruncated      bool               `json:"provenance_ids_truncated"`
-	Availability                Availability       `json:"availability"`
-	PreferredRetrievalSource    string             `json:"preferred_retrieval_source"`
+	sortTimestamp               string
+	PromptID                    string                `json:"prompt_id"`
+	SessionID                   string                `json:"session_id"`
+	Provider                    history.Provider      `json:"provider"`
+	Timestamp                   *string               `json:"timestamp"`
+	RepositoryName              *string               `json:"repository_name"`
+	CWD                         string                `json:"cwd,omitempty"`
+	Branch                      *string               `json:"branch"`
+	ThreadKind                  history.ThreadKind    `json:"thread_kind"`
+	ThreadEvidence              string                `json:"thread_evidence"`
+	ThreadConfidence            history.Confidence    `json:"thread_confidence"`
+	ThreadRuleVersion           int                   `json:"thread_rule_version"`
+	Relationships               []SessionRelationship `json:"relationships"`
+	RelationshipsTruncated      bool                  `json:"relationships_truncated"`
+	Rank                        *float64              `json:"rank,omitempty"`
+	RankDirection               string                `json:"rank_direction,omitempty"`
+	Snippet                     string                `json:"snippet"`
+	Text                        *string               `json:"text,omitempty"`
+	OccurrenceCount             int                   `json:"occurrence_count"`
+	SourceHeadIDs               []string              `json:"source_head_ids"`
+	PreservedSnapshotIDs        []string              `json:"preserved_snapshot_ids"`
+	Occurrences                 []PromptOccurrence    `json:"occurrences"`
+	OccurrenceMetadataTruncated bool                  `json:"occurrence_metadata_truncated"`
+	ProvenanceIDsTruncated      bool                  `json:"provenance_ids_truncated"`
+	Availability                Availability          `json:"availability"`
+	PreferredRetrievalSource    string                `json:"preferred_retrieval_source"`
 }
 
 // SearchPage is one generation-bound FTS result page.
@@ -120,6 +129,7 @@ type promptCursor struct {
 	Repo       string        `json:"repo"`
 	Branch     string        `json:"branch"`
 	Source     CatalogSource `json:"source"`
+	ThreadKind string        `json:"thread_kind"`
 	Query      string        `json:"query,omitempty"`
 	FTSQuery   bool          `json:"fts_query,omitempty"`
 	Limit      int           `json:"limit"`
@@ -281,6 +291,7 @@ func normalizePromptQuery(query PromptQuery, defaultLimit int) (PromptQuery, boo
 	if query.Source == "" {
 		query.Source = CatalogSourceAny
 	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
 	usedDefault := query.Limit == 0 && query.Cursor == ""
 	if usedDefault {
 		query.Limit = defaultLimit
@@ -291,6 +302,9 @@ func normalizePromptQuery(query PromptQuery, defaultLimit int) (PromptQuery, boo
 func validatePromptQuery(query PromptQuery) error {
 	if !validCatalogSource(query.Source) {
 		return fmt.Errorf("invalid history source %q", query.Source)
+	}
+	if !validThreadKindFilter(query.ThreadKind) {
+		return fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
 	}
 	if query.Limit != 0 && (query.Limit < 1 || query.Limit > 500) {
 		return errors.New("history prompt limit must be between 1 and 500")
@@ -329,6 +343,10 @@ func promptWhere(query PromptQuery, includeMetadataFilters bool, promptAlias, se
 	if includeMetadataFilters && query.Branch != "" {
 		where = append(where, s+"branch=?")
 		args = append(args, query.Branch)
+	}
+	if query.ThreadKind != "" && query.ThreadKind != "all" {
+		where = append(where, s+"thread_kind=?")
+		args = append(args, query.ThreadKind)
 	}
 	sourceClause := ""
 	switch query.Source {
@@ -376,6 +394,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 		value.Timestamp = optionalCatalogString(timestamp)
 		value.RepositoryName, value.Branch = optionalCatalogString(repo), optionalCatalogString(branch)
 		value.CWD = cwd.String
+		value.sortTimestamp = sortTimestamp
 		value.Snippet = boundPreview(snippet.String)
 		if includeText && text.Valid {
 			value.Text = optionalCatalogString(text)
@@ -403,6 +422,19 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 }
 
 func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, includeOccurrences bool) error {
+	var sessionID int64
+	var threadEvidence sql.NullString
+	if err := s.db.QueryRow(`SELECT s.id,s.thread_kind,s.thread_evidence,s.thread_confidence,s.thread_rule_version
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.id=?`, promptID).Scan(
+		&sessionID, &value.ThreadKind, &threadEvidence, &value.ThreadConfidence, &value.ThreadRuleVersion); err != nil {
+		return fmt.Errorf("read prompt thread metadata: %w", err)
+	}
+	value.ThreadEvidence = threadEvidence.String
+	var err error
+	value.Relationships, value.RelationshipsTruncated, err = s.sessionRelationships(sessionID)
+	if err != nil {
+		return err
+	}
 	if err := s.db.QueryRow(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN l.kind='provider_live' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN l.kind='provider_archive' THEN 1 ELSE 0 END),0),
@@ -539,6 +571,16 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 		&coverage.Repository.Known, &coverage.Repository.Unknown, &coverage.Branch.Known, &coverage.Branch.Unknown); err != nil {
 		return QueryCoverage{}, nil, fmt.Errorf("read history query metadata coverage: %w", err)
 	}
+	coverageQuery.ThreadKind = "all"
+	coverageWhere, coverageArgs = promptWhere(coverageQuery, false, "p", "s")
+	if err := s.db.QueryRow(`SELECT
+		COUNT(DISTINCT CASE WHEN s.thread_kind='root' THEN s.id END),
+		COUNT(DISTINCT CASE WHEN s.thread_kind='subagent' THEN s.id END),
+		COUNT(DISTINCT CASE WHEN s.thread_kind='unknown' THEN s.id END)
+		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(coverageWhere, " AND "), coverageArgs...).Scan(
+		&coverage.ThreadKind.Root, &coverage.ThreadKind.Subagent, &coverage.ThreadKind.Unknown); err != nil {
+		return QueryCoverage{}, nil, fmt.Errorf("read history query thread coverage: %w", err)
+	}
 	warnings := coverageWarnings(query, coverage)
 	return coverage, warnings, nil
 }
@@ -581,11 +623,11 @@ func coverageWarnings(query PromptQuery, coverage QueryCoverage) []string {
 }
 
 func newPromptCursor(kind string, query PromptQuery, generation int64, search string, fts bool, result PromptResult) promptCursor {
-	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
+	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
 	if result.Timestamp == nil {
 		cursor.Unknown = true
 	} else {
-		cursor.Timestamp = normalizedCatalogTimestamp(*result.Timestamp)
+		cursor.Timestamp = result.sortTimestamp
 	}
 	if result.Rank != nil {
 		cursor.RankBits = strconv.FormatUint(math.Float64bits(*result.Rank), 16)
@@ -607,7 +649,7 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 	if cursor.Generation != generation {
 		return promptCursor{}, errors.New("history cursor is stale because the index generation changed")
 	}
-	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.Query != search || cursor.FTSQuery != fts {
+	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.Query != search || cursor.FTSQuery != fts {
 		return promptCursor{}, errors.New("history cursor does not match the requested filters or query mode")
 	}
 	if cursor.Limit < 1 || cursor.Limit > 500 || cursor.PromptID == "" || (cursor.Unknown && cursor.Timestamp != "") || (!cursor.Unknown && !validCatalogTimestamp(cursor.Timestamp)) {
