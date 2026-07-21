@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -148,80 +149,18 @@ func (s *Store) initialize() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
 		return fmt.Errorf("set SQLite busy timeout: %w", err)
 	}
-	if err := enableWAL(s.db); err != nil {
+	if err := sqliteutil.EnableWAL(s.db, "usage"); err != nil {
 		return err
 	}
-	var existingVersion int
-	var metaTableExists bool
-	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')`).Scan(&metaTableExists); err != nil {
-		return fmt.Errorf("inspect usage schema: %w", err)
-	}
-	if metaTableExists {
-		err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&existingVersion)
-		if err == nil {
-			if existingVersion > SchemaVersion {
-				return fmt.Errorf("unsupported usage store schema %d (expected %d)", existingVersion, SchemaVersion)
-			}
-		} else if err != sql.ErrNoRows {
-			return fmt.Errorf("read schema version: %w", err)
-		}
-	}
-
-	if existingVersion == 0 {
-		return s.runSchemaStep(SchemaVersion, schemaSQL+vaultPaginationIndexesSQL)
-	}
-	for existingVersion < SchemaVersion {
-		next := existingVersion + 1
-		var ddl string
-		switch next {
-		case 2:
-			ddl = schemaSQL
-		case 3:
-			ddl = vaultPaginationIndexesSQL
-		default:
-			return fmt.Errorf("no usage store migration from schema %d", existingVersion)
-		}
-		if err := s.runSchemaStep(next, ddl); err != nil {
-			return fmt.Errorf("migrate usage store schema %d to %d: %w", existingVersion, next, err)
-		}
-		existingVersion = next
-	}
-	return nil
-}
-
-func enableWAL(database *sql.DB) error {
-	var lastErr error
-	for attempt := 0; attempt < 50; attempt++ {
-		var mode string
-		lastErr = database.QueryRow(`PRAGMA journal_mode = WAL;`).Scan(&mode)
-		if lastErr == nil {
-			return nil
-		}
-		message := strings.ToLower(lastErr.Error())
-		if !strings.Contains(message, "database is locked") && !strings.Contains(message, "sqlite_busy") {
-			return fmt.Errorf("enable SQLite WAL mode: %w", lastErr)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return fmt.Errorf("enable SQLite WAL mode: %w", lastErr)
-}
-
-func (s *Store) runSchemaStep(version int, ddl string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin schema transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(ddl); err != nil {
-		return fmt.Errorf("apply schema DDL: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, version); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit schema transaction: %w", err)
-	}
-	return nil
+	return sqliteutil.Migrate(s.db, sqliteutil.MigrationPlan{
+		Label:    "usage store",
+		Current:  SchemaVersion,
+		FreshSQL: schemaSQL + vaultPaginationIndexesSQL,
+		Steps: map[int]string{
+			2: schemaSQL,
+			3: vaultPaginationIndexesSQL,
+		},
+	})
 }
 
 // Close closes the database.
