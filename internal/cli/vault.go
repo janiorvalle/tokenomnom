@@ -81,10 +81,12 @@ func newVaultCommand(codexDir, claudeDir *string) *cobra.Command {
 	verify.Flags().BoolVar(&deep, "deep", false, "decompress and hash every archived transcript")
 	cmd.AddCommand(verify)
 
-	var provider, since, until string
+	var provider, since, until, sortBy, cursor string
+	var limit int
+	var latest bool
 	list := &cobra.Command{
 		Use: "list", Short: "List archived transcripts", Args: cobra.NoArgs,
-		PreRunE: func(_ *cobra.Command, _ []string) error {
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			if provider != "" && provider != "codex" && provider != "claude" {
 				return fmt.Errorf("invalid --provider %q (expected codex or claude)", provider)
 			}
@@ -97,6 +99,12 @@ func newVaultCommand(codexDir, claudeDir *string) *cobra.Command {
 			if since != "" && until != "" && until < since {
 				return fmt.Errorf("--until must be on or after --since")
 			}
+			if sortBy != "source" && sortBy != "first_ts" && sortBy != "last_ts" && sortBy != "size" {
+				return fmt.Errorf("invalid --sort %q (expected source, first_ts, last_ts, or size)", sortBy)
+			}
+			if cmd.Flags().Changed("limit") && (limit < 1 || limit > 500) {
+				return fmt.Errorf("--limit must be between 1 and 500")
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -106,6 +114,9 @@ func newVaultCommand(codexDir, claudeDir *string) *cobra.Command {
 			}
 			defer database.Close()
 			filter := vault.ListFilter{Provider: discover.Provider(provider)}
+			if cmd.Flags().Changed("sort") {
+				filter.Sort = store.VaultSort(sortBy)
+			}
 			if since != "" {
 				value, _ := time.Parse("2006-01-02", since)
 				filter.Since = &value
@@ -115,20 +126,66 @@ func newVaultCommand(codexDir, claudeDir *string) *cobra.Command {
 				value = value.Add(24*time.Hour - time.Nanosecond)
 				filter.Until = &value
 			}
-			entries, err := instance.List(filter)
-			if err != nil {
-				return err
+			pageMode := cmd.Flags().Changed("limit") || cursor != "" || latest
+			var entries []vault.ListEntry
+			var page *struct {
+				Limit      int    `json:"limit"`
+				HasMore    bool   `json:"has_more"`
+				NextCursor string `json:"next_cursor"`
+			}
+			if pageMode {
+				requestedLimit := limit
+				if cursor != "" && !cmd.Flags().Changed("limit") {
+					requestedLimit = 0
+				}
+				result, err := instance.ListPage(vault.ListPageQuery{ListFilter: filter, Sort: store.VaultSort(sortBy), Limit: requestedLimit, Cursor: cursor, LatestOnly: latest})
+				if err != nil {
+					return err
+				}
+				entries = result.Entries
+				page = &struct {
+					Limit      int    `json:"limit"`
+					HasMore    bool   `json:"has_more"`
+					NextCursor string `json:"next_cursor"`
+				}{Limit: result.Limit, HasMore: result.HasMore, NextCursor: result.NextCursor}
+			} else {
+				var err error
+				entries, err = instance.List(filter)
+				if err != nil {
+					return err
+				}
 			}
 			if currentFormat(cmd) == "json" {
 				filters := jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until)}
-				return writeJSONEnvelope(cmd, "vault list", requestedTimezone(""), filters, nil, struct {
+				data := struct {
 					Files []vault.ListEntry `json:"files"`
-				}{Files: entries})
+					Page  *struct {
+						Limit      int    `json:"limit"`
+						HasMore    bool   `json:"has_more"`
+						NextCursor string `json:"next_cursor"`
+					} `json:"page,omitempty"`
+				}{Files: entries, Page: page}
+				if data.Files == nil {
+					data.Files = []vault.ListEntry{}
+				}
+				return writeJSONEnvelope(cmd, "vault list", requestedTimezone(""), filters, nil, data)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%-7s %-7s %-10s %-8s %-20s %-20s %s\n", "SOURCE", "VERSION", "ARCHIVE", "SIZE", "FIRST", "LAST", "ORIGINAL")
+			if pageMode {
+				fmt.Fprintf(cmd.OutOrStdout(), "%-8s %-7s %-7s %-10s %-8s %-20s %-20s %s\n", "PROVIDER", "SOURCE", "VERSION", "ARCHIVE", "SIZE", "FIRST", "LAST", "ORIGINAL")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "%-7s %-7s %-10s %-8s %-20s %-20s %s\n", "SOURCE", "VERSION", "ARCHIVE", "SIZE", "FIRST", "LAST", "ORIGINAL")
+			}
 			for _, entry := range entries {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\tv%d\t%s\t%s\t%s\t%s\t%s\n", entry.SourcePath, entry.Version, entry.Archive,
-					humanBytes(entry.Size), dashIfEmpty(entry.FirstTS), dashIfEmpty(entry.LastTS), yesNo(entry.OriginalExists))
+				if pageMode {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\tv%d\t%s\t%s\t%s\t%s\t%s\n", entry.Provider, entry.SourcePath, entry.Version, entry.Archive,
+						humanBytes(entry.Size), dashIfEmpty(entry.FirstTS), dashIfEmpty(entry.LastTS), yesNo(entry.OriginalExists))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\tv%d\t%s\t%s\t%s\t%s\t%s\n", entry.SourcePath, entry.Version, entry.Archive,
+						humanBytes(entry.Size), dashIfEmpty(entry.FirstTS), dashIfEmpty(entry.LastTS), yesNo(entry.OriginalExists))
+				}
+			}
+			if page != nil && page.HasMore {
+				fmt.Fprintf(cmd.OutOrStdout(), "More results: rerun with the same filters and --cursor %s\n", page.NextCursor)
 			}
 			return nil
 		},
@@ -136,6 +193,10 @@ func newVaultCommand(codexDir, claudeDir *string) *cobra.Command {
 	list.Flags().StringVar(&provider, "provider", "", "filter by provider (codex or claude)")
 	list.Flags().StringVar(&since, "since", "", "include transcripts active on or after YYYY-MM-DD")
 	list.Flags().StringVar(&until, "until", "", "include transcripts active on or before YYYY-MM-DD")
+	list.Flags().StringVar(&sortBy, "sort", "last_ts", "page sort (source, first_ts, last_ts, or size)")
+	list.Flags().IntVar(&limit, "limit", 100, "maximum page rows (1-500)")
+	list.Flags().StringVar(&cursor, "cursor", "", "continue a previous page")
+	list.Flags().BoolVar(&latest, "latest", false, "return only the latest version of each source")
 	cmd.AddCommand(list)
 
 	var version int

@@ -139,10 +139,25 @@ run this settled-file pass when `vault.auto` is enabled and its
 Each failure identifies `source_path`, `version`, `archive`, and `error`; any
 failure also produces a nonzero exit.
 
-`vault list [--provider] [--since] [--until]` returns `data.files`. Each row
+`vault list [--provider] [--since] [--until]` returns `data.files`. With no
+pagination flags it preserves the complete, all-version manifest response.
+Each row
 contains the manifest fields (`source_path`, `provider`, `rel_path`, `archive`,
 `content_sha256`, `size`, `mtime_unix`, optional `first_ts`/`last_ts`,
 `line_count`, `vaulted_at`, and `version`) plus `original_exists`.
+
+`--limit N` enables SQL-backed keyset pagination with a range of 1 through 500.
+`--cursor OPAQUE` continues a page and reuses that page's limit unless a new
+valid limit is supplied. `--latest` enables page mode and returns only the
+newest version for each source. Page mode defaults to 100 rows and
+`last_ts` descending; `--sort` accepts `source` ascending or `first_ts`,
+`last_ts`, and `size` descending. Unknown timestamps sort after valid
+timestamps. Every order uses source and version tie-breakers.
+
+Page-mode responses add `data.page` with `limit`, `has_more`, and
+`next_cursor`. Cursors are opaque and may only be reused with the same filters,
+sort, and latest-version setting. Pretty page output includes provider and a
+continuation command when more rows exist.
 
 `vault cat <source-path | rel-path> [--version N]` returns the selected source
 and relative paths, version, and the byte-exact content as `content_base64`.

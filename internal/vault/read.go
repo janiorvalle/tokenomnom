@@ -174,6 +174,15 @@ type ListFilter struct {
 	Provider discover.Provider
 	Since    *time.Time
 	Until    *time.Time
+	Sort     store.VaultSort
+}
+
+type ListPageQuery struct {
+	ListFilter
+	Sort       store.VaultSort
+	Limit      int
+	Cursor     string
+	LatestOnly bool
 }
 
 type ListEntry struct {
@@ -209,7 +218,70 @@ func (v *Vault) List(filter ListFilter) ([]ListEntry, error) {
 		_, statErr := os.Stat(file.SourcePath)
 		entries = append(entries, ListEntry{VaultFile: file, OriginalExists: statErr == nil})
 	}
+	if filter.Sort != "" {
+		sortListEntries(entries, filter.Sort)
+	}
 	return entries, nil
+}
+
+func sortListEntries(entries []ListEntry, sortBy store.VaultSort) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		left, right := entries[i].VaultFile, entries[j].VaultFile
+		if sortBy == store.VaultSortSource {
+			if left.SourcePath != right.SourcePath {
+				return left.SourcePath < right.SourcePath
+			}
+			return left.Version < right.Version
+		}
+		if sortBy == store.VaultSortSize && left.Size != right.Size {
+			return left.Size > right.Size
+		}
+		if sortBy == store.VaultSortFirstTS || sortBy == store.VaultSortLastTS {
+			leftValue, rightValue := left.LastTS, right.LastTS
+			if sortBy == store.VaultSortFirstTS {
+				leftValue, rightValue = left.FirstTS, right.FirstTS
+			}
+			leftTime, leftErr := time.Parse(time.RFC3339Nano, leftValue)
+			rightTime, rightErr := time.Parse(time.RFC3339Nano, rightValue)
+			if (leftErr == nil) != (rightErr == nil) {
+				return leftErr == nil
+			}
+			if leftErr == nil && !leftTime.Equal(rightTime) {
+				return leftTime.After(rightTime)
+			}
+		}
+		if left.SourcePath != right.SourcePath {
+			return left.SourcePath < right.SourcePath
+		}
+		return left.Version > right.Version
+	})
+}
+
+type ListPage struct {
+	Entries    []ListEntry
+	Limit      int
+	HasMore    bool
+	NextCursor string
+}
+
+// ListPage returns a SQL-filtered page and stats only its returned originals.
+func (v *Vault) ListPage(query ListPageQuery) (ListPage, error) {
+	if _, err := v.EnsureFormat(); err != nil {
+		return ListPage{}, err
+	}
+	page, err := v.store.VaultFilesPage(store.VaultFileQuery{
+		Provider: query.Provider, Since: query.Since, Until: query.Until,
+		Sort: query.Sort, Limit: query.Limit, Cursor: query.Cursor, LatestOnly: query.LatestOnly,
+	})
+	if err != nil {
+		return ListPage{}, err
+	}
+	entries := make([]ListEntry, 0, len(page.Files))
+	for _, file := range page.Files {
+		_, statErr := os.Stat(file.SourcePath)
+		entries = append(entries, ListEntry{VaultFile: file, OriginalExists: statErr == nil})
+	}
+	return ListPage{Entries: entries, Limit: page.Limit, HasMore: page.HasMore, NextCursor: page.NextCursor}, nil
 }
 
 func (v *Vault) Resolve(name string, version int) (store.VaultFile, error) {

@@ -4,12 +4,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
@@ -18,7 +21,7 @@ import (
 
 const (
 	// SchemaVersion is the current usage database schema.
-	SchemaVersion = 2
+	SchemaVersion = 3
 	// DatabaseName is the filename within tokenomnom's state directory.
 	DatabaseName = "usage.db"
 )
@@ -157,10 +160,7 @@ func (s *Store) initialize() error {
 	if metaTableExists {
 		err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&existingVersion)
 		if err == nil {
-			if existingVersion == SchemaVersion {
-				return nil
-			}
-			if existingVersion != 1 {
+			if existingVersion > SchemaVersion {
 				return fmt.Errorf("unsupported usage store schema %d (expected %d)", existingVersion, SchemaVersion)
 			}
 		} else if err != sql.ErrNoRows {
@@ -168,23 +168,39 @@ func (s *Store) initialize() error {
 		}
 	}
 
+	if existingVersion == 0 {
+		return s.runSchemaStep(SchemaVersion, schemaSQL+vaultPaginationIndexesSQL)
+	}
+	for existingVersion < SchemaVersion {
+		next := existingVersion + 1
+		var ddl string
+		switch next {
+		case 2:
+			ddl = schemaSQL
+		case 3:
+			ddl = vaultPaginationIndexesSQL
+		default:
+			return fmt.Errorf("no usage store migration from schema %d", existingVersion)
+		}
+		if err := s.runSchemaStep(next, ddl); err != nil {
+			return fmt.Errorf("migrate usage store schema %d to %d: %w", existingVersion, next, err)
+		}
+		existingVersion = next
+	}
+	return nil
+}
+
+func (s *Store) runSchemaStep(version int, ddl string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin schema transaction: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("initialize usage schema: %w", err)
+	if _, err := tx.Exec(ddl); err != nil {
+		return fmt.Errorf("apply schema DDL: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, SchemaVersion); err != nil {
+	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, version); err != nil {
 		return fmt.Errorf("record schema version: %w", err)
-	}
-	var version int
-	if err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if version != SchemaVersion {
-		return fmt.Errorf("unsupported usage store schema %d (expected %d)", version, SchemaVersion)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema transaction: %w", err)
@@ -271,6 +287,238 @@ func (s *Store) LatestVaultFiles() ([]VaultFile, error) {
 		values = append(values, value)
 	}
 	return values, rows.Err()
+}
+
+// VaultSort identifies a deterministic page ordering.
+type VaultSort string
+
+const (
+	VaultSortSource  VaultSort = "source"
+	VaultSortFirstTS VaultSort = "first_ts"
+	VaultSortLastTS  VaultSort = "last_ts"
+	VaultSortSize    VaultSort = "size"
+)
+
+// VaultFileQuery describes one bounded manifest page.
+type VaultFileQuery struct {
+	Provider   discover.Provider
+	Since      *time.Time
+	Until      *time.Time
+	Sort       VaultSort
+	Limit      int
+	Cursor     string
+	LatestOnly bool
+}
+
+// VaultFilePage is one bounded manifest page and its continuation state.
+type VaultFilePage struct {
+	Files      []VaultFile
+	Limit      int
+	HasMore    bool
+	NextCursor string
+}
+
+type vaultCursor struct {
+	Version    int       `json:"v"`
+	Sort       VaultSort `json:"sort"`
+	Provider   string    `json:"provider"`
+	Since      string    `json:"since"`
+	Until      string    `json:"until"`
+	LatestOnly bool      `json:"latest"`
+	Limit      int       `json:"limit"`
+	Unknown    bool      `json:"unknown,omitempty"`
+	Text       string    `json:"text,omitempty"`
+	Number     int64     `json:"number,omitempty"`
+	SourcePath string    `json:"source_path"`
+	VersionKey int       `json:"version"`
+}
+
+// VaultFilesPage queries a bounded manifest page without loading the full ledger.
+func (s *Store) VaultFilesPage(query VaultFileQuery) (VaultFilePage, error) {
+	if query.Sort == "" {
+		query.Sort = VaultSortLastTS
+	}
+	if !validVaultSort(query.Sort) {
+		return VaultFilePage{}, fmt.Errorf("invalid vault sort %q", query.Sort)
+	}
+	var cursor vaultCursor
+	if query.Cursor != "" {
+		decoded, err := decodeVaultCursor(query.Cursor)
+		if err != nil {
+			return VaultFilePage{}, err
+		}
+		cursor = decoded
+		if err := cursor.matches(query); err != nil {
+			return VaultFilePage{}, err
+		}
+		if query.Limit == 0 {
+			query.Limit = cursor.Limit
+		}
+	}
+	if query.Limit == 0 {
+		query.Limit = 100
+	}
+	if query.Limit < 1 || query.Limit > 500 {
+		return VaultFilePage{}, fmt.Errorf("vault page limit must be between 1 and 500")
+	}
+
+	where := []string{"1=1"}
+	args := make([]any, 0, 12)
+	if query.Provider != "" {
+		where = append(where, "provider = ?")
+		args = append(args, query.Provider)
+	}
+	if query.Since != nil {
+		where = append(where, "(last_ts IS NULL OR last_ts = '' OR unixepoch(last_ts) IS NULL OR unixepoch(last_ts) >= unixepoch(?))")
+		args = append(args, query.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if query.Until != nil {
+		where = append(where, "(first_ts IS NULL OR first_ts = '' OR unixepoch(first_ts) IS NULL OR unixepoch(first_ts) <= unixepoch(?))")
+		args = append(args, query.Until.UTC().Format(time.RFC3339Nano))
+	}
+	if query.LatestOnly {
+		where = append(where, "version = (SELECT MAX(v2.version) FROM vault_files v2 WHERE v2.source_path = vault_files.source_path)")
+	}
+	if query.Cursor != "" {
+		clause, values := vaultCursorPredicate(query.Sort, cursor)
+		where = append(where, clause)
+		args = append(args, values...)
+	}
+	args = append(args, query.Limit+1)
+	statement := vaultSelect + " WHERE " + strings.Join(where, " AND ") + " ORDER BY " + vaultOrderBy(query.Sort) + " LIMIT ?"
+	rows, err := s.db.Query(statement, args...)
+	if err != nil {
+		return VaultFilePage{}, fmt.Errorf("page vault manifest: %w", err)
+	}
+	defer rows.Close()
+	files := make([]VaultFile, 0, query.Limit)
+	for rows.Next() {
+		value, err := scanVaultFile(rows)
+		if err != nil {
+			return VaultFilePage{}, fmt.Errorf("scan vault manifest page: %w", err)
+		}
+		files = append(files, value)
+	}
+	if err := rows.Err(); err != nil {
+		return VaultFilePage{}, err
+	}
+	page := VaultFilePage{Files: files, Limit: query.Limit}
+	if len(page.Files) > query.Limit {
+		page.Files = page.Files[:query.Limit]
+		page.HasMore = true
+		encoded, err := encodeVaultCursor(newVaultCursor(query, page.Files[len(page.Files)-1]))
+		if err != nil {
+			return VaultFilePage{}, err
+		}
+		page.NextCursor = encoded
+	}
+	return page, nil
+}
+
+func validVaultSort(sort VaultSort) bool {
+	return sort == VaultSortSource || sort == VaultSortFirstTS || sort == VaultSortLastTS || sort == VaultSortSize
+}
+
+func vaultOrderBy(sort VaultSort) string {
+	switch sort {
+	case VaultSortSource:
+		return "source_path ASC, version ASC"
+	case VaultSortFirstTS:
+		return "(first_ts IS NULL OR first_ts = '' OR unixepoch(first_ts) IS NULL) ASC, unixepoch(first_ts) DESC, source_path ASC, version DESC"
+	case VaultSortSize:
+		return "size DESC, source_path ASC, version DESC"
+	default:
+		return "(last_ts IS NULL OR last_ts = '' OR unixepoch(last_ts) IS NULL) ASC, unixepoch(last_ts) DESC, source_path ASC, version DESC"
+	}
+}
+
+func vaultCursorPredicate(sort VaultSort, cursor vaultCursor) (string, []any) {
+	switch sort {
+	case VaultSortSource:
+		return "(source_path > ? OR (source_path = ? AND version > ?))", []any{cursor.SourcePath, cursor.SourcePath, cursor.VersionKey}
+	case VaultSortSize:
+		return "(size < ? OR (size = ? AND (source_path > ? OR (source_path = ? AND version < ?))))", []any{cursor.Number, cursor.Number, cursor.SourcePath, cursor.SourcePath, cursor.VersionKey}
+	default:
+		column := "last_ts"
+		if sort == VaultSortFirstTS {
+			column = "first_ts"
+		}
+		unknownExpr := "(" + column + " IS NULL OR " + column + " = '' OR unixepoch(" + column + ") IS NULL)"
+		if cursor.Unknown {
+			return "(" + unknownExpr + " AND (source_path > ? OR (source_path = ? AND version < ?)))", []any{cursor.SourcePath, cursor.SourcePath, cursor.VersionKey}
+		}
+		return "(" + unknownExpr + " OR (NOT " + unknownExpr + " AND (unixepoch(" + column + ") < unixepoch(?) OR (unixepoch(" + column + ") = unixepoch(?) AND (source_path > ? OR (source_path = ? AND version < ?))))))", []any{cursor.Text, cursor.Text, cursor.SourcePath, cursor.SourcePath, cursor.VersionKey}
+	}
+}
+
+func newVaultCursor(query VaultFileQuery, file VaultFile) vaultCursor {
+	cursor := vaultCursor{Version: 1, Sort: query.Sort, Provider: string(query.Provider), Since: cursorTime(query.Since), Until: cursorTime(query.Until), LatestOnly: query.LatestOnly, Limit: query.Limit, SourcePath: file.SourcePath, VersionKey: file.Version}
+	switch query.Sort {
+	case VaultSortSize:
+		cursor.Number = file.Size
+	case VaultSortFirstTS:
+		cursor.Text, cursor.Unknown = file.FirstTS, !validVaultTimestamp(file.FirstTS)
+	case VaultSortLastTS:
+		cursor.Text, cursor.Unknown = file.LastTS, !validVaultTimestamp(file.LastTS)
+	}
+	return cursor
+}
+
+func (cursor vaultCursor) matches(query VaultFileQuery) error {
+	if cursor.Version != 1 {
+		return fmt.Errorf("unsupported vault cursor version %d", cursor.Version)
+	}
+	if cursor.Sort != query.Sort || cursor.Provider != string(query.Provider) || cursor.Since != cursorTime(query.Since) || cursor.Until != cursorTime(query.Until) || cursor.LatestOnly != query.LatestOnly {
+		return errors.New("vault cursor does not match the requested filters, sort, or version mode")
+	}
+	if cursor.Limit < 1 || cursor.Limit > 500 || cursor.SourcePath == "" {
+		return errors.New("invalid vault cursor")
+	}
+	if (cursor.Sort == VaultSortFirstTS || cursor.Sort == VaultSortLastTS) && !cursor.Unknown && !validVaultTimestamp(cursor.Text) {
+		return errors.New("invalid vault cursor")
+	}
+	if cursor.Sort == VaultSortSize && cursor.Number < 0 {
+		return errors.New("invalid vault cursor")
+	}
+	return nil
+}
+
+func cursorTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func validVaultTimestamp(value string) bool {
+	if value == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
+}
+
+func encodeVaultCursor(cursor vaultCursor) (string, error) {
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		return "", fmt.Errorf("encode vault cursor: %w", err)
+	}
+	return "v1:" + base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func decodeVaultCursor(value string) (vaultCursor, error) {
+	if !strings.HasPrefix(value, "v1:") {
+		return vaultCursor{}, errors.New("malformed or unsupported vault cursor")
+	}
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, "v1:"))
+	if err != nil {
+		return vaultCursor{}, errors.New("malformed vault cursor")
+	}
+	var cursor vaultCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return vaultCursor{}, errors.New("malformed vault cursor")
+	}
+	return cursor, nil
 }
 
 type rowScanner interface{ Scan(...any) error }
@@ -778,3 +1026,8 @@ CREATE TABLE IF NOT EXISTS vault_files (
   vaulted_at INTEGER NOT NULL, version INTEGER NOT NULL,
   PRIMARY KEY (source_path, version)
 );`
+
+const vaultPaginationIndexesSQL = `
+CREATE INDEX IF NOT EXISTS vault_files_provider_last_ts ON vault_files(provider, last_ts, source_path, version);
+CREATE INDEX IF NOT EXISTS vault_files_provider_first_ts ON vault_files(provider, first_ts, source_path, version);
+CREATE INDEX IF NOT EXISTS vault_files_provider_size ON vault_files(provider, size, source_path, version);`
