@@ -71,6 +71,39 @@ func ReadPositionedFileLimit(file *os.File, position Position, endOffset int64, 
 	return readPositionedFile(file, position, io.LimitReader(file, endOffset-position.ByteOffset), visit)
 }
 
+// ReadPositionedReader reads complete records from an immutable stream. It is
+// used for verified vault members, where seeking and live-file race checks are
+// unnecessary.
+func ReadPositionedReader(source io.Reader, position Position, visit func(Record)) (Position, error) {
+	if position.ByteOffset < 0 || position.LineNumber < 0 {
+		return position, fmt.Errorf("invalid JSONL position: offset and line number must be non-negative")
+	}
+	reader := bufio.NewReader(source)
+	complete := position
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			start := complete.ByteOffset
+			complete.ByteOffset += int64(len(line))
+			complete.LineNumber++
+			visit(Record{Raw: line, LineNumber: complete.LineNumber, StartOffset: start, EndOffset: complete.ByteOffset})
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			if len(line) > 0 {
+				start := complete.ByteOffset
+				complete.ByteOffset += int64(len(line))
+				complete.LineNumber++
+				visit(Record{Raw: line, LineNumber: complete.LineNumber, StartOffset: start, EndOffset: complete.ByteOffset})
+			}
+			return complete, nil
+		}
+		return complete, fmt.Errorf("read JSONL stream: %w", readErr)
+	}
+}
+
 func readPositionedFile(file *os.File, position Position, source io.Reader, visit func(Record)) (Position, error) {
 	if position.ByteOffset < 0 || position.LineNumber < 0 {
 		return position, fmt.Errorf("invalid JSONL position: offset and line number must be non-negative")

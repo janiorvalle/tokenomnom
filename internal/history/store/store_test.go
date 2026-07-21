@@ -84,6 +84,251 @@ func TestFutureSchemaVersionIsRefused(t *testing.T) {
 	}
 }
 
+func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/migration.jsonl", history.LocationProviderLive)
+	before, err := database.ApplySource(extraction("native:migration", "migration", source, prompt("native:p", "p", "kept", 1)), head(source, "hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; UPDATE meta SET value='2' WHERE key='schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	page, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 || page.Sessions[0].SessionID != before.SessionID || page.Sessions[0].SourceHeadIDs[0] != before.SourceID {
+		t.Fatalf("migration changed stable IDs: before=%+v page=%+v", before, page)
+	}
+}
+
+func TestHealthCountsStaleVaultSnapshotsAndBundleCheckpoints(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/gone/stale.jsonl", Archive: "codex/stale.tar.zst", RelativePath: "stale.jsonl", VaultVersion: 1}
+	extract := extraction("native:stale-vault", "stale-vault", source, prompt("native:p", "p", "stale prompt", 1))
+	_, err := database.ApplySnapshotBundle(source.Archive, "fingerprint", []SnapshotInput{{
+		Extraction: extract, Snapshot: history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "stale-hash", Size: 10},
+	}}, false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE preserved_snapshots SET extractor_version=0; UPDATE vault_bundle_state SET extractor_version=0`); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil || health.StaleSources != 2 {
+		t.Fatalf("stale vault health=%+v err=%v", health, err)
+	}
+}
+
+func TestBundleCoalescesIdenticalEmptyPathFallbackSnapshots(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	inputs := make([]SnapshotInput, 0, 2)
+	for index, name := range []string{"one", "two"} {
+		source := history.SourceReference{
+			Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/gone/" + name + ".jsonl",
+			Archive: "codex/empty.tar.zst", RelativePath: name + ".jsonl", VaultVersion: index + 1,
+		}
+		inputs = append(inputs, SnapshotInput{
+			Extraction: history.Extraction{Provider: history.ProviderCodex, Source: source, Session: history.Session{
+				IdentityKey: "fallback:source-path:" + source.Path, FallbackKey: "source-path:" + source.Path, Confidence: history.ConfidenceUnknown,
+			}},
+			Snapshot: history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "empty-hash", Size: 0},
+		})
+	}
+	result, err := database.ApplySnapshotBundle("codex/empty.tar.zst", "empty-fingerprint", inputs, false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, _ := database.Stats()
+	if !result.Changed || result.Snapshots != 2 || stats.Sessions != 1 || stats.Snapshots != 1 || stats.Locations != 2 {
+		t.Fatalf("empty snapshot result=%+v stats=%+v", result, stats)
+	}
+}
+
+func TestFailedVaultBundleRestoresPromptIDAndExcludesCoverageUntilRepair(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	when := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	source := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/gone/repair.jsonl", Archive: "codex/repair.tar.zst", RelativePath: "repair.jsonl", VaultVersion: 1}
+	extract := extraction("native:repair", "repair", source, prompt("native:p", "p", "repair me", 1))
+	extract.Session.FirstTimestamp, extract.Session.LastTimestamp = &when, &when
+	input := SnapshotInput{Extraction: extract, Snapshot: history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "repair-hash", Size: 10, FirstTS: &when, LastTS: &when}}
+	if _, err := database.ApplySnapshotBundle(source.Archive, "repair-fingerprint", []SnapshotInput{input}, false, when); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err := database.db.QueryRow(`SELECT public_id FROM prompts`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordVaultBundleError(source.Archive, when.Add(time.Minute), errors.New("missing")); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil || health.CoverageFirst != "" || health.CoverageLast != "" || health.IndexedVaultBundles != 0 || health.IndexedVaultVersions != 0 {
+		t.Fatalf("failed bundle coverage=%+v err=%v", health, err)
+	}
+	if err := database.RecordVaultBundleIndexError(source.Archive, when.Add(90*time.Second), errors.New("history retry failed")); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.Health()
+	if err != nil || health.IndexedVaultBundles != 0 || health.IndexedVaultVersions != 0 {
+		t.Fatalf("consumer retry cleared integrity invalidation: health=%+v err=%v", health, err)
+	}
+	var prompts, tombstones int
+	if err := database.db.QueryRow(`SELECT (SELECT COUNT(*) FROM prompts),(SELECT COUNT(*) FROM vault_prompt_tombstones)`).Scan(&prompts, &tombstones); err != nil || prompts != 0 || tombstones != 1 {
+		t.Fatalf("failed bundle prompts=%d tombstones=%d err=%v", prompts, tombstones, err)
+	}
+	liveWhen := when.Add(time.Hour)
+	liveSource := sourceRef("/provider/repair.jsonl", history.LocationProviderLive)
+	liveExtract := extraction("native:repair", "repair", liveSource, prompt("native:p", "p", "repair me", 1))
+	liveExtract.Session.FirstTimestamp, liveExtract.Session.LastTimestamp = &liveWhen, &liveWhen
+	liveExtract.Prompts[0].Timestamp = &liveWhen
+	liveResult, err := database.ApplySource(liveExtract, head(liveSource, "live-repair-hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outageID := liveResult.PromptIDs["native:p"]
+	health, err = database.Health()
+	if err != nil || health.CoverageFirst != liveWhen.Format(time.RFC3339Nano) || health.CoverageLast != liveWhen.Format(time.RFC3339Nano) {
+		t.Fatalf("live-only repair coverage=%+v err=%v", health, err)
+	}
+	if _, err := database.ApplySnapshotBundle(source.Archive, "repair-fingerprint", []SnapshotInput{input}, false, when.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var after string
+	if err := database.db.QueryRow(`SELECT public_id FROM prompts`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("repaired prompt ID changed %q -> %q", before, after)
+	}
+	resolved, err := database.ResolvePublicID(outageID)
+	if err != nil || resolved != before {
+		t.Fatalf("outage prompt alias %q resolved to %q, err=%v", outageID, resolved, err)
+	}
+	health, err = database.Health()
+	if err != nil || health.IndexedVaultBundles != 1 || health.IndexedVaultVersions != 1 {
+		t.Fatalf("repaired bundle health=%+v err=%v", health, err)
+	}
+}
+
+func TestVaultBackfillRestoresPromptIDFromMissingProviderTombstone(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	when := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	liveSource := sourceRef("/provider/missing-before-vault.jsonl", history.LocationProviderLive)
+	liveExtract := extraction("native:missing-before-vault", "missing-before-vault", liveSource, prompt("native:p", "p", "restore provider ID", 1))
+	live, err := database.ApplySource(liveExtract, head(liveSource, "provider-hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MarkSourceMissing(history.ProviderCodex, liveSource.Path); err != nil {
+		t.Fatal(err)
+	}
+	vaultSource := history.SourceReference{
+		Provider: history.ProviderCodex, Kind: history.LocationVault, Path: liveSource.Path,
+		Archive: "codex/provider-recovery.tar.zst", RelativePath: "missing-before-vault.jsonl", VaultVersion: 1,
+	}
+	vaultExtract := extraction("native:missing-before-vault", "missing-before-vault", vaultSource, prompt("native:p", "p", "restore provider ID", 1))
+	restored, err := database.PreserveSnapshot(vaultExtract, history.PreservedSnapshot{
+		Provider: history.ProviderCodex, ContentSHA256: "vault-provider-hash", Size: 10, FirstTS: &when, LastTS: &when,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.PromptIDs["native:p"] != live.PromptIDs["native:p"] {
+		t.Fatalf("vault backfill changed missing provider prompt ID %q -> %q", live.PromptIDs["native:p"], restored.PromptIDs["native:p"])
+	}
+}
+
+func TestExactSnapshotReindexDoesNotRestoreUnavailableLocationOccurrences(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	when := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	sourceA := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/gone/shared.jsonl", Archive: "codex/a.tar.zst", RelativePath: "shared.jsonl", VaultVersion: 1}
+	extractA := extraction("native:shared", "shared", sourceA, prompt("native:p", "p", "shared prompt", 1))
+	snapshot := history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "shared-hash", Size: 10, FirstTS: &when, LastTS: &when}
+	if _, err := database.ApplySnapshotBundle(sourceA.Archive, "fingerprint-a", []SnapshotInput{{Extraction: extractA, Snapshot: snapshot}}, false, when); err != nil {
+		t.Fatal(err)
+	}
+	var originalPromptID string
+	if err := database.db.QueryRow(`SELECT public_id FROM prompts`).Scan(&originalPromptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordVaultBundleError(sourceA.Archive, when.Add(time.Minute), errors.New("missing a")); err != nil {
+		t.Fatal(err)
+	}
+	sourceB := sourceA
+	sourceB.Archive = "codex/b.tar.zst"
+	extractB := extractA
+	extractB.Source = sourceB
+	if _, err := database.ApplySnapshotBundle(sourceB.Archive, "fingerprint-b", []SnapshotInput{{Extraction: extractB, Snapshot: snapshot}}, false, when.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var restoredPromptID string
+	if err := database.db.QueryRow(`SELECT public_id FROM prompts`).Scan(&restoredPromptID); err != nil || restoredPromptID != originalPromptID {
+		t.Fatalf("alternate archive restored prompt ID=%q want=%q err=%v", restoredPromptID, originalPromptID, err)
+	}
+	var unavailableOccurrences int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE l.available=0`).Scan(&unavailableOccurrences); err != nil || unavailableOccurrences != 0 {
+		t.Fatalf("unavailable occurrences=%d err=%v", unavailableOccurrences, err)
+	}
+	if err := database.RecordVaultBundleError(sourceB.Archive, when.Add(3*time.Minute), errors.New("missing b")); err != nil {
+		t.Fatal(err)
+	}
+	var prompts int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM prompts`).Scan(&prompts); err != nil || prompts != 0 {
+		t.Fatalf("failed exact copies retained prompts=%d err=%v", prompts, err)
+	}
+}
+
+func TestVaultBundleIndexErrorKeepsCoverageButDegradesHealth(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	when := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	source := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/gone/index-error.jsonl", Archive: "codex/index-error.tar.zst", RelativePath: "index-error.jsonl", VaultVersion: 1}
+	extract := extraction("native:index-error", "index-error", source, prompt("native:p", "p", "still available", 1))
+	if _, err := database.ApplySnapshotBundle(source.Archive, "index-error-fingerprint", []SnapshotInput{{
+		Extraction: extract, Snapshot: history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "index-error-hash", Size: 10},
+	}}, false, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordVaultBundleIndexError(source.Archive, when.Add(time.Minute), errors.New("sqlite apply failed")); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	page, listErr := database.ListCatalog(CatalogQuery{Source: CatalogSourceVault})
+	if err != nil || listErr != nil || health.ErrorSources != 1 || health.IndexedVaultBundles != 1 || len(page.Sessions) != 1 {
+		t.Fatalf("non-invalidating error health=%+v page=%+v err=%v listErr=%v", health, page, err, listErr)
+	}
+	generation := health.IndexGeneration
+	if _, err := database.ApplySnapshotBundle(source.Archive, "index-error-fingerprint", []SnapshotInput{{
+		Extraction: extract, Snapshot: history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "index-error-hash", Size: 10},
+	}}, false, when.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.Health()
+	if err != nil || health.ErrorSources != 0 || health.IndexGeneration != generation {
+		t.Fatalf("unchanged consumer retry health=%+v generation=%d err=%v", health, generation, err)
+	}
+}
+
 func TestMigrationFailureRollsBackSchemaAndVersion(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), DatabaseName))
 	if err != nil {

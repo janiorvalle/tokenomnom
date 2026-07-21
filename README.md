@@ -91,11 +91,14 @@ Build the local human-prompt history index explicitly and inspect its health:
 
 ```sh
 tokenomnom history index
+tokenomnom history list --since 2026-07-01 --limit 100
 tokenomnom history status
 ```
 
 Indexing resumes growing transcripts, detects rewrites and missing sources,
-and includes Codex live/archive files plus Claude Code project files. It is
+and includes Codex live/archive files, Claude Code project files, and every
+verified vault version by default. `history list` returns one stable logical
+session row with provider/vault availability and preserved-version counts. It is
 never run implicitly by usage reports or normal syncs. `history.db` is derived
 plaintext local data; `tokenomnom history purge` removes it without touching
 `usage.db`, provider transcripts, vault bundles, or config.

@@ -142,6 +142,56 @@ func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {
 	}
 }
 
+func TestHistoryDefaultIndexIncludesProviderAndVaultAndListsOnce(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	path := filepath.Join(codexDir, "sessions", "2026", "07", "shared.jsonl")
+	writeTextFixture(t, path, historyCodexFixture("shared", "one logical prompt"))
+	if _, err := executeReport([]string{"vault", "archive", "--all"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "index", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexed jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed.Source != "all" || indexed.NewSources != 1 || indexed.IndexedVaultBundles != 1 || indexed.IndexedVaultVersions != 1 || indexed.IndexedPrompts != 2 || indexed.ErrorCount != 0 {
+		t.Fatalf("combined index = %+v", indexed)
+	}
+
+	listOutput, err := executeReport([]string{"history", "list", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page historystore.CatalogPage
+	if err := json.Unmarshal(decodeEnvelope(t, listOutput).Data, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 || page.Sessions[0].LogicalPromptCount != 1 || page.Sessions[0].OccurrenceCount != 2 || !page.Sessions[0].Availability.ExactLiveAndVaulted || !strings.HasPrefix(page.Sessions[0].SessionID, "ses_") || len(page.Sessions[0].PreservedSnapshotIDs) != 1 {
+		t.Fatalf("combined catalog = %+v", page)
+	}
+
+	second, err := executeReport([]string{"history", "index", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, second).Data, &indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed.IndexedSources != 0 || indexed.SkippedSources != 1 || indexed.IndexedVaultBundles != 0 || indexed.SkippedVaultBundles != 1 || indexed.IndexedVaultVersions != 0 {
+		t.Fatalf("idempotent combined index = %+v", indexed)
+	}
+}
+
 func TestHistoryPurgeLockAndFileSafety(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
@@ -190,10 +240,18 @@ func TestHistoryPurgeLockAndFileSafety(t *testing.T) {
 func TestHistoryRejectsUnsupportedSelectors(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
-	for _, args := range [][]string{{"history", "index", "--provider", "other"}, {"history", "index", "--source", "all"}} {
+	for _, args := range [][]string{{"history", "index", "--provider", "other"}, {"history", "index", "--source", "other"}} {
 		if _, err := executeReport(args, filepath.Join(root, "codex"), filepath.Join(root, "claude")); err == nil {
 			t.Fatalf("%v succeeded", args)
 		}
+	}
+}
+
+func TestSafePrettyPreviewEscapesTerminalControls(t *testing.T) {
+	input := "hello\x1b]52;c;clipboard\a\rnext\b"
+	got := safePrettyPreview(input)
+	if strings.ContainsAny(got, "\x1b\a\b\r") || !strings.Contains(got, `\u001b]52;c;clipboard\u0007 next\u0008`) {
+		t.Fatalf("safe preview = %q", got)
 	}
 }
 

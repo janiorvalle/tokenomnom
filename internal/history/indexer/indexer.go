@@ -35,6 +35,10 @@ type Options struct {
 	Full      bool
 	Now       func() time.Time
 	LockHeld  bool
+	// SkipRunRecord lets a combined provider+vault command record one scope-wide
+	// attempt after both independent source kinds finish.
+	SkipRunRecord bool
+	NarrowSource  bool
 }
 
 // Issue is bounded non-content failure or warning detail.
@@ -184,9 +188,11 @@ func Index(options Options) (Summary, error) {
 		}
 	}
 
-	completeScope := selected[history.ProviderCodex] && selected[history.ProviderClaude]
-	if err := options.Store.RecordScopedRun(attempt, summary.ErrorCount, completeScope); err != nil {
-		return summary, err
+	completeScope := selected[history.ProviderCodex] && selected[history.ProviderClaude] && !options.NarrowSource
+	if !options.SkipRunRecord {
+		if err := options.Store.RecordScopedRun(attempt, summary.ErrorCount, completeScope); err != nil {
+			return summary, err
+		}
 	}
 	summary.Duration = time.Since(started)
 	if summary.ErrorCount > 0 {

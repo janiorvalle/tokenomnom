@@ -53,6 +53,18 @@ type Health struct {
 	Occurrences             int
 	LiveSources             int
 	ProviderArchiveSources  int
+	PreservedSnapshots      int
+	VaultLocations          int
+	ProviderLiveOnly        int
+	ProviderArchiveOnly     int
+	VaultOnly               int
+	ExactLiveAndVaulted     int
+	UnavailableMetadata     int
+	IndexedVaultBundles     int
+	IndexedVaultVersions    int
+	BrokenSkippedBundles    int
+	CoverageFirst           string
+	CoverageLast            string
 	StaleSources            int
 	ErrorSources            int
 	MissingSources          int
@@ -269,7 +281,7 @@ func (s *Store) Health() (Health, error) {
 		return Health{}, err
 	}
 	value := Health{Exists: info.Exists, Path: info.Path, SizeBytes: info.Size, SchemaVersion: info.SchemaVersion, ExtractorVersion: info.ExtractorVersion}
-	err = scanHealth(s.db.QueryRow(healthQuery, history.ExtractorVersion), &value)
+	err = scanHealth(s.db.QueryRow(healthQuery, history.ExtractorVersion, history.ExtractorVersion, history.ExtractorVersion), &value)
 	if err != nil {
 		return Health{}, fmt.Errorf("read history health: %w", err)
 	}
@@ -299,19 +311,42 @@ func InspectHealth(path string) (Health, error) {
 		return Health{}, fmt.Errorf("inspect history health: %w", err)
 	}
 	defer db.Close()
-	if err := scanHealth(db.QueryRow(healthQuery, history.ExtractorVersion), &value); err != nil {
+	if err := scanHealth(db.QueryRow(healthQuery, history.ExtractorVersion, history.ExtractorVersion, history.ExtractorVersion), &value); err != nil {
 		return Health{}, fmt.Errorf("inspect history health: %w", err)
 	}
 	return value, nil
 }
 
-const healthQuery = `SELECT
+var healthQuery = `SELECT
 		(SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM prompts),
 		(SELECT COUNT(*) FROM occurrences),(SELECT COUNT(*) FROM source_heads WHERE source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads WHERE source_kind='codex_archive'),
-		(SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?),
-		((SELECT COUNT(*) FROM source_heads WHERE last_error<>'')+(SELECT COUNT(*) FROM source_errors)),(SELECT COUNT(*) FROM source_heads WHERE available=0),
-		COALESCE((SELECT MAX(indexed_at) FROM source_heads),0),
+		(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations WHERE kind='vault'),
+		(SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')) AND NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive') AND NOT EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)),
+		(SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive') AND NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')) AND NOT EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)),
+		(SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1) AND NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1)),
+		(SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM source_heads sh JOIN preserved_snapshots ps ON ps.session_id=sh.session_id JOIN locations l ON l.snapshot_id=ps.id AND l.available=1 WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project') AND sh.complete_offset=sh.size AND sh.current_sha256<>'' AND sh.current_sha256=ps.content_sha256)),
+		(SELECT COUNT(*) FROM sessions s WHERE NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1) AND NOT EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)),
+		(SELECT COUNT(*) FROM vault_bundle_state WHERE last_success_unix>0 AND (last_error='' OR last_error_invalidates=0)),
+		COALESCE((SELECT SUM(member_count) FROM vault_bundle_state WHERE last_success_unix>0 AND (last_error='' OR last_error_invalidates=0)),0),
+		(SELECT COUNT(*) FROM vault_bundle_state WHERE last_error<>'' AND last_error_invalidates=1),
+		COALESCE((SELECT first_ts FROM (
+			SELECT first_ts FROM source_heads WHERE available=1 AND first_ts IS NOT NULL AND first_ts<>''
+			UNION ALL
+			SELECT ps.first_ts FROM preserved_snapshots ps WHERE ps.first_ts IS NOT NULL AND ps.first_ts<>''
+				AND EXISTS(SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND l.available=1)
+		) ORDER BY ` + sqliteTimestampKey("first_ts") + ` ASC LIMIT 1),''),
+		COALESCE((SELECT last_ts FROM (
+			SELECT last_ts FROM source_heads WHERE available=1 AND last_ts IS NOT NULL AND last_ts<>''
+			UNION ALL
+			SELECT ps.last_ts FROM preserved_snapshots ps WHERE ps.last_ts IS NOT NULL AND ps.last_ts<>''
+				AND EXISTS(SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND l.available=1)
+		) ORDER BY ` + sqliteTimestampKey("last_ts") + ` DESC LIMIT 1),''),
+		((SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?)+
+		 (SELECT COUNT(*) FROM vault_bundle_state WHERE last_success_unix>0 AND extractor_version<>?)+
+		 (SELECT COUNT(*) FROM preserved_snapshots WHERE extractor_version<>?)),
+		((SELECT COUNT(*) FROM source_heads WHERE last_error<>'')+(SELECT COUNT(*) FROM source_errors)+(SELECT COUNT(*) FROM vault_bundle_state WHERE last_error<>'')),(SELECT COUNT(*) FROM source_heads WHERE available=0),
+		MAX(COALESCE((SELECT MAX(indexed_at) FROM source_heads),0),COALESCE((SELECT MAX(last_success_unix) FROM vault_bundle_state),0)),
 		COALESCE((SELECT value FROM meta WHERE key='last_attempt_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_complete_success_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_run_error_count'),'0'),
@@ -324,7 +359,11 @@ type rowScanner interface {
 func scanHealth(row rowScanner, value *Health) error {
 	return row.Scan(
 		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.Occurrences, &value.LiveSources,
-		&value.ProviderArchiveSources, &value.StaleSources, &value.ErrorSources, &value.MissingSources,
+		&value.ProviderArchiveSources, &value.PreservedSnapshots, &value.VaultLocations,
+		&value.ProviderLiveOnly, &value.ProviderArchiveOnly, &value.VaultOnly, &value.ExactLiveAndVaulted,
+		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,
+		&value.BrokenSkippedBundles, &value.CoverageFirst, &value.CoverageLast,
+		&value.StaleSources, &value.ErrorSources, &value.MissingSources,
 		&value.LastIndexUnix, &value.LastAttemptUnix, &value.LastCompleteSuccessUnix, &value.LastRunErrorCount, &value.IndexGeneration)
 }
 

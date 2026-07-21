@@ -158,6 +158,27 @@ CREATE TABLE IF NOT EXISTS source_errors (
 	PRIMARY KEY(provider, source_path)
 );
 
+CREATE TABLE IF NOT EXISTS vault_bundle_state (
+	archive TEXT PRIMARY KEY,
+	manifest_fingerprint TEXT NOT NULL DEFAULT '',
+	member_count INTEGER NOT NULL DEFAULT 0,
+	extractor_version INTEGER NOT NULL DEFAULT 0,
+	last_attempt_unix INTEGER NOT NULL DEFAULT 0,
+	last_success_unix INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	last_error_invalidates INTEGER NOT NULL DEFAULT 0 CHECK (last_error_invalidates IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS vault_prompt_tombstones (
+	archive TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	session_public_id TEXT NOT NULL,
+	logical_key TEXT NOT NULL,
+	prompt_public_id TEXT NOT NULL,
+	deleted_at INTEGER NOT NULL,
+	PRIMARY KEY(archive, provider, session_public_id, logical_key)
+);
+
 CREATE INDEX IF NOT EXISTS source_heads_session_idx ON source_heads(session_id);
 CREATE INDEX IF NOT EXISTS snapshots_session_idx ON preserved_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS prompts_session_idx ON prompts(session_id);

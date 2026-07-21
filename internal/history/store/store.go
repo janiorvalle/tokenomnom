@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	SchemaVersion = 2
+	SchemaVersion = 5
 	DatabaseName  = "history.db"
 )
 
@@ -177,6 +177,31 @@ CREATE TABLE source_errors (
 	last_error TEXT NOT NULL,
 	PRIMARY KEY(provider, source_path)
 );
+`,
+			3: `
+CREATE TABLE vault_bundle_state (
+	archive TEXT PRIMARY KEY,
+	manifest_fingerprint TEXT NOT NULL DEFAULT '',
+	member_count INTEGER NOT NULL DEFAULT 0,
+	extractor_version INTEGER NOT NULL DEFAULT 0,
+	last_attempt_unix INTEGER NOT NULL DEFAULT 0,
+	last_success_unix INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT ''
+);
+`,
+			4: `
+CREATE TABLE vault_prompt_tombstones (
+	archive TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	session_public_id TEXT NOT NULL,
+	logical_key TEXT NOT NULL,
+	prompt_public_id TEXT NOT NULL,
+	deleted_at INTEGER NOT NULL,
+	PRIMARY KEY(archive, provider, session_public_id, logical_key)
+);
+`,
+			5: `
+ALTER TABLE vault_bundle_state ADD COLUMN last_error_invalidates INTEGER NOT NULL DEFAULT 0 CHECK (last_error_invalidates IN (0, 1));
 `,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, _ int) error {

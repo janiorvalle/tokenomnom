@@ -442,6 +442,7 @@ func (v *Vault) cleanupAbandonedStaging() error {
 	patterns := []string{
 		filepath.Join(v.dir, ".source-*.zst"),
 		filepath.Join(v.dir, "*", ".bundle-*.tar.zst"),
+		filepath.Join(v.dir, "*", ".history-member-*"),
 	}
 	for _, pattern := range patterns {
 		paths, err := filepath.Glob(pattern)
