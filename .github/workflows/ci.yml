@@ -54,29 +54,34 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
+  # The heavy jobs below always run so their named contexts satisfy the
+  # branch ruleset on docs-only changes; a job-level skip would leave the
+  # required checks "expected" forever (skipped matrix jobs never report
+  # their expanded names). Their steps no-op when only Markdown changed.
   verify:
     name: Verify
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           go-version-file: go.mod
           cache: true
       - run: make verify
+        if: needs.changes.outputs.code == 'true'
 
   platform:
     name: Go (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -89,36 +94,44 @@ jobs:
           - windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           go-version-file: go.mod
           cache: true
       - run: go build ./...
+        if: needs.changes.outputs.code == 'true'
       - run: go vet ./...
+        if: needs.changes.outputs.code == 'true'
       - run: go test ./...
+        if: needs.changes.outputs.code == 'true'
 
   install-smoke:
     name: Installer smoke
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: needs.changes.outputs.code == 'true'
         with:
           go-version-file: go.mod
           cache: true
       - name: Check installer shell
+        if: needs.changes.outputs.code == 'true'
         run: shellcheck install.sh scripts/install-smoke.sh
       - name: Exercise installer against snapshot
+        if: needs.changes.outputs.code == 'true'
         run: make install-smoke
 
   workflow-lint:
