@@ -245,20 +245,21 @@ The standalone installer supports
 ## Vault
 
 Coding agents throw their own history away. The vault is where it survives:
-every session preserved byte-for-byte so agents can mine it later for the
-meta-level questions the live logs can't outlast — how a refactor actually
-went, what prompting preceded the productive sessions, which recurring
-workflows deserve to become skills. Find sessions with `vault list`
-(project, dates, sizes), read them with `vault cat`:
+every archived source is preserved byte-for-byte for later inspection. The
+vault manifest contains provider, source path, archive, version, size, and
+timestamp metadata; it is not yet project or session search. Inspect a bounded
+page of the manifest, then read one archived source with `vault cat`:
 
 ```sh
-tokenomnom vault list --provider codex --since 2026-06-01 --format json
+tokenomnom vault list --provider codex --since 2026-06-01 --limit 100 --latest --format json
 tokenomnom vault cat ~/.codex/sessions/2026/06/13/rollout-….jsonl | jq .
 ```
 
-The agent skill teaches Codex and Claude Code this flow, so "look through my
-June sessions and tell me what to improve" works against the vault even after
-the original files are gone.
+Follow `data.page.next_cursor` with the same filters when `has_more` is true.
+JSON `vault cat` returns readable `content` for UTF-8 transcripts and always
+retains the compatible `content_base64` form. The installed agent skill uses
+this bounded flow and explains the temporary live-directory fallback for
+recent transcripts that have not settled or been archived yet.
 
 The transcript vault stores byte-for-byte source content in monthly,
 provider-specific `.tar.zst` bundles while keeping a versioned manifest in the
@@ -268,6 +269,11 @@ checks bundles, `vault list` shows the manifest,
 `vault cat <source-path | rel-path>` restores original
 bytes to stdout, and `vault status` reports compression and reclaimable
 originals.
+
+`doctor` reports usage sync, archive, deep-verification, and status-scan times
+as separate facts, along with vaulted, settled-unvaulted, recent-unsettled, and
+known-broken counts. A missing synced source keeps its usage totals; raw access
+then depends on whether the source was vaulted.
 
 tokenomnom never modifies or deletes source transcripts. Reclaiming a verified
 original listed by `vault status` is always a manual decision.

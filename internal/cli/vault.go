@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -270,6 +271,16 @@ func writeVaultCatJSON(cmd *cobra.Command, instance *vault.Vault, name string, v
 	if err != nil {
 		return err
 	}
+	contents, err := os.ReadFile(tempPath)
+	if err != nil {
+		return err
+	}
+	encoding := "base64"
+	var content any
+	if utf8.Valid(contents) {
+		encoding = "utf-8"
+		content = string(contents)
+	}
 	temp, err = os.Open(tempPath)
 	if err != nil {
 		return err
@@ -307,6 +318,8 @@ func writeVaultCatJSON(cmd *cobra.Command, instance *vault.Vault, name string, v
 		{"source_path", manifest.SourcePath},
 		{"rel_path", manifest.RelPath},
 		{"version", manifest.Version},
+		{"encoding", encoding},
+		{"content", content},
 	}
 	for index, field := range dataFields {
 		if err := writeStreamingJSONField(writer, index > 0, field.key, field.value); err != nil {

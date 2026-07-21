@@ -337,6 +337,135 @@ func TestSettledFilterAllAndMidReadChange(t *testing.T) {
 	}
 }
 
+func TestArchiveCleansAbandonedStagingAndPreservesOtherFiles(t *testing.T) {
+	instance, database, _, _ := testVault(t, nil)
+	defer database.Close()
+	if _, err := instance.EnsureFormat(); err != nil {
+		t.Fatal(err)
+	}
+	providerDir := filepath.Join(instance.dir, string(discover.ProviderCodex))
+	if err := os.MkdirAll(providerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	remove := []string{
+		filepath.Join(instance.dir, ".source-abandoned.zst"),
+		filepath.Join(providerDir, ".bundle-abandoned.tar.zst"),
+	}
+	preserve := []string{
+		filepath.Join(instance.dir, "published.tar.zst"),
+		filepath.Join(instance.dir, "published.tar.zst.rollback"),
+		filepath.Join(instance.dir, "unknown.tmp"),
+	}
+	for _, path := range append(append([]string{}, remove...), preserve...) {
+		if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := instance.Archive(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range remove {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("abandoned staging file %s remains: %v", path, err)
+		}
+	}
+	preserve = append(preserve, filepath.Join(instance.dir, markerName), filepath.Join(instance.dir, ".tokenomnom-vault.lock"))
+	for _, path := range preserve {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("preserved vault file %s: %v", path, err)
+		}
+	}
+}
+
+func TestArchiveStopsWhenAbandonedStagingCleanupFails(t *testing.T) {
+	instance, database, source, _ := testVault(t, nil)
+	defer database.Close()
+	if _, err := instance.EnsureFormat(); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(instance.dir, ".source-blocked.zst")
+	if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Archive(true); err == nil || !strings.Contains(err.Error(), "remove abandoned vault staging file") {
+		t.Fatalf("cleanup error = %v", err)
+	}
+	if _, found, err := database.LatestVaultFile(resolveTestPath(source)); err != nil || found {
+		t.Fatalf("archive continued after cleanup failure: found=%t, err=%v", found, err)
+	}
+}
+
+func TestReadinessSeparatesCoverageVerificationStatusAndBrokenBundles(t *testing.T) {
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	instance, database, source, _ := testVault(t, func(options *Options) {
+		options.Now = func() time.Time { return now }
+		options.MinAge = 7 * 24 * time.Hour
+	})
+	defer database.Close()
+	readiness, err := instance.Readiness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.Initialized || readiness.SettledUnvaulted != 1 || readiness.RecentUnsettled != 0 || readiness.VaultedSources != 0 {
+		t.Fatalf("empty readiness = %#v", readiness)
+	}
+	recent := now.Add(-time.Hour)
+	if err := os.Chtimes(source, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err = instance.Readiness()
+	if err != nil || readiness.SettledUnvaulted != 0 || readiness.RecentUnsettled != 1 {
+		t.Fatalf("recent readiness = %#v, %v", readiness, err)
+	}
+	settled := now.Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(source, settled, settled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Archive(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Verify(false); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err = instance.Readiness()
+	if err != nil || !readiness.Initialized || readiness.VaultedSources != 1 || readiness.LastArchiveUnix != now.Unix() || readiness.LastDeepVerificationUnix != 0 {
+		t.Fatalf("shallow readiness = %#v, %v", readiness, err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := instance.Verify(true); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := instance.Status(); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err = instance.Readiness()
+	if err != nil || readiness.LastDeepVerificationUnix != now.Add(-time.Hour).Unix() || readiness.LastStatusScanUnix != now.Unix() {
+		t.Fatalf("verification/status readiness = %#v, %v", readiness, err)
+	}
+	files, err := database.VaultFiles()
+	if err != nil || len(files) != 1 {
+		t.Fatalf("manifest = %#v, %v", files, err)
+	}
+	bundle := filepath.Join(instance.dir, filepath.FromSlash(files[0].Archive))
+	data, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)/2] ^= 0xff
+	if err := os.WriteFile(bundle, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := instance.Verify(true); err == nil {
+		t.Fatal("corrupt bundle passed deep verification")
+	}
+	readiness, err = instance.Readiness()
+	if err != nil || readiness.KnownBrokenBundles != 1 || readiness.LastDeepVerificationUnix != now.Add(-2*time.Hour).Unix() {
+		t.Fatalf("broken readiness = %#v, %v", readiness, err)
+	}
+}
+
 func TestCorruptBundleFailsDeepVerify(t *testing.T) {
 	instance, database, _, _ := testVault(t, nil)
 	defer database.Close()

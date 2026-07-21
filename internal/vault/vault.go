@@ -24,9 +24,13 @@ import (
 )
 
 const (
-	FormatVersion      = 1
-	markerName         = "vault.json"
-	brokenArchivesMeta = "vault_broken_archives"
+	FormatVersion            = 1
+	markerName               = "vault.json"
+	brokenArchivesMeta       = "vault_broken_archives"
+	lastArchiveMeta          = "last_vault_archive_unix"
+	lastDeepVerificationMeta = "last_vault_deep_verify_unix"
+	lastReclaimableBytesMeta = "last_vault_reclaimable_bytes"
+	lastStatusScanMeta       = "last_vault_status_unix"
 )
 
 type Marker struct {
@@ -204,6 +208,9 @@ func (v *Vault) Archive(all bool) (ArchiveResult, error) {
 
 	result := ArchiveResult{}
 	if err := v.recoverRollbackFiles(); err != nil {
+		return result, err
+	}
+	if err := v.cleanupAbandonedStaging(); err != nil {
 		return result, err
 	}
 	stagedPaths := make(map[string]bool)
@@ -416,7 +423,7 @@ func (v *Vault) Archive(all bool) (ArchiveResult, error) {
 	}
 	now := v.now().Unix()
 	if err := v.store.Transaction(func(tx *store.Tx) error {
-		if err := tx.SetMeta("last_vault_archive_unix", fmt.Sprint(now)); err != nil {
+		if err := tx.SetMeta(lastArchiveMeta, fmt.Sprint(now)); err != nil {
 			return err
 		}
 		return setBrokenArchivesMeta(tx, brokenArchives)
@@ -429,6 +436,25 @@ func (v *Vault) Archive(all bool) (ArchiveResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func (v *Vault) cleanupAbandonedStaging() error {
+	patterns := []string{
+		filepath.Join(v.dir, ".source-*.zst"),
+		filepath.Join(v.dir, "*", ".bundle-*.tar.zst"),
+	}
+	for _, pattern := range patterns {
+		paths, err := filepath.Glob(pattern)
+		if err != nil {
+			return fmt.Errorf("find abandoned vault staging files: %w", err)
+		}
+		for _, path := range paths {
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("remove abandoned vault staging file %s: %w", path, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (v *Vault) recoverRollbackFiles() error {

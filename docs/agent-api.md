@@ -109,13 +109,23 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 `distinct_models`, `date_range`, and `missing_files`.
 
 `data.skills` contains one item per provider with `provider`, skill `path`,
-`status`, and nullable installed `version`.
+`status`, nullable installed `version`, `current_version`, and
+`update_available`. An outdated owned skill adds a warning that points to
+`tokenomnom install-skill`; foreign files are never replaced by doctor.
 
 `data.vault` contains `dir`, `initialized`, nullable `format`, nullable
 `encryption`, `files`, `raw_bytes`, `stored_bytes`, nullable `last_archive`,
-`reclaimable_bytes`, and nullable `reclaimable_cached_at`. Doctor uses the last
-deeply verified reclaimable value so routine diagnostics do not rescan the
-transcript corpus; run `vault status` to refresh it.
+`reclaimable_bytes`, and nullable `reclaimable_cached_at`. It also separates
+`last_usage_sync`, `last_deep_verification`, and `last_status_scan`, and reports
+`vaulted_sources`, `settled_unvaulted_sources`, `recent_unsettled_sources`,
+`known_broken_bundles`, `auto_vault_enabled`, `scheduler_installed`, and
+`scheduler_current`. `reclaimable_cached_at` is the last status scan, not the
+last explicit deep verification. Routine doctor output does not hash the
+transcript corpus; run `vault status` to refresh reclaimability.
+
+When `data.store.missing_files` is nonzero, doctor warns that retained usage is
+unchanged and raw transcript availability depends on vault coverage. A missing
+optional provider root alone does not produce that warning.
 
 `data.schedule` contains `installed`, `definition_exists`, `mechanism`, `unit_path`, optional `task_name`, `binary_path`,
 `binary_exists`, `configured_interval`, nullable `installed_interval`,
@@ -160,8 +170,11 @@ sort, and latest-version setting. Pretty page output includes provider and a
 continuation command when more rows exist.
 
 `vault cat <source-path | rel-path> [--version N]` returns the selected source
-and relative paths, version, and the byte-exact content as `content_base64`.
-Without JSON format it writes the original bytes directly to stdout.
+and relative paths, version, `encoding`, nullable `content`, and the byte-exact
+content as the always-populated `content_base64` string. Valid UTF-8 returns
+`encoding: "utf-8"` and readable `content` while retaining base64. Arbitrary
+bytes return `encoding: "base64"` and `content: null`. Without JSON format it
+writes the original bytes directly to stdout.
 
 `vault status` returns vault format details, total and per-provider files,
 `raw_bytes`, `stored_bytes`, `ratio`, `reclaimable_bytes`, and

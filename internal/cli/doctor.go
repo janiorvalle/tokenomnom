@@ -17,6 +17,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/vault"
+	"github.com/janiorvalle/tokenomnom/internal/version"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
@@ -79,14 +80,16 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
-	if err := writeVaultReport(cmd, roots, databasePath); err != nil {
+	scheduleData, err := doctorSchedule(cmd)
+	if err != nil {
+		return err
+	}
+	if err := writeVaultReport(cmd, roots, databasePath, scheduleData); err != nil {
 		return err
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
-	if err := writeDoctorScheduleReport(cmd); err != nil {
-		return err
-	}
+	writeScheduleStatus(cmd, scheduleData)
 
 	fmt.Fprintln(cmd.OutOrStdout())
 	switch len(found) {
@@ -146,23 +149,35 @@ type jsonDoctorBackups struct {
 }
 
 type jsonDoctorVault struct {
-	Dir                 string  `json:"dir"`
-	Initialized         bool    `json:"initialized"`
-	Format              *int    `json:"format"`
-	Encryption          *string `json:"encryption"`
-	Files               int     `json:"files"`
-	RawBytes            int64   `json:"raw_bytes"`
-	StoredBytes         int64   `json:"stored_bytes"`
-	LastArchive         *string `json:"last_archive"`
-	ReclaimableBytes    int64   `json:"reclaimable_bytes"`
-	ReclaimableCachedAt *string `json:"reclaimable_cached_at"`
+	Dir                     string  `json:"dir"`
+	Initialized             bool    `json:"initialized"`
+	Format                  *int    `json:"format"`
+	Encryption              *string `json:"encryption"`
+	Files                   int     `json:"files"`
+	RawBytes                int64   `json:"raw_bytes"`
+	StoredBytes             int64   `json:"stored_bytes"`
+	LastUsageSync           *string `json:"last_usage_sync"`
+	LastArchive             *string `json:"last_archive"`
+	LastDeepVerification    *string `json:"last_deep_verification"`
+	LastStatusScan          *string `json:"last_status_scan"`
+	ReclaimableBytes        int64   `json:"reclaimable_bytes"`
+	ReclaimableCachedAt     *string `json:"reclaimable_cached_at"`
+	VaultedSources          int     `json:"vaulted_sources"`
+	SettledUnvaultedSources int     `json:"settled_unvaulted_sources"`
+	RecentUnsettledSources  int     `json:"recent_unsettled_sources"`
+	KnownBrokenBundles      int     `json:"known_broken_bundles"`
+	AutoVaultEnabled        bool    `json:"auto_vault_enabled"`
+	SchedulerInstalled      bool    `json:"scheduler_installed"`
+	SchedulerCurrent        bool    `json:"scheduler_current"`
 }
 
 type jsonDoctorSkill struct {
-	Provider string  `json:"provider"`
-	Path     string  `json:"path"`
-	Status   string  `json:"status"`
-	Version  *string `json:"version"`
+	Provider        string  `json:"provider"`
+	Path            string  `json:"path"`
+	Status          string  `json:"status"`
+	Version         *string `json:"version"`
+	CurrentVersion  string  `json:"current_version"`
+	UpdateAvailable bool    `json:"update_available"`
 }
 
 func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
@@ -195,7 +210,11 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 			warnings = append(warnings, fmt.Sprintf("%s discovery: %s", root.Provider, message))
 		}
 		data.Providers = append(data.Providers, provider)
-		data.Skills = append(data.Skills, doctorSkillJSON(root))
+		skillData := doctorSkillJSON(root)
+		data.Skills = append(data.Skills, skillData)
+		if skillData.UpdateAvailable {
+			warnings = append(warnings, fmt.Sprintf("%s tokenomnom skill is outdated. Run: tokenomnom install-skill", providerName(root.Provider)))
+		}
 	}
 
 	zone := requestedTimezone(requestedZone)
@@ -232,6 +251,9 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		data.Store.DistinctModels = info.DistinctModels
 		data.Store.DateRange = jsonDateRange{FirstDate: optionalString(info.OldestDate), LastDate: optionalString(info.NewestDate)}
 		data.Store.MissingFiles = info.MissingFiles
+		if warning := missingFilesWarning(info.MissingFiles); warning != "" {
+			warnings = append(warnings, warning)
+		}
 		data.Offer = optionalString(info.SkillOffer)
 	}
 	backupData, err := doctorBackups(cmd, databasePath)
@@ -239,16 +261,16 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		return err
 	}
 	data.Backups = backupData
-	vaultData, err := doctorVault(cmd, roots, databasePath)
-	if err != nil {
-		return err
-	}
-	data.Vault = vaultData
 	scheduleData, err := doctorSchedule(cmd)
 	if err != nil {
 		return err
 	}
 	data.Schedule = scheduleData
+	vaultData, err := doctorVault(cmd, roots, databasePath, scheduleData)
+	if err != nil {
+		return err
+	}
+	data.Vault = vaultData
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
 }
 
@@ -264,17 +286,8 @@ func doctorSchedule(cmd *cobra.Command) (jsonScheduleData, error) {
 	return scheduleData(cmd, status)
 }
 
-func writeDoctorScheduleReport(cmd *cobra.Command) error {
-	data, err := doctorSchedule(cmd)
-	if err != nil {
-		return err
-	}
-	writeScheduleStatus(cmd, data)
-	return nil
-}
-
-func writeVaultReport(cmd *cobra.Command, roots []discover.Root, databasePath string) error {
-	data, err := doctorVault(cmd, roots, databasePath)
+func writeVaultReport(cmd *cobra.Command, roots []discover.Root, databasePath string, scheduleData jsonScheduleData) error {
+	data, err := doctorVault(cmd, roots, databasePath, scheduleData)
 	if err != nil {
 		return err
 	}
@@ -293,9 +306,19 @@ func writeVaultReport(cmd *cobra.Command, roots []discover.Root, databasePath st
 		last = *data.LastArchive
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-16s %s\n", "Last archive:", last)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Last usage sync:", stringValue(data.LastUsageSync))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Last deep verification:", stringValue(data.LastDeepVerification))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Last status scan:", stringValue(data.LastStatusScan))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %d\n", "Vaulted sources:", data.VaultedSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %d\n", "Settled, unvaulted:", data.SettledUnvaultedSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %d\n", "Recent, unsettled:", data.RecentUnsettledSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %d\n", "Known broken bundles:", data.KnownBrokenBundles)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Auto-vault enabled:", yesNo(data.AutoVaultEnabled))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Scheduler installed:", yesNo(data.SchedulerInstalled))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-24s %s\n", "Scheduler current:", yesNo(data.SchedulerCurrent))
 	reclaimable := humanBytes(data.ReclaimableBytes)
 	if data.ReclaimableCachedAt != nil {
-		reclaimable += " (verified " + *data.ReclaimableCachedAt + ")"
+		reclaimable += " (status scan " + *data.ReclaimableCachedAt + ")"
 	} else {
 		reclaimable += " (run vault status to verify)"
 	}
@@ -310,7 +333,7 @@ func stringValue(value *string) string {
 	return *value
 }
 
-func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string) (jsonDoctorVault, error) {
+func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string, scheduleData jsonScheduleData) (jsonDoctorVault, error) {
 	loaded := appconfig.FromContext(cmd.Context())
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -320,17 +343,20 @@ func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string)
 	if err != nil {
 		return jsonDoctorVault{}, err
 	}
-	result := jsonDoctorVault{Dir: dir}
+	result := jsonDoctorVault{
+		Dir: dir, AutoVaultEnabled: loaded.Config.Vault.Auto,
+		SchedulerInstalled: scheduleData.Installed,
+		SchedulerCurrent:   scheduleData.Installed && scheduleData.DefinitionExists && scheduleData.BinaryExists && !scheduleData.IntervalDrift,
+	}
 	marker, found, err := vault.InspectFormat(dir)
 	if err != nil {
 		return result, err
 	}
-	if !found {
-		return result, nil
+	if found {
+		result.Initialized = true
+		result.Format = &marker.VaultFormat
+		result.Encryption = &marker.Encryption
 	}
-	result.Initialized = true
-	result.Format = &marker.VaultFormat
-	result.Encryption = &marker.Encryption
 	if _, err := os.Stat(databasePath); err != nil {
 		if os.IsNotExist(err) {
 			return result, nil
@@ -342,26 +368,48 @@ func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string)
 		return result, err
 	}
 	defer database.Close()
+	info, err := database.Info()
+	if err != nil {
+		return result, err
+	}
+	result.LastUsageSync = optionalUnix(info.LastSyncUnix)
 	providers := make([]discover.Provider, 0, len(loaded.Config.Vault.Providers))
 	for _, provider := range loaded.Config.Vault.Providers {
 		providers = append(providers, discover.Provider(provider))
 	}
-	instance, err := vault.New(vault.Options{Dir: dir, Store: database, Roots: roots, Providers: providers})
+	minAge, _ := time.ParseDuration(loaded.Config.Vault.MinAge)
+	instance, err := vault.New(vault.Options{Dir: dir, Store: database, Roots: roots, Providers: providers, MinAge: minAge})
 	if err != nil {
 		return result, err
 	}
-	status, cachedAt, err := instance.Snapshot()
+	readiness, err := instance.Readiness()
 	if err != nil {
 		return result, err
 	}
-	result.Files, result.RawBytes, result.StoredBytes = status.Files, status.RawBytes, status.StoredBytes
-	result.ReclaimableBytes = status.ReclaimableBytes
-	if cachedAt != 0 {
-		value := time.Unix(cachedAt, 0).Format(time.RFC3339)
-		result.ReclaimableCachedAt = &value
+	result.Initialized = readiness.Initialized
+	if readiness.Initialized {
+		result.Format = &readiness.Status.Format
+		result.Encryption = &readiness.Status.Encryption
 	}
-	result.LastArchive, err = parseLastVault(database)
-	return result, err
+	result.Files, result.RawBytes, result.StoredBytes = readiness.Status.Files, readiness.Status.RawBytes, readiness.Status.StoredBytes
+	result.ReclaimableBytes = readiness.Status.ReclaimableBytes
+	result.LastArchive = optionalUnix(readiness.LastArchiveUnix)
+	result.LastDeepVerification = optionalUnix(readiness.LastDeepVerificationUnix)
+	result.LastStatusScan = optionalUnix(readiness.LastStatusScanUnix)
+	result.ReclaimableCachedAt = result.LastStatusScan
+	result.VaultedSources = readiness.VaultedSources
+	result.SettledUnvaultedSources = readiness.SettledUnvaulted
+	result.RecentUnsettledSources = readiness.RecentUnsettled
+	result.KnownBrokenBundles = readiness.KnownBrokenBundles
+	return result, nil
+}
+
+func optionalUnix(value int64) *string {
+	if value == 0 {
+		return nil
+	}
+	formatted := time.Unix(value, 0).Format(time.RFC3339)
+	return &formatted
 }
 
 func writeBackupsReport(cmd *cobra.Command, databasePath string) error {
@@ -434,8 +482,11 @@ func writeSkillsReport(cmd *cobra.Command, roots []discover.Root, offer string) 
 	writeHeading(cmd, "Skills")
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", "Offer:", dashIfEmpty(offer))
 	for _, root := range roots {
-		status, _ := doctorSkillStatus(root)
+		status, _, updateAvailable := doctorSkillStatus(root)
 		fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", providerName(root.Provider)+":", status)
+		if updateAvailable {
+			writeWarningLine(cmd, "  Update available. Run: tokenomnom install-skill")
+		}
 	}
 }
 
@@ -459,25 +510,25 @@ func storedSkillOffer(databasePath string) (string, error) {
 }
 
 func doctorSkillJSON(root discover.Root) jsonDoctorSkill {
-	status, installedVersion := doctorSkillStatus(root)
+	status, installedVersion, updateAvailable := doctorSkillStatus(root)
 	return jsonDoctorSkill{
 		Provider: string(root.Provider), Path: skill.Path(root.Path), Status: status,
-		Version: optionalString(installedVersion),
+		Version: optionalString(installedVersion), CurrentVersion: version.Version, UpdateAvailable: updateAvailable,
 	}
 }
 
-func doctorSkillStatus(root discover.Root) (string, string) {
+func doctorSkillStatus(root discover.Root) (string, string, bool) {
 	installedVersion, owned, exists, err := skill.Inspect(skill.Path(root.Path))
 	if err != nil {
-		return "unreadable: " + err.Error(), ""
+		return "unreadable: " + err.Error(), "", false
 	}
 	if !exists {
-		return "not installed", ""
+		return "not installed", "", false
 	}
 	if !owned {
-		return "foreign file present", ""
+		return "foreign file present", "", false
 	}
-	return "installed v" + installedVersion, installedVersion
+	return "installed v" + installedVersion, installedVersion, skill.UpdateAvailable(installedVersion, version.Version)
 }
 
 func writeStoreReport(cmd *cobra.Command, databasePath string) error {
@@ -518,7 +569,17 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	fmt.Fprintf(writer, "  %-17s %d\n", "Distinct models:", info.DistinctModels)
 	fmt.Fprintf(writer, "  %-17s %s\n", "Date range:", dateRange(info.OldestDate, info.NewestDate))
 	fmt.Fprintf(writer, "  %-17s %d\n", "Missing files:", info.MissingFiles)
+	if warning := missingFilesWarning(info.MissingFiles); warning != "" {
+		writeWarningLine(cmd, "WARNING: "+warning)
+	}
 	return nil
+}
+
+func missingFilesWarning(count int) string {
+	if count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d previously synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted.", count)
 }
 
 func dashIfEmpty(value string) string {

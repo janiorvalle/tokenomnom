@@ -68,7 +68,15 @@ func (v *Vault) recordVerificationFailures(failures []VerifyFailure, deep bool) 
 	for _, failure := range failures {
 		broken[failure.Archive] = true
 	}
-	return v.store.Transaction(func(tx *store.Tx) error { return setBrokenArchivesMeta(tx, broken) })
+	return v.store.Transaction(func(tx *store.Tx) error {
+		if err := setBrokenArchivesMeta(tx, broken); err != nil {
+			return err
+		}
+		if deep && len(failures) == 0 {
+			return tx.SetMeta(lastDeepVerificationMeta, strconv.FormatInt(v.now().Unix(), 10))
+		}
+		return nil
+	})
 }
 
 func manifestKey(file store.VaultFile) string {
@@ -477,63 +485,134 @@ func (v *Vault) Status() (Status, error) {
 		}
 	}
 	if err := v.store.Transaction(func(tx *store.Tx) error {
-		if err := tx.SetMeta("last_vault_reclaimable_bytes", strconv.FormatInt(status.ReclaimableBytes, 10)); err != nil {
+		if err := tx.SetMeta(lastReclaimableBytesMeta, strconv.FormatInt(status.ReclaimableBytes, 10)); err != nil {
 			return err
 		}
-		return tx.SetMeta("last_vault_status_unix", strconv.FormatInt(v.now().Unix(), 10))
+		return tx.SetMeta(lastStatusScanMeta, strconv.FormatInt(v.now().Unix(), 10))
 	}); err != nil {
 		return Status{}, err
 	}
 	return status, nil
 }
 
-// Snapshot returns lightweight vault totals and the last deeply verified reclaimable value.
-func (v *Vault) Snapshot() (Status, int64, error) {
-	marker, err := v.EnsureFormat()
+// Readiness summarizes vault coverage without hashing provider transcripts or bundles.
+type Readiness struct {
+	Initialized              bool
+	Status                   Status
+	LastArchiveUnix          int64
+	LastDeepVerificationUnix int64
+	LastStatusScanUnix       int64
+	VaultedSources           int
+	SettledUnvaulted         int
+	RecentUnsettled          int
+	KnownBrokenBundles       int
+}
+
+// Readiness returns shared doctor facts without creating an absent vault.
+func (v *Vault) Readiness() (Readiness, error) {
+	marker, initialized, err := InspectFormat(v.dir)
 	if err != nil {
-		return Status{}, 0, err
+		return Readiness{}, err
 	}
-	release, err := store.LockPath(filepath.Join(v.dir, ".tokenomnom-vault.lock"))
-	if err != nil {
-		return Status{}, 0, err
+	result := Readiness{Initialized: initialized, Status: Status{Dir: v.dir}}
+	if initialized {
+		release, err := store.LockPath(filepath.Join(v.dir, ".tokenomnom-vault.lock"))
+		if err != nil {
+			return Readiness{}, err
+		}
+		defer release()
+		result.Status.Format = marker.VaultFormat
+		result.Status.Encryption = marker.Encryption
 	}
-	defer release()
+
 	files, err := v.store.VaultFiles()
 	if err != nil {
-		return Status{}, 0, err
+		return Readiness{}, err
 	}
-	status := Status{Dir: v.dir, Format: marker.VaultFormat, Encryption: marker.Encryption, Files: len(files)}
+	latestFiles, err := v.store.LatestVaultFiles()
+	if err != nil {
+		return Readiness{}, err
+	}
+	result.Status.Files = len(files)
+	result.VaultedSources = len(latestFiles)
 	archives := make(map[string]bool)
 	for _, file := range files {
-		status.RawBytes += file.Size
+		result.Status.RawBytes += file.Size
 		archives[file.Archive] = true
 	}
-	for archive := range archives {
-		if info, err := os.Stat(filepath.Join(v.dir, filepath.FromSlash(archive))); err == nil {
-			status.StoredBytes += info.Size()
+	if initialized {
+		for archive := range archives {
+			if info, err := os.Stat(filepath.Join(v.dir, filepath.FromSlash(archive))); err == nil {
+				result.Status.StoredBytes += info.Size()
+			}
 		}
 	}
-	if status.StoredBytes > 0 {
-		status.Ratio = float64(status.RawBytes) / float64(status.StoredBytes)
+	if result.Status.StoredBytes > 0 {
+		result.Status.Ratio = float64(result.Status.RawBytes) / float64(result.Status.StoredBytes)
 	}
-	if value, err := v.store.Meta("last_vault_reclaimable_bytes"); err != nil {
-		return Status{}, 0, err
+	if value, err := v.store.Meta(lastReclaimableBytesMeta); err != nil {
+		return Readiness{}, err
 	} else if value != "" {
-		status.ReclaimableBytes, err = strconv.ParseInt(value, 10, 64)
+		result.Status.ReclaimableBytes, err = strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return Status{}, 0, fmt.Errorf("parse cached vault reclaimable bytes: %w", err)
+			return Readiness{}, fmt.Errorf("parse cached vault reclaimable bytes: %w", err)
 		}
 	}
-	var cachedAt int64
-	if value, err := v.store.Meta("last_vault_status_unix"); err != nil {
-		return Status{}, 0, err
-	} else if value != "" {
-		cachedAt, err = strconv.ParseInt(value, 10, 64)
+	for key, target := range map[string]*int64{
+		lastArchiveMeta:          &result.LastArchiveUnix,
+		lastDeepVerificationMeta: &result.LastDeepVerificationUnix,
+		lastStatusScanMeta:       &result.LastStatusScanUnix,
+	} {
+		value, err := v.store.Meta(key)
 		if err != nil {
-			return Status{}, 0, fmt.Errorf("parse cached vault status time: %w", err)
+			return Readiness{}, err
+		}
+		if value == "" {
+			continue
+		}
+		*target, err = strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Readiness{}, fmt.Errorf("parse %s: %w", key, err)
 		}
 	}
-	return status, cachedAt, nil
+	broken, err := v.loadBrokenArchives()
+	if err != nil {
+		return Readiness{}, err
+	}
+	result.KnownBrokenBundles = len(broken)
+	latestBySource := make(map[string]store.VaultFile, len(latestFiles))
+	for _, file := range latestFiles {
+		latestBySource[file.SourcePath] = file
+	}
+	for _, root := range v.roots {
+		if !v.providers[root.Provider] {
+			continue
+		}
+		sources, _ := discover.ListSourceFiles(root)
+		for _, source := range sources {
+			latest, found := latestBySource[source.Path]
+			available := false
+			if found && !broken[latest.Archive] && latest.Size == source.Size && latest.ModTimeUnix == source.ModTime.UnixNano() {
+				_, archiveErr := os.Stat(filepath.Join(v.dir, filepath.FromSlash(latest.Archive)))
+				available = archiveErr == nil
+			}
+			if available {
+				continue
+			}
+			if v.now().Sub(source.ModTime) >= v.minAge {
+				result.SettledUnvaulted++
+			} else {
+				result.RecentUnsettled++
+			}
+		}
+	}
+	return result, nil
+}
+
+// Snapshot returns lightweight vault totals and the last status-scan time.
+func (v *Vault) Snapshot() (Status, int64, error) {
+	readiness, err := v.Readiness()
+	return readiness.Status, readiness.LastStatusScanUnix, err
 }
 
 func sourceMatchesManifest(manifest store.VaultFile) bool {
