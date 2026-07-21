@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +25,7 @@ func newHistoryCommand(codexDir, claudeDir *string) *cobra.Command {
 	}
 	command.AddCommand(newHistoryIndexCommand(codexDir, claudeDir))
 	command.AddCommand(newHistoryStatusCommand())
+	command.AddCommand(newHistoryListCommand())
 	command.AddCommand(newHistoryPurgeCommand())
 	return command
 }
@@ -40,8 +43,8 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if source != "provider" {
-				return fmt.Errorf("invalid --source %q (expected provider)", source)
+			if source != "all" && source != "provider" && source != "vault" {
+				return fmt.Errorf("invalid --source %q (expected all, provider, or vault)", source)
 			}
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -55,20 +58,90 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			release, err := historystore.Lock(path)
-			if err != nil {
-				return err
+			attempt := time.Now()
+			providerSummary := indexer.Summary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
+			vaultSummary := indexer.VaultSummary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
+			var providerErr, vaultErr error
+			markProviderError := func() {
+				if providerErr != nil && providerSummary.ErrorCount == 0 {
+					providerSummary.ErrorCount = 1
+					providerSummary.Errors = append(providerSummary.Errors, indexer.Issue{Path: "provider", Error: providerErr.Error()})
+				}
 			}
-			defer release()
-			database, err := historystore.Open(path)
-			if err != nil {
-				return err
+			markVaultError := func() {
+				if vaultErr != nil && vaultSummary.ErrorCount == 0 {
+					vaultSummary.ErrorCount = 1
+					vaultSummary.Errors = append(vaultSummary.Errors, indexer.Issue{Path: "vault", Error: vaultErr.Error()})
+				}
 			}
-			defer database.Close()
-			summary, indexErr := indexer.Index(indexer.Options{Store: database, Roots: roots, Providers: providers, Full: full, LockHeld: true})
-			if writeErr := writeHistoryIndex(cmd, provider, summary); writeErr != nil {
+			runHistoryLocked := func(run func(*historystore.Store) error) error {
+				release, err := historystore.Lock(path)
+				if err != nil {
+					return err
+				}
+				defer release()
+				database, err := historystore.Open(path)
+				if err != nil {
+					return err
+				}
+				defer database.Close()
+				return run(database)
+			}
+
+			if source == "provider" {
+				err = runHistoryLocked(func(database *historystore.Store) error {
+					providerSummary, providerErr = indexer.Index(indexer.Options{
+						Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true,
+					})
+					markProviderError()
+					return database.RecordScopedRun(attempt, providerSummary.ErrorCount, false)
+				})
+				if err != nil {
+					return err
+				}
+			} else {
+				instance, usageDatabase, openErr := openVault(cmd, *codexDir, *claudeDir)
+				combinedComplete := false
+				if openErr != nil {
+					vaultErr = openErr
+				} else {
+					vaultSummary, vaultErr = indexer.IndexVault(indexer.VaultOptions{
+						StorePath: path, Vault: instance, Providers: providers, Full: full, Now: func() time.Time { return attempt }, SkipRunRecord: source == "all",
+						After: func(database *historystore.Store, current indexer.VaultSummary) error {
+							combinedComplete = true
+							if source != "all" {
+								return nil
+							}
+							providerSummary, providerErr = indexer.Index(indexer.Options{
+								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true,
+							})
+							markProviderError()
+							return database.RecordScopedRun(attempt, providerSummary.ErrorCount+current.ErrorCount, provider == "")
+						},
+					})
+					_ = usageDatabase.Close()
+				}
+				markVaultError()
+				if !combinedComplete && vaultErr != nil {
+					err = runHistoryLocked(func(database *historystore.Store) error {
+						if source == "all" {
+							providerSummary, providerErr = indexer.Index(indexer.Options{
+								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true,
+							})
+							markProviderError()
+							return database.RecordScopedRun(attempt, providerSummary.ErrorCount+vaultSummary.ErrorCount, provider == "")
+						}
+						return database.RecordScopedRun(attempt, vaultSummary.ErrorCount, false)
+					})
+					if err != nil {
+						return err
+					}
+				}
+			}
+			if writeErr := writeHistoryIndex(cmd, provider, source, providerSummary, vaultSummary); writeErr != nil {
 				return writeErr
 			}
+			indexErr := errors.Join(providerErr, vaultErr)
 			if indexErr != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), indexErr)
 			}
@@ -76,9 +149,128 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&provider, "provider", "", "index only codex or claude")
-	command.Flags().StringVar(&source, "source", "provider", "source set to index (provider)")
-	command.Flags().BoolVar(&full, "full", false, "rebuild selected provider source heads")
+	command.Flags().StringVar(&source, "source", "all", "source set to index (all, provider, or vault)")
+	command.Flags().BoolVar(&full, "full", false, "rebuild selected source kinds")
 	return command
+}
+
+func newHistoryListCommand() *cobra.Command {
+	var provider, since, until, cwd, repo, branch, source, cursor string
+	var limit int
+	command := &cobra.Command{
+		Use:   "list",
+		Short: "List indexed logical transcript sessions",
+		Args:  cobra.NoArgs,
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := historyProviders(provider); err != nil {
+				return err
+			}
+			if err := validateDateFlag("since", since); err != nil {
+				return err
+			}
+			if err := validateDateFlag("until", until); err != nil {
+				return err
+			}
+			if since != "" && until != "" && until < since {
+				return errors.New("--until must be on or after --since")
+			}
+			if source != "any" && source != "provider" && source != "provider-live" && source != "provider-archive" && source != "vault" {
+				return fmt.Errorf("invalid --source %q (expected any, provider, provider-live, provider-archive, or vault)", source)
+			}
+			if cmd.Flags().Changed("limit") && (limit < 1 || limit > 500) {
+				return errors.New("--limit must be between 1 and 500")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			path, err := historyDatabasePath(home)
+			if err != nil {
+				return err
+			}
+			release, err := historystore.Lock(path)
+			if err != nil {
+				return err
+			}
+			defer release()
+			info, err := historystore.Inspect(path)
+			if err != nil {
+				return err
+			}
+			if !info.Exists {
+				return errors.New("history index does not exist; run tokenomnom history index first")
+			}
+			database, err := historystore.Open(path)
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+			requestedLimit := limit
+			if cursor != "" && !cmd.Flags().Changed("limit") {
+				requestedLimit = 0
+			}
+			query := historystore.CatalogQuery{Provider: history.Provider(provider), CWD: cwd, Repo: repo, Branch: branch, Source: historystore.CatalogSource(source), Limit: requestedLimit, Cursor: cursor}
+			if since != "" {
+				value, _ := time.Parse("2006-01-02", since)
+				query.Since = &value
+			}
+			if until != "" {
+				value, _ := time.Parse("2006-01-02", until)
+				value = value.Add(24*time.Hour - time.Nanosecond)
+				query.Until = &value
+			}
+			page, err := database.ListCatalog(query)
+			if err != nil {
+				return err
+			}
+			if currentFormat(cmd) == "json" {
+				return writeJSONEnvelope(cmd, "history list", "", jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until)}, page.Warnings, page)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%-38s %-7s %-20s %-8s %-8s %s\n", "SESSION", "SOURCE", "LAST", "PROMPTS", "VERSIONS", "PREVIEW")
+			for _, session := range page.Sessions {
+				last := "-"
+				if session.LastTimestamp != nil {
+					last = *session.LastTimestamp
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%d\t%d\t%s\n", session.SessionID, session.PreferredRetrievalSource, last, session.LogicalPromptCount, session.PreservedSnapshotCount, safePrettyPreview(session.Preview))
+			}
+			for _, warning := range page.Warnings {
+				writeWarningLine(cmd, "WARNING: "+warning)
+			}
+			if page.HasMore {
+				fmt.Fprintf(cmd.OutOrStdout(), "More results: rerun with the same filters and --cursor %s\n", page.NextCursor)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&provider, "provider", "", "filter by provider (codex or claude)")
+	command.Flags().StringVar(&since, "since", "", "include sessions active on or after YYYY-MM-DD")
+	command.Flags().StringVar(&until, "until", "", "include sessions active on or before YYYY-MM-DD")
+	command.Flags().StringVar(&cwd, "cwd", "", "filter by exact working directory")
+	command.Flags().StringVar(&repo, "repo", "", "filter by known repository name")
+	command.Flags().StringVar(&branch, "branch", "", "filter by known branch")
+	command.Flags().StringVar(&source, "source", "any", "filter by availability source")
+	command.Flags().IntVar(&limit, "limit", 100, "maximum page rows (1-500)")
+	command.Flags().StringVar(&cursor, "cursor", "", "continue a previous page")
+	return command
+}
+
+func safePrettyPreview(value string) string {
+	var result strings.Builder
+	for _, current := range value {
+		switch {
+		case current == '\n' || current == '\r':
+			result.WriteByte(' ')
+		case unicode.IsControl(current):
+			fmt.Fprintf(&result, "\\u%04x", current)
+		default:
+			result.WriteRune(current)
+		}
+	}
+	return result.String()
 }
 
 func newHistoryStatusCommand() *cobra.Command {
@@ -183,36 +375,57 @@ func historyDatabasePath(home string) (string, error) {
 }
 
 type jsonHistoryIndexData struct {
-	ScannedSources   int             `json:"scanned_sources"`
-	IndexedSources   int             `json:"indexed_sources"`
-	NewSources       int             `json:"new_sources"`
-	SkippedSources   int             `json:"skipped_sources"`
-	AppendedSources  int             `json:"appended_sources"`
-	RewrittenSources int             `json:"rewritten_sources"`
-	MissingSources   int             `json:"missing_sources"`
-	IndexedPrompts   int             `json:"indexed_prompts"`
-	OversizedPrompts int             `json:"oversized_prompts"`
-	ErrorCount       int             `json:"error_count"`
-	Errors           []indexer.Issue `json:"errors"`
-	Warnings         []indexer.Issue `json:"warnings"`
-	Full             bool            `json:"full"`
-	DurationMS       int64           `json:"duration_ms"`
+	ScannedSources        int             `json:"scanned_sources"`
+	IndexedSources        int             `json:"indexed_sources"`
+	NewSources            int             `json:"new_sources"`
+	SkippedSources        int             `json:"skipped_sources"`
+	AppendedSources       int             `json:"appended_sources"`
+	RewrittenSources      int             `json:"rewritten_sources"`
+	MissingSources        int             `json:"missing_sources"`
+	IndexedPrompts        int             `json:"indexed_prompts"`
+	OversizedPrompts      int             `json:"oversized_prompts"`
+	ErrorCount            int             `json:"error_count"`
+	Errors                []indexer.Issue `json:"errors"`
+	Warnings              []indexer.Issue `json:"warnings"`
+	Full                  bool            `json:"full"`
+	DurationMS            int64           `json:"duration_ms"`
+	Source                string          `json:"source"`
+	SelectedVaultBundles  int             `json:"selected_vault_bundles"`
+	SelectedVaultVersions int             `json:"selected_vault_versions"`
+	TraversedVaultBundles int             `json:"traversed_vault_bundles"`
+	IndexedVaultBundles   int             `json:"indexed_vault_bundles"`
+	SkippedVaultBundles   int             `json:"skipped_vault_bundles"`
+	IndexedVaultVersions  int             `json:"indexed_vault_versions"`
+	BrokenSkippedBundles  int             `json:"broken_skipped_bundles"`
 }
 
-func writeHistoryIndex(cmd *cobra.Command, provider string, summary indexer.Summary) error {
+func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary) error {
+	errorsFound := append(append([]indexer.Issue{}, summary.Errors...), vaultSummary.Errors...)
+	warnings := append(append([]indexer.Issue{}, summary.Warnings...), vaultSummary.Warnings...)
+	errorCount := summary.ErrorCount + vaultSummary.ErrorCount
+	duration := summary.Duration
+	if source == "vault" || source == "all" {
+		// Vault duration encloses the provider callback in combined runs.
+		duration = vaultSummary.Duration
+	}
 	if currentFormat(cmd) == "json" {
 		return writeJSONEnvelope(cmd, "history index", "", jsonFilters{Provider: optionalString(provider)}, nil, jsonHistoryIndexData{
 			ScannedSources: summary.ScannedSources, IndexedSources: summary.IndexedSources, NewSources: summary.NewSources,
 			SkippedSources: summary.SkippedSources, AppendedSources: summary.AppendedSources, RewrittenSources: summary.RewrittenSources,
-			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts,
-			ErrorCount: summary.ErrorCount, Errors: summary.Errors, Warnings: summary.Warnings, Full: summary.Full,
-			DurationMS: summary.Duration.Milliseconds(),
+			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts + vaultSummary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts + vaultSummary.OversizedPrompts,
+			ErrorCount: errorCount, Errors: errorsFound, Warnings: warnings, Full: summary.Full || vaultSummary.Full,
+			DurationMS: duration.Milliseconds(), Source: source,
+			SelectedVaultBundles: vaultSummary.SelectedBundles, SelectedVaultVersions: vaultSummary.SelectedVersions,
+			TraversedVaultBundles: vaultSummary.TraversedBundles, IndexedVaultBundles: vaultSummary.IndexedBundles,
+			SkippedVaultBundles: vaultSummary.SkippedBundles, IndexedVaultVersions: vaultSummary.IndexedVersions,
+			BrokenSkippedBundles: vaultSummary.BrokenSkippedBundles,
 		})
 	}
 	writeHeading(cmd, "History Index")
 	fmt.Fprintf(cmd.OutOrStdout(), "  Scanned: %d  Indexed: %d  Skipped: %d\n", summary.ScannedSources, summary.IndexedSources, summary.SkippedSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  New: %d  Appended: %d  Rewritten: %d  Missing: %d\n", summary.NewSources, summary.AppendedSources, summary.RewrittenSources, summary.MissingSources)
-	fmt.Fprintf(cmd.OutOrStdout(), "  Prompts: %d  Oversized: %d  Errors: %d  Duration: %s\n", summary.IndexedPrompts, summary.OversizedPrompts, summary.ErrorCount, summary.Duration.Round(time.Millisecond))
+	fmt.Fprintf(cmd.OutOrStdout(), "  Vault bundles: %d indexed  %d skipped  %d failed  Versions: %d\n", vaultSummary.IndexedBundles, vaultSummary.SkippedBundles, vaultSummary.ErrorCount, vaultSummary.IndexedVersions)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Prompts: %d  Oversized: %d  Errors: %d  Duration: %s\n", summary.IndexedPrompts+vaultSummary.IndexedPrompts, summary.OversizedPrompts+vaultSummary.OversizedPrompts, errorCount, duration.Round(time.Millisecond))
 	return nil
 }
 
@@ -242,6 +455,8 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Source heads:", health.SourceHeads)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Prompts:", health.Prompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Occurrences:", health.Occurrences)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Vault snapshots:", health.PreservedSnapshots)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "Vault bundles/versions:", health.IndexedVaultBundles, health.IndexedVaultVersions)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Index generation:", health.IndexGeneration)
 	if health.InspectionError != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Inspection error:", health.InspectionError)
@@ -261,6 +476,18 @@ type jsonHistoryHealth struct {
 	Occurrences            int     `json:"occurrences"`
 	LiveSources            int     `json:"live_sources"`
 	ProviderArchiveSources int     `json:"provider_archive_sources"`
+	PreservedSnapshots     int     `json:"preserved_snapshots"`
+	VaultLocations         int     `json:"vault_locations"`
+	ProviderLiveOnly       int     `json:"provider_live_only"`
+	ProviderArchiveOnly    int     `json:"provider_archive_only"`
+	VaultOnly              int     `json:"vault_only"`
+	ExactLiveAndVaulted    int     `json:"exact_live_and_vaulted"`
+	UnavailableMetadata    int     `json:"unavailable_metadata"`
+	IndexedVaultBundles    int     `json:"indexed_vault_bundles"`
+	IndexedVaultVersions   int     `json:"indexed_vault_versions"`
+	BrokenSkippedBundles   int     `json:"broken_skipped_bundles"`
+	CoverageFirst          *string `json:"coverage_first"`
+	CoverageLast           *string `json:"coverage_last"`
 	StaleSources           int     `json:"stale_sources"`
 	ErrorSources           int     `json:"error_sources"`
 	MissingSources         int     `json:"missing_sources"`
@@ -278,6 +505,12 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 		SchemaVersion: health.SchemaVersion, ExtractorVersion: health.ExtractorVersion, LogicalSessions: health.Sessions,
 		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, Occurrences: health.Occurrences,
 		LiveSources: health.LiveSources, ProviderArchiveSources: health.ProviderArchiveSources,
+		PreservedSnapshots: health.PreservedSnapshots, VaultLocations: health.VaultLocations,
+		ProviderLiveOnly: health.ProviderLiveOnly, ProviderArchiveOnly: health.ProviderArchiveOnly,
+		VaultOnly: health.VaultOnly, ExactLiveAndVaulted: health.ExactLiveAndVaulted,
+		UnavailableMetadata: health.UnavailableMetadata, IndexedVaultBundles: health.IndexedVaultBundles,
+		IndexedVaultVersions: health.IndexedVaultVersions, BrokenSkippedBundles: health.BrokenSkippedBundles,
+		CoverageFirst: optionalString(health.CoverageFirst), CoverageLast: optionalString(health.CoverageLast),
 		StaleSources: health.StaleSources, ErrorSources: health.ErrorSources, MissingSources: health.MissingSources,
 		LastIndex: optionalUnix(health.LastIndexUnix), LastAttempt: optionalUnix(health.LastAttemptUnix),
 		LastCompleteSuccess: optionalUnix(health.LastCompleteSuccessUnix), IndexGeneration: health.IndexGeneration,

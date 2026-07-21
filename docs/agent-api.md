@@ -135,7 +135,10 @@ optional provider root alone does not produce that warning.
 `data.history` reports the rebuildable transcript index without creating it.
 It contains `status`, `database_path`, `database_size_bytes`, schema and
 extractor versions, logical session/source-head/prompt/occurrence counts,
-live and provider-archive source counts, stale/error/missing counts, nullable
+live, provider-archive, preserved-snapshot, and vault-location counts;
+provider-live-only, provider-archive-only, vault-only, exact-live-and-vaulted,
+and unavailable-metadata coverage; indexed vault bundle/version counts;
+broken/skipped bundle counts; stale/error/missing counts; nullable coverage and
 last-index/attempt/complete-success timestamps, and `index_generation`.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
@@ -143,20 +146,50 @@ without aborting its other diagnostics.
 
 ## History Index
 
-`tokenomnom history index [--provider codex|claude] [--source provider]
+`tokenomnom history index [--provider codex|claude] [--source all|provider|vault]
 [--full] --format json`
 
-The first explicit index creates `history.db`. The provider source set includes
-Codex `sessions/`, Codex `archived_sessions/`, and Claude Code `projects/`.
-`--full` safely rebuilds selected mutable source heads; it does not index vault
-bundles. Indexing is not triggered by usage reports or ordinary syncs.
+The first explicit index creates `history.db`. `--source all` is the default and
+combines Codex `sessions/`, Codex `archived_sessions/`, Claude Code `projects/`,
+and every selected validated vault manifest version. `provider` and `vault`
+narrow that scope. `--full` rebuilds the selected source kinds. Indexing is not
+triggered by usage reports or ordinary syncs.
+
+Vault traversal holds the vault lock, then the history lock, then one SQLite
+transaction per bundle. Each archive is decompressed once and every yielded
+member is matched by path, size, and SHA-256. A bad member rolls back that
+bundle, independent bundles continue, and the command exits nonzero without
+advancing `last_complete_success`. Retrying an unchanged successful bundle is
+idempotent.
 
 `data` contains aggregate `scanned_sources`, `indexed_sources`, `new_sources`,
 `skipped_sources`, `appended_sources`, `rewritten_sources`, `missing_sources`,
 `indexed_prompts`, `oversized_prompts`, `error_count`, bounded `errors` and
-`warnings`, `full`, and `duration_ms`. Independent source failures do not roll
+`warnings`, `full`, and `duration_ms`. Vault fields include selected,
+traversed, indexed, skipped, and failed bundle/version counts. Independent source failures do not roll
 back successful sources, but the command exits nonzero and does not update the
 complete-success timestamp.
+
+## History List
+
+`tokenomnom history list [--provider codex|claude] [--since YYYY-MM-DD]
+[--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
+[--source any|provider|provider-live|provider-archive|vault] [--limit N]
+[--cursor OPAQUE] --format json`
+
+The default page contains at most 100 current logical sessions; the maximum is
+500. Results use descending activity time and stable session-ID tie-breaking.
+`data.sessions` contains stable `ses_` IDs, provider/native IDs, first/last
+timestamps, cwd/repository/branch metadata, `src_` and `snap_` IDs and counts,
+logical prompt and occurrence counts, availability components, preferred exact
+retrieval source, and a byte/line-bounded first-human-prompt preview. Exact
+provider and vault copies remain one logical prompt with multiple occurrences.
+
+`data.coverage` reports known and unknown repository and branch counts. Claude
+Code repository and branch values remain unknown; `--repo` or `--branch`
+excludes those sessions and adds an envelope warning with the excluded count.
+Use `--cwd` when cross-provider completeness matters. Page cursors are opaque,
+filter-bound, and rejected after `index_generation` changes.
 
 `tokenomnom history status --format json` returns the same bounded history
 health object used by doctor. An absent index returns `status: "not_indexed"`

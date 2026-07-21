@@ -1,6 +1,7 @@
 package jsonl
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -87,5 +88,21 @@ func TestReadPositionedFileLimitKeepsSnapshotBoundary(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"one\n"}) || position != (Position{ByteOffset: 4, LineNumber: 1}) {
 		t.Fatalf("got lines %q position %#v", got, position)
+	}
+}
+
+func TestReadPositionedReaderVisitsFinalRecordWithoutNewline(t *testing.T) {
+	input := []byte("{\"one\":1}\n{\"two\":2}")
+	var records []Record
+	position, err := ReadPositionedReader(bytes.NewReader(input), Position{}, func(record Record) { records = append(records, record) })
+	if err != nil || len(records) != 2 || position.ByteOffset != int64(len(input)) || position.LineNumber != 2 || records[1].EndOffset != int64(len(input)) {
+		t.Fatalf("immutable reader position=%+v records=%+v err=%v", position, records, err)
+	}
+	var truncated []Record
+	position, err = ReadPositionedReader(bytes.NewBufferString("{\"truncated\":"), Position{}, func(record Record) {
+		truncated = append(truncated, record)
+	})
+	if err != nil || len(truncated) != 1 || position.LineNumber != 1 {
+		t.Fatalf("truncated immutable record position=%+v records=%+v err=%v", position, truncated, err)
 	}
 }

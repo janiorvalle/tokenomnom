@@ -3,6 +3,11 @@ package vault
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -501,6 +506,153 @@ func TestCorruptBundleFailsDeepVerify(t *testing.T) {
 	}
 }
 
+func TestWalkVerifiedBundlesTraversesOnceAndMatchesDuplicateNamesBySizeAndHash(t *testing.T) {
+	instance, database, source, _ := testVault(t, nil)
+	defer database.Close()
+	if _, err := instance.EnsureFormat(); err != nil {
+		t.Fatal(err)
+	}
+	archive := "codex/2026-06.tar.zst"
+	first := []byte("first\n")
+	second := []byte("second-version\n")
+	manifests := []store.VaultFile{
+		{SourcePath: source, Provider: discover.ProviderCodex, RelPath: "duplicate.jsonl", Archive: archive, ContentSHA256: sha256Hex(first), Size: int64(len(first)), Version: 1},
+		{SourcePath: source, Provider: discover.ProviderCodex, RelPath: "duplicate.jsonl", Archive: archive, ContentSHA256: sha256Hex(second), Size: int64(len(second)), Version: 2},
+	}
+	if err := database.Transaction(func(tx *store.Tx) error {
+		for _, manifest := range manifests {
+			if err := tx.PutVaultFile(manifest); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeTestBundleMembers(t, filepath.Join(instance.dir, filepath.FromSlash(archive)), []testBundleMember{
+		{name: "duplicate.jsonl", content: first}, {name: "duplicate.jsonl", content: second},
+	})
+	abandoned := filepath.Join(instance.dir, "codex", ".history-member-abandoned")
+	if err := os.WriteFile(abandoned, []byte("plaintext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acquired := false
+	var got [][]byte
+	result, err := instance.WalkVerifiedBundles(BundleQuery{}, func() (func(), error) {
+		acquired = true
+		return func() { acquired = false }, nil
+	}, func(reader *BundleReader) error {
+		if !acquired {
+			t.Fatal("consumer lock was not acquired under the vault lock")
+		}
+		for {
+			member, err := reader.Next()
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			content, err := io.ReadAll(member.Content)
+			if err != nil {
+				return err
+			}
+			got = append(got, content)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acquired || result.WalkedBundles != 1 || result.VerifiedMembers != 2 || len(got) != 2 || string(got[0]) != string(first) || string(got[1]) != string(second) {
+		t.Fatalf("walk result=%+v acquired=%v contents=%q", result, acquired, got)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("abandoned plaintext staging file remains: %v", err)
+	}
+	consumerFailure, err := instance.WalkVerifiedBundles(BundleQuery{}, nil, func(*BundleReader) error {
+		return errors.New("history transaction failed")
+	})
+	if err == nil || len(consumerFailure.Failures) != 1 || consumerFailure.Failures[0].Integrity {
+		t.Fatalf("consumer failure misclassified: err=%v result=%+v", err, consumerFailure)
+	}
+}
+
+func TestWalkVerifiedBundlesReportsMissingCorruptAndKnownBroken(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		relPath string
+		setup   func(*Vault, *store.Store, store.VaultFile)
+		needle  string
+	}{
+		{name: "missing", setup: func(_ *Vault, _ *store.Store, _ store.VaultFile) {}, needle: "open vault bundle"},
+		{name: "corrupt", setup: func(instance *Vault, _ *store.Store, manifest store.VaultFile) {
+			writeTestBundle(t, filepath.Join(instance.dir, filepath.FromSlash(manifest.Archive)), manifest, []byte("wrong\n"))
+		}, needle: "corrupt"},
+		{name: "known broken", setup: func(instance *Vault, database *store.Store, manifest store.VaultFile) {
+			writeTestBundle(t, filepath.Join(instance.dir, filepath.FromSlash(manifest.Archive)), manifest, []byte("valid\n"))
+			if err := database.Transaction(func(tx *store.Tx) error { return setBrokenArchivesMeta(tx, map[string]bool{manifest.Archive: true}) }); err != nil {
+				t.Fatal(err)
+			}
+		}, needle: "marked broken"},
+		{name: "noncanonical member path", relPath: "dir/session.jsonl", setup: func(instance *Vault, _ *store.Store, manifest store.VaultFile) {
+			writeTestBundleMembers(t, filepath.Join(instance.dir, filepath.FromSlash(manifest.Archive)), []testBundleMember{{
+				name: "dir\\session.jsonl", content: []byte("valid\n"),
+			}})
+		}, needle: "missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instance, database, source, _ := testVault(t, nil)
+			defer database.Close()
+			if _, err := instance.EnsureFormat(); err != nil {
+				t.Fatal(err)
+			}
+			content := []byte("valid\n")
+			relPath := test.relPath
+			if relPath == "" {
+				relPath = "session.jsonl"
+			}
+			manifest := store.VaultFile{SourcePath: source, Provider: discover.ProviderCodex, RelPath: relPath, Archive: "codex/2026-06.tar.zst", ContentSHA256: sha256Hex(content), Size: int64(len(content)), Version: 1}
+			if err := database.Transaction(func(tx *store.Tx) error { return tx.PutVaultFile(manifest) }); err != nil {
+				t.Fatal(err)
+			}
+			test.setup(instance, database, manifest)
+			result, err := instance.WalkVerifiedBundles(BundleQuery{}, nil, func(reader *BundleReader) error {
+				for {
+					_, err := reader.Next()
+					if errors.Is(err, io.EOF) {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+				}
+			})
+			if err == nil || result.FailedBundles != 1 || len(result.Failures) != 1 || !result.Failures[0].Integrity || !strings.Contains(result.Failures[0].Error, test.needle) {
+				t.Fatalf("walk err=%v result=%+v", err, result)
+			}
+		})
+	}
+}
+
+func TestBundleWalkKeepsAllFailureIdentitiesWhileBoundingDiagnostics(t *testing.T) {
+	result := BundleWalkResult{Failures: []BundleFailure{}}
+	for index := range 125 {
+		result.addFailure(fmt.Sprintf("codex/%03d.tar.zst", index), errors.New("broken"), true)
+	}
+	if result.FailedBundles != 125 || len(result.AllFailures) != 125 || len(result.Failures) != 100 || result.AllFailures[124].Archive != "codex/124.tar.zst" {
+		t.Fatalf("bounded failures = %+v", result)
+	}
+}
+
+func TestBundleIntegrityClassificationKeepsOperationalOpenErrorsNonInvalidating(t *testing.T) {
+	if isBundleIntegrityError(&os.PathError{Op: "open", Path: "bundle", Err: os.ErrPermission}) {
+		t.Fatal("permission error classified as bundle integrity loss")
+	}
+	if !isBundleIntegrityError(bundleIntegrityError{os.ErrNotExist}) {
+		t.Fatal("missing bundle was not classified as integrity loss")
+	}
+}
+
 func TestShallowVerifyRejectsTruncatedMember(t *testing.T) {
 	instance, database, _, _ := testVault(t, nil)
 	defer database.Close()
@@ -621,6 +773,9 @@ func testVault(t *testing.T, configure func(*Options)) (*Vault, *store.Store, st
 
 func writeTestBundle(t *testing.T, path string, manifest store.VaultFile, content []byte) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -645,6 +800,49 @@ func writeTestBundle(t *testing.T, path string, manifest store.VaultFile, conten
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type testBundleMember struct {
+	name    string
+	content []byte
+}
+
+func writeTestBundleMembers(t *testing.T, path string, members []testBundleMember) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := zstd.NewWriter(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := tar.NewWriter(encoder)
+	for _, member := range members {
+		if err := writer.WriteHeader(&tar.Header{Name: member.name, Mode: 0o600, Size: int64(len(member.content))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(member.content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sha256Hex(content []byte) string {
+	digest := sha256.Sum256(content)
+	return hex.EncodeToString(digest[:])
 }
 
 func resolveTestPath(path string) string {

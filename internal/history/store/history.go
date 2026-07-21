@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +26,36 @@ type ApplyResult struct {
 	SessionID string
 	SourceID  string
 	PromptIDs map[string]string
+}
+
+// SnapshotInput is one verified immutable member prepared for an atomic bundle
+// commit.
+type SnapshotInput struct {
+	Extraction history.Extraction
+	Snapshot   history.PreservedSnapshot
+}
+
+// BundleApplyResult reports whether a validated bundle changed query-visible
+// history state.
+type BundleApplyResult struct {
+	Changed   bool
+	Snapshots int
+	Prompts   int
+}
+
+// SnapshotBundleWriter holds one bundle-scoped SQLite transaction so callers
+// can stream verified members without retaining a monthly archive in memory.
+type SnapshotBundleWriter struct {
+	tx          *Tx
+	sqlTx       *sql.Tx
+	archive     string
+	fingerprint string
+	memberCount int
+	attempt     time.Time
+	result      BundleApplyResult
+	skipped     bool
+	unchanged   bool
+	done        bool
 }
 
 // Stats summarizes normalized rows without exposing content.
@@ -155,6 +187,274 @@ func providerSourceKind(provider history.Provider, kind history.LocationKind) st
 
 // PreserveSnapshot records immutable exact bytes at a durable location.
 func (s *Store) PreserveSnapshot(extraction history.Extraction, snapshot history.PreservedSnapshot) (ApplyResult, error) {
+	var result ApplyResult
+	err := s.Transaction(func(tx *Tx) error {
+		var err error
+		result, err = tx.preserveSnapshot(extraction, snapshot)
+		return err
+	})
+	return result, err
+}
+
+// ApplySnapshotBundle commits all members from one verified archive in a
+// single transaction. A retry with the same manifest fingerprint is a no-op
+// unless full is requested.
+func (s *Store) ApplySnapshotBundle(archive, fingerprint string, inputs []SnapshotInput, full bool, attempt time.Time) (BundleApplyResult, error) {
+	writer, err := s.BeginSnapshotBundle(archive, fingerprint, len(inputs), full, attempt)
+	if err != nil {
+		return BundleApplyResult{}, err
+	}
+	defer writer.Rollback()
+	for _, input := range inputs {
+		if err := writer.Apply(input); err != nil {
+			return BundleApplyResult{}, err
+		}
+	}
+	return writer.Commit()
+}
+
+// BeginSnapshotBundle starts one atomic streamed bundle reconciliation.
+func (s *Store) BeginSnapshotBundle(archive, fingerprint string, memberCount int, full bool, attempt time.Time) (*SnapshotBundleWriter, error) {
+	sqlTx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin vault bundle history transaction: %w", err)
+	}
+	writer := &SnapshotBundleWriter{tx: &Tx{tx: sqlTx}, sqlTx: sqlTx, archive: archive, fingerprint: fingerprint, memberCount: memberCount, attempt: attempt}
+	var existing string
+	var lastError string
+	var count, extractorVersion int
+	var lastErrorInvalidates bool
+	err = sqlTx.QueryRow(`SELECT manifest_fingerprint,member_count,extractor_version,last_error,last_error_invalidates
+		FROM vault_bundle_state WHERE archive=?`, archive).Scan(&existing, &count, &extractorVersion, &lastError, &lastErrorInvalidates)
+	if err == nil && existing == fingerprint && count == memberCount && extractorVersion == history.ExtractorVersion {
+		if lastError != "" && !lastErrorInvalidates {
+			writer.unchanged = true
+		} else if lastError == "" && full {
+			writer.unchanged = true
+		} else if lastError == "" {
+			writer.skipped = true
+		}
+		if writer.unchanged || writer.skipped {
+			return writer, nil
+		}
+	}
+	if err != nil && err != sql.ErrNoRows {
+		_ = sqlTx.Rollback()
+		return nil, fmt.Errorf("read vault bundle checkpoint: %w", err)
+	}
+	return writer, nil
+}
+
+// VaultBundleCurrent reports whether an archive's immutable manifest and
+// extractor already have a successful, non-error checkpoint.
+func (s *Store) VaultBundleCurrent(archive, fingerprint string, memberCount int) (bool, error) {
+	var existing string
+	var count, extractorVersion int
+	err := s.db.QueryRow(`SELECT manifest_fingerprint,member_count,extractor_version
+		FROM vault_bundle_state WHERE archive=? AND last_error=''`, archive).Scan(&existing, &count, &extractorVersion)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read vault bundle checkpoint: %w", err)
+	}
+	return existing == fingerprint && count == memberCount && extractorVersion == history.ExtractorVersion, nil
+}
+
+// Apply reconciles one verified member into the open bundle transaction.
+func (w *SnapshotBundleWriter) Apply(input SnapshotInput) error {
+	if w.done {
+		return errors.New("vault bundle transaction is closed")
+	}
+	if w.skipped {
+		return nil
+	}
+	applied, err := w.tx.preserveSnapshot(input.Extraction, input.Snapshot)
+	if err != nil {
+		return err
+	}
+	w.result.Snapshots++
+	w.result.Prompts += len(applied.PromptIDs)
+	return nil
+}
+
+// Commit publishes the complete verified bundle and advances generation once.
+func (w *SnapshotBundleWriter) Commit() (BundleApplyResult, error) {
+	if w.done {
+		return BundleApplyResult{}, errors.New("vault bundle transaction is closed")
+	}
+	w.done = true
+	if w.skipped {
+		if _, err := w.sqlTx.Exec(`UPDATE vault_bundle_state SET last_attempt_unix=? WHERE archive=?`, w.attempt.Unix(), w.archive); err != nil {
+			_ = w.sqlTx.Rollback()
+			return BundleApplyResult{}, err
+		}
+		if err := w.sqlTx.Commit(); err != nil {
+			return BundleApplyResult{}, fmt.Errorf("commit unchanged vault bundle history: %w", err)
+		}
+		return w.result, nil
+	}
+	if _, err := w.sqlTx.Exec(`INSERT INTO vault_bundle_state(archive,manifest_fingerprint,member_count,extractor_version,last_attempt_unix,last_success_unix,last_error,last_error_invalidates)
+		VALUES(?,?,?,?,?,?, '',0) ON CONFLICT(archive) DO UPDATE SET manifest_fingerprint=excluded.manifest_fingerprint,
+		member_count=excluded.member_count,extractor_version=excluded.extractor_version,last_attempt_unix=excluded.last_attempt_unix,
+		last_success_unix=excluded.last_success_unix,last_error='',last_error_invalidates=0`, w.archive, w.fingerprint, w.memberCount, history.ExtractorVersion, w.attempt.Unix(), w.attempt.Unix()); err != nil {
+		_ = w.sqlTx.Rollback()
+		return BundleApplyResult{}, fmt.Errorf("record vault bundle checkpoint: %w", err)
+	}
+	if err := w.tx.advanceGenerationIf(!w.unchanged); err != nil {
+		_ = w.sqlTx.Rollback()
+		return BundleApplyResult{}, err
+	}
+	if err := w.sqlTx.Commit(); err != nil {
+		return BundleApplyResult{}, fmt.Errorf("commit vault bundle history: %w", err)
+	}
+	w.result.Changed = !w.unchanged
+	return w.result, nil
+}
+
+// Rollback abandons an incomplete bundle. It is safe after Commit.
+func (w *SnapshotBundleWriter) Rollback() {
+	if w == nil || w.done {
+		return
+	}
+	w.done = true
+	_ = w.sqlTx.Rollback()
+}
+
+// RecordVaultBundleError retains a bounded non-content failure without
+// changing the last successful manifest checkpoint.
+func (s *Store) RecordVaultBundleError(archive string, attempt time.Time, bundleErr error) error {
+	message := bundleErr.Error()
+	if len(message) > 2048 {
+		message = message[:2048]
+	}
+	return s.Transaction(func(tx *Tx) error {
+		_, err := tx.tx.Exec(`INSERT INTO vault_bundle_state(archive,last_attempt_unix,last_error,last_error_invalidates) VALUES(?,?,?,1)
+			ON CONFLICT(archive) DO UPDATE SET last_attempt_unix=excluded.last_attempt_unix,last_error=excluded.last_error,last_error_invalidates=1`, archive, attempt.Unix(), message)
+		if err != nil {
+			return fmt.Errorf("record vault bundle error: %w", err)
+		}
+		result, err := tx.tx.Exec(`UPDATE locations SET available=0 WHERE kind='vault' AND archive=? AND available=1`, archive)
+		if err != nil {
+			return fmt.Errorf("mark failed vault bundle locations unavailable: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count failed vault bundle locations: %w", err)
+		}
+		if changed == 0 {
+			return nil
+		}
+		rows, err := tx.tx.Query(`SELECT DISTINCT ps.session_id FROM preserved_snapshots ps
+			JOIN locations l ON l.snapshot_id=ps.id WHERE l.kind='vault' AND l.archive=?`, archive)
+		if err != nil {
+			return fmt.Errorf("list sessions from failed vault bundle: %w", err)
+		}
+		var sessionIDs []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan session from failed vault bundle: %w", err)
+			}
+			sessionIDs = append(sessionIDs, id)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if _, err := tx.tx.Exec(`INSERT INTO vault_prompt_tombstones(archive,provider,session_public_id,logical_key,prompt_public_id,deleted_at)
+			SELECT ?,s.provider,s.public_id,p.logical_key,p.public_id,? FROM prompts p JOIN sessions s ON s.id=p.session_id
+			WHERE EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.kind='vault' AND l.archive=?)
+			AND NOT EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND NOT (l.kind='vault' AND l.archive=?))
+			ON CONFLICT(archive,provider,session_public_id,logical_key) DO UPDATE SET prompt_public_id=excluded.prompt_public_id,deleted_at=excluded.deleted_at`,
+			archive, attempt.Unix(), archive, archive); err != nil {
+			return fmt.Errorf("tombstone prompts from failed vault bundle: %w", err)
+		}
+		rows, err = tx.tx.Query(`SELECT DISTINCT prompt_id FROM occurrences WHERE location_id IN (SELECT id FROM locations WHERE kind='vault' AND archive=?)`, archive)
+		if err != nil {
+			return fmt.Errorf("list prompts from failed vault bundle: %w", err)
+		}
+		var promptIDs []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan prompt from failed vault bundle: %w", err)
+			}
+			promptIDs = append(promptIDs, id)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if _, err := tx.tx.Exec(`DELETE FROM occurrences WHERE location_id IN (SELECT id FROM locations WHERE kind='vault' AND archive=?)`, archive); err != nil {
+			return fmt.Errorf("remove occurrences from failed vault bundle: %w", err)
+		}
+		for _, promptID := range promptIDs {
+			if err := tx.refreshPromptCanonical(promptID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.tx.Exec(`DELETE FROM prompts WHERE occurrence_count=0`); err != nil {
+			return fmt.Errorf("remove orphaned prompts from failed vault bundle: %w", err)
+		}
+		for _, sessionID := range sessionIDs {
+			if err := tx.recomputeSessionBounds(sessionID); err != nil {
+				return err
+			}
+		}
+		return tx.advanceGenerationIf(true)
+	})
+}
+
+// RecordVaultBundleIndexError records a retryable consumer failure without
+// revoking byte-verified vault locations from a previous successful index.
+func (s *Store) RecordVaultBundleIndexError(archive string, attempt time.Time, bundleErr error) error {
+	message := bundleErr.Error()
+	if len(message) > 2048 {
+		message = message[:2048]
+	}
+	return s.Transaction(func(tx *Tx) error {
+		if _, err := tx.tx.Exec(`INSERT INTO vault_bundle_state(archive,last_attempt_unix,last_error,last_error_invalidates) VALUES(?,?,?,0)
+			ON CONFLICT(archive) DO UPDATE SET last_attempt_unix=excluded.last_attempt_unix,last_error=excluded.last_error,
+			last_error_invalidates=vault_bundle_state.last_error_invalidates`, archive, attempt.Unix(), message); err != nil {
+			return fmt.Errorf("record vault bundle index error: %w", err)
+		}
+		return nil
+	})
+}
+
+func (tx *Tx) ensureSnapshotSession(provider history.Provider, value history.Session, preferredID int64) (int64, string, error) {
+	if preferredID == 0 {
+		return tx.ensureSession(provider, value, 0, true)
+	}
+	var preferredPublicID, preferredIdentity string
+	if err := tx.tx.QueryRow(`SELECT public_id,identity_key FROM sessions WHERE id=? AND provider=?`, preferredID, provider).Scan(&preferredPublicID, &preferredIdentity); err != nil {
+		return 0, "", fmt.Errorf("read preserved snapshot session: %w", err)
+	}
+	if strings.HasPrefix(preferredIdentity, "fallback:source-path:") && strings.HasPrefix(value.IdentityKey, "fallback:source-path:") {
+		var candidateID int64
+		err := tx.tx.QueryRow(`SELECT id FROM sessions WHERE provider=? AND identity_key=?`, provider, value.IdentityKey).Scan(&candidateID)
+		if err != nil && err != sql.ErrNoRows {
+			return 0, "", fmt.Errorf("find path-fallback snapshot session: %w", err)
+		}
+		if err == nil && candidateID != preferredID {
+			if err := tx.mergeSessions(preferredID, candidateID); err != nil {
+				return 0, "", err
+			}
+		}
+		existing, err := tx.readSessionMetadata(preferredID)
+		if err != nil {
+			return 0, "", err
+		}
+		if err := tx.writeSessionMetadata(preferredID, mergeStoredSessionMetadata(existing, sessionMetadata(value))); err != nil {
+			return 0, "", err
+		}
+		return preferredID, preferredPublicID, nil
+	}
+	return tx.ensureSession(provider, value, preferredID, true)
+}
+
+func (tx *Tx) preserveSnapshot(extraction history.Extraction, snapshot history.PreservedSnapshot) (ApplyResult, error) {
 	if snapshot.Provider == "" {
 		snapshot.Provider = extraction.Provider
 	}
@@ -170,47 +470,110 @@ func (s *Store) PreserveSnapshot(extraction history.Extraction, snapshot history
 	if snapshot.LastTS == nil {
 		snapshot.LastTS = extraction.Session.LastTimestamp
 	}
-	var result ApplyResult
-	err := s.Transaction(func(tx *Tx) error {
-		preferredSessionID, err := tx.snapshotSessionID(snapshot.Provider, snapshot.ContentSHA256)
-		if err != nil {
-			return err
+	preferredSessionID, err := tx.snapshotSessionID(snapshot.Provider, snapshot.ContentSHA256)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	sessionID, sessionPublicID, err := tx.ensureSnapshotSession(extraction.Provider, extraction.Session, preferredSessionID)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	snapshotID, snapshotPublicID, err := tx.ensureSnapshot(sessionID, snapshot)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	_, err = tx.ensureSnapshotLocation(snapshotID, extraction.Source)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if err := tx.deleteSnapshotOccurrences(snapshotID); err != nil {
+		return ApplyResult{}, err
+	}
+	promptIDs, promptDBIDs, err := tx.ensurePrompts(sessionID, extraction.Prompts)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if extraction.Source.Kind == history.LocationVault {
+		if err := tx.restoreVaultPromptIDs(extraction.Provider, sessionID, sessionPublicID, promptIDs, promptDBIDs); err != nil {
+			return ApplyResult{}, err
 		}
-		sessionID, sessionPublicID, err := tx.ensureSession(extraction.Provider, extraction.Session, preferredSessionID, true)
-		if err != nil {
-			return err
+	}
+	locationIDs, err := tx.snapshotLocationIDs(snapshotID)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	for _, currentLocationID := range locationIDs {
+		if err := tx.addOccurrences(currentLocationID, 0, snapshotID, promptDBIDs, extraction.Prompts, extraction.Occurrences); err != nil {
+			return ApplyResult{}, err
 		}
-		snapshotID, snapshotPublicID, err := tx.ensureSnapshot(sessionID, snapshot)
-		if err != nil {
-			return err
+	}
+	if _, err := tx.tx.Exec(`DELETE FROM prompts WHERE occurrence_count=0`); err != nil {
+		return ApplyResult{}, fmt.Errorf("remove unpreserved prompts: %w", err)
+	}
+	if err := tx.recomputeSessionBounds(sessionID); err != nil {
+		return ApplyResult{}, err
+	}
+	return ApplyResult{SessionID: sessionPublicID, SourceID: snapshotPublicID, PromptIDs: promptIDs}, nil
+}
+
+func (tx *Tx) restoreVaultPromptIDs(provider history.Provider, sessionID int64, sessionPublicID string, publicIDs map[string]string, databaseIDs map[string]int64) error {
+	rows, err := tx.tx.Query(`SELECT logical_key,prompt_public_id FROM (
+		SELECT logical_key,prompt_public_id,deleted_at,0 AS source_order FROM vault_prompt_tombstones
+			WHERE provider=? AND session_public_id=?
+		UNION ALL
+		SELECT pt.logical_key,pt.prompt_public_id,pt.deleted_at,1 AS source_order FROM prompt_tombstones pt
+			JOIN source_heads sh ON sh.id=pt.source_head_id WHERE sh.provider=? AND sh.session_id=?
+	) ORDER BY logical_key,deleted_at,source_order,prompt_public_id`, provider, sessionPublicID, provider, sessionID)
+	if err != nil {
+		return fmt.Errorf("list prompt tombstones for vault restore: %w", err)
+	}
+	tombstones := make(map[string][]string)
+	for rows.Next() {
+		var logicalKey, publicID string
+		if err := rows.Scan(&logicalKey, &publicID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan vault prompt tombstone: %w", err)
 		}
-		_, err = tx.ensureSnapshotLocation(snapshotID, extraction.Source)
-		if err != nil {
-			return err
+		ids := tombstones[logicalKey]
+		if len(ids) == 0 || ids[len(ids)-1] != publicID {
+			tombstones[logicalKey] = append(ids, publicID)
 		}
-		if err := tx.deleteSnapshotOccurrences(snapshotID); err != nil {
-			return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for logicalKey, candidates := range tombstones {
+		databaseID, found := databaseIDs[logicalKey]
+		if !found {
+			continue
 		}
-		promptIDs, promptDBIDs, err := tx.ensurePrompts(sessionID, extraction.Prompts)
-		if err != nil {
-			return err
-		}
-		locationIDs, err := tx.snapshotLocationIDs(snapshotID)
-		if err != nil {
-			return err
-		}
-		for _, currentLocationID := range locationIDs {
-			if err := tx.addOccurrences(currentLocationID, 0, snapshotID, promptDBIDs, extraction.Prompts, extraction.Occurrences); err != nil {
-				return err
+		restoredID := candidates[0]
+		for _, retiredID := range candidates[1:] {
+			if retiredID != restoredID {
+				if err := tx.recordPublicIDAlias(retiredID, restoredID, "prompt"); err != nil {
+					return err
+				}
 			}
 		}
-		if _, err := tx.tx.Exec(`DELETE FROM prompts WHERE occurrence_count=0`); err != nil {
-			return fmt.Errorf("remove unpreserved prompts: %w", err)
+		if currentID := publicIDs[logicalKey]; currentID != restoredID {
+			if err := tx.recordPublicIDAlias(currentID, restoredID, "prompt"); err != nil {
+				return err
+			}
+			if _, err := tx.tx.Exec(`UPDATE prompts SET public_id=? WHERE id=?`, restoredID, databaseID); err != nil {
+				return fmt.Errorf("restore vault prompt ID: %w", err)
+			}
+			publicIDs[logicalKey] = restoredID
 		}
-		result = ApplyResult{SessionID: sessionPublicID, SourceID: snapshotPublicID, PromptIDs: promptIDs}
-		return tx.recomputeSessionBounds(sessionID)
-	})
-	return result, err
+		if _, err := tx.tx.Exec(`DELETE FROM vault_prompt_tombstones WHERE provider=? AND session_public_id=? AND logical_key=?`, provider, sessionPublicID, logicalKey); err != nil {
+			return fmt.Errorf("remove restored vault prompt tombstone: %w", err)
+		}
+		if _, err := tx.tx.Exec(`DELETE FROM prompt_tombstones WHERE logical_key=? AND source_head_id IN (
+			SELECT id FROM source_heads WHERE provider=? AND session_id=?
+		)`, logicalKey, provider, sessionID); err != nil {
+			return fmt.Errorf("remove restored provider prompt tombstone: %w", err)
+		}
+	}
+	return nil
 }
 
 // RelocateSource moves a source head while preserving its opaque ID.
@@ -281,7 +644,7 @@ func (tx *Tx) snapshotSessionID(provider history.Provider, hash string) (int64, 
 }
 
 func (tx *Tx) snapshotLocationIDs(snapshotID int64) ([]int64, error) {
-	rows, err := tx.tx.Query(`SELECT id FROM locations WHERE snapshot_id=? ORDER BY id`, snapshotID)
+	rows, err := tx.tx.Query(`SELECT id FROM locations WHERE snapshot_id=? AND available=1 ORDER BY id`, snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("list snapshot locations: %w", err)
 	}
@@ -299,7 +662,8 @@ func (tx *Tx) snapshotLocationIDs(snapshotID int64) ([]int64, error) {
 
 func (tx *Tx) recomputeSessionBounds(sessionID int64) error {
 	rows, err := tx.tx.Query(`SELECT first_ts,last_ts FROM source_heads WHERE session_id=? AND available=1
-		UNION ALL SELECT first_ts,last_ts FROM preserved_snapshots WHERE session_id=?`, sessionID, sessionID)
+		UNION ALL SELECT ps.first_ts,ps.last_ts FROM preserved_snapshots ps WHERE ps.session_id=?
+			AND EXISTS(SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND l.available=1)`, sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("list history session timestamp bounds: %w", err)
 	}
