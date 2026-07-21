@@ -343,24 +343,36 @@ func TestArchiveCleansAbandonedStagingAndPreservesOtherFiles(t *testing.T) {
 	if _, err := instance.EnsureFormat(); err != nil {
 		t.Fatal(err)
 	}
-	remove := []string{".source-abandoned.zst", ".bundle-abandoned.tar.zst"}
-	preserve := []string{"published.tar.zst", "published.tar.zst.rollback", "unknown.tmp"}
-	for _, name := range append(append([]string{}, remove...), preserve...) {
-		if err := os.WriteFile(filepath.Join(instance.dir, name), []byte(name), 0o600); err != nil {
+	providerDir := filepath.Join(instance.dir, string(discover.ProviderCodex))
+	if err := os.MkdirAll(providerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	remove := []string{
+		filepath.Join(instance.dir, ".source-abandoned.zst"),
+		filepath.Join(providerDir, ".bundle-abandoned.tar.zst"),
+	}
+	preserve := []string{
+		filepath.Join(instance.dir, "published.tar.zst"),
+		filepath.Join(instance.dir, "published.tar.zst.rollback"),
+		filepath.Join(instance.dir, "unknown.tmp"),
+	}
+	for _, path := range append(append([]string{}, remove...), preserve...) {
+		if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := instance.Archive(true); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range remove {
-		if _, err := os.Stat(filepath.Join(instance.dir, name)); !os.IsNotExist(err) {
-			t.Errorf("abandoned staging file %s remains: %v", name, err)
+	for _, path := range remove {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("abandoned staging file %s remains: %v", path, err)
 		}
 	}
-	for _, name := range append(preserve, markerName, ".tokenomnom-vault.lock") {
-		if _, err := os.Stat(filepath.Join(instance.dir, name)); err != nil {
-			t.Errorf("preserved vault file %s: %v", name, err)
+	preserve = append(preserve, filepath.Join(instance.dir, markerName), filepath.Join(instance.dir, ".tokenomnom-vault.lock"))
+	for _, path := range preserve {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("preserved vault file %s: %v", path, err)
 		}
 	}
 }

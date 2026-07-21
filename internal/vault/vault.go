@@ -439,9 +439,12 @@ func (v *Vault) Archive(all bool) (ArchiveResult, error) {
 }
 
 func (v *Vault) cleanupAbandonedStaging() error {
-	patterns := []string{".source-*.zst", ".bundle-*.tar.zst"}
+	patterns := []string{
+		filepath.Join(v.dir, ".source-*.zst"),
+		filepath.Join(v.dir, "*", ".bundle-*.tar.zst"),
+	}
 	for _, pattern := range patterns {
-		paths, err := filepath.Glob(filepath.Join(v.dir, pattern))
+		paths, err := filepath.Glob(pattern)
 		if err != nil {
 			return fmt.Errorf("find abandoned vault staging files: %w", err)
 		}
