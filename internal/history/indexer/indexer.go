@@ -106,7 +106,7 @@ func Index(options Options) (Summary, error) {
 	if err != nil {
 		return summary, err
 	}
-	files, discoveryFailed := discoverFiles(options.Roots, selected, &summary)
+	files, discoveryFailed := discoverFiles(options.Store, options.Roots, selected, &summary)
 	summary.ScannedSources = len(files)
 	if err := reconcileMoves(options.Store, files, checkpoints, discoveryFailed); err != nil {
 		return summary, err
@@ -184,7 +184,8 @@ func Index(options Options) (Summary, error) {
 		}
 	}
 
-	if err := options.Store.RecordRun(attempt, summary.ErrorCount); err != nil {
+	completeScope := selected[history.ProviderCodex] && selected[history.ProviderClaude]
+	if err := options.Store.RecordScopedRun(attempt, summary.ErrorCount, completeScope); err != nil {
 		return summary, err
 	}
 	summary.Duration = time.Since(started)
@@ -269,7 +270,7 @@ func selectedProviders(values []history.Provider) map[history.Provider]bool {
 	return result
 }
 
-func discoverFiles(roots []discover.Root, selected map[history.Provider]bool, summary *Summary) ([]discover.SourceFile, map[history.Provider]bool) {
+func discoverFiles(database *historystore.Store, roots []discover.Root, selected map[history.Provider]bool, summary *Summary) ([]discover.SourceFile, map[history.Provider]bool) {
 	var files []discover.SourceFile
 	failed := make(map[history.Provider]bool)
 	for _, root := range roots {
@@ -281,7 +282,7 @@ func discoverFiles(roots []discover.Root, selected map[history.Provider]bool, su
 		files = append(files, found...)
 		for _, walkErr := range walkErrors {
 			failed[provider] = true
-			addIssue(summary, Issue{Provider: string(provider), Path: root.Path, Error: walkErr.Error()}, true)
+			recordError(database, provider, root.Path, walkErr, summary)
 		}
 	}
 	sort.Slice(files, func(i, j int) bool {

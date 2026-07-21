@@ -239,9 +239,18 @@ func (s *Store) ClearSourceError(provider history.Provider, path string) error {
 // RecordRun records an indexing attempt and only advances complete success
 // when every selected source succeeded.
 func (s *Store) RecordRun(attempt time.Time, errorCount int) error {
+	return s.RecordScopedRun(attempt, errorCount, true)
+}
+
+// RecordScopedRun always records the attempt, but filtered runs do not replace
+// the health of the last run that covered every provider.
+func (s *Store) RecordScopedRun(attempt time.Time, errorCount int, completeScope bool) error {
 	return s.Transaction(func(tx *Tx) error {
 		if err := tx.SetMeta("last_attempt_unix", strconv.FormatInt(attempt.Unix(), 10)); err != nil {
 			return err
+		}
+		if !completeScope {
+			return nil
 		}
 		if errorCount == 0 {
 			if err := tx.SetMeta("last_run_error_count", "0"); err != nil {

@@ -438,8 +438,20 @@ func TestPartialRunCommitsSuccessAndDoesNotAdvanceCompleteSuccess(t *testing.T) 
 		t.Fatalf("partial run err=%v summary=%+v", err, summary)
 	}
 	health := env.health(t)
-	if health.Prompts != 2 || health.LastAttemptUnix != secondTime.Unix() || health.LastCompleteSuccessUnix != firstTime.Unix() {
+	if health.Prompts != 2 || health.LastAttemptUnix != secondTime.Unix() || health.LastCompleteSuccessUnix != firstTime.Unix() || health.ErrorSources != 1 {
 		t.Fatalf("partial run health = %+v", health)
+	}
+	thirdTime := secondTime.Add(time.Hour)
+	filtered, err := Index(Options{
+		Store: env.database, Roots: roots, Providers: []history.Provider{history.ProviderCodex},
+		Now: func() time.Time { return thirdTime },
+	})
+	if err != nil || filtered.ErrorCount != 0 {
+		t.Fatalf("filtered run err=%v summary=%+v", err, filtered)
+	}
+	health = env.health(t)
+	if health.LastAttemptUnix != thirdTime.Unix() || health.LastCompleteSuccessUnix != firstTime.Unix() || health.LastRunErrorCount != 1 || health.ErrorSources != 1 {
+		t.Fatalf("filtered run erased unresolved provider failure: %+v", health)
 	}
 }
 
