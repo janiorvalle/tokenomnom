@@ -41,19 +41,29 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			if err != nil {
 				if scheduled && errors.Is(err, store.ErrStoreInUse) {
 					if currentFormat(cmd) == "json" {
-						return writeSyncJSON(cmd, syncer.Summary{}, requestedTimezone(*timezone), "", autoVaultResult{}, nil, true, true)
+						return writeSyncJSON(cmd, syncer.Summary{}, requestedTimezone(*timezone), "", autoVaultResult{}, nil, autoHistoryResult{}, nil, true, true)
 					}
 					fmt.Fprintln(cmd.OutOrStdout(), "skipped: store in use")
 					return nil
 				}
 				return err
 			}
-			defer release()
+			usageLocked := true
+			defer func() {
+				if usageLocked {
+					release()
+				}
+			}()
 			database, err := store.Open(databasePath)
 			if err != nil {
 				return err
 			}
-			defer database.Close()
+			usageOpen := true
+			defer func() {
+				if usageOpen {
+					_ = database.Close()
+				}
+			}()
 
 			location := time.Local
 			name := localTimezoneName()
@@ -76,11 +86,23 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 				backupWarning = fmt.Sprintf("backup usage: %v", err)
 			}
 			autoResult, autoErr := runDueAutoVault(cmd, database, roots)
+			if err := database.Close(); err != nil {
+				return err
+			}
+			usageOpen = false
+			release()
+			usageLocked = false
+			historyResult := autoHistoryResult{}
+			var historyErr error
+			if scheduled {
+				historyResult, historyErr = dueHistoryIndex(cmd, roots)
+			}
 			if currentFormat(cmd) == "json" {
-				return writeSyncJSON(cmd, summary, name, backupWarning, autoResult, autoErr, scheduled, false)
+				return writeSyncJSON(cmd, summary, name, backupWarning, autoResult, autoErr, historyResult, historyErr, scheduled, false)
 			}
 			if scheduled {
 				warningCount := len(autoVaultWarnings(autoResult, autoErr))
+				warningCount += len(autoHistoryWarnings(historyResult, historyErr))
 				if backupWarning != "" {
 					warningCount++
 				}
@@ -95,6 +117,9 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 					warningSummary = fmt.Sprintf(", warnings: %d", warningCount)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "sync complete: %d files scanned, %d events applied, %d files vaulted%s\n", summary.FilesScanned, summary.EventsApplied, autoResult.Archived, warningSummary)
+				for _, warning := range autoHistoryWarnings(historyResult, historyErr) {
+					writeWarningLine(cmd, "WARNING: "+warning)
+				}
 				return nil
 			}
 			writeSyncSummary(cmd, summary)
@@ -114,25 +139,26 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 }
 
 type jsonSyncData struct {
-	FilesScanned                 int              `json:"files_scanned"`
-	FilesSkipped                 int              `json:"files_skipped"`
-	FilesAppended                int              `json:"files_appended"`
-	FilesRewritten               int              `json:"files_rewritten"`
-	FilesMissing                 int              `json:"files_missing"`
-	EventsApplied                int              `json:"events_applied"`
-	UsageRows                    int              `json:"usage_rows"`
-	UnknownModelTokens           int64            `json:"unknown_model_tokens"`
-	UnclassifiedCacheWriteTokens int64            `json:"unclassified_cache_write_tokens"`
-	FullReingest                 bool             `json:"full_reingest"`
-	DurationMS                   int64            `json:"duration_ms"`
-	Warnings                     []string         `json:"warnings"`
-	Scheduled                    bool             `json:"scheduled"`
-	Skipped                      bool             `json:"skipped"`
-	SkipReason                   string           `json:"skip_reason,omitempty"`
-	AutoVault                    *autoVaultResult `json:"auto_vault,omitempty"`
+	FilesScanned                 int                `json:"files_scanned"`
+	FilesSkipped                 int                `json:"files_skipped"`
+	FilesAppended                int                `json:"files_appended"`
+	FilesRewritten               int                `json:"files_rewritten"`
+	FilesMissing                 int                `json:"files_missing"`
+	EventsApplied                int                `json:"events_applied"`
+	UsageRows                    int                `json:"usage_rows"`
+	UnknownModelTokens           int64              `json:"unknown_model_tokens"`
+	UnclassifiedCacheWriteTokens int64              `json:"unclassified_cache_write_tokens"`
+	FullReingest                 bool               `json:"full_reingest"`
+	DurationMS                   int64              `json:"duration_ms"`
+	Warnings                     []string           `json:"warnings"`
+	Scheduled                    bool               `json:"scheduled"`
+	Skipped                      bool               `json:"skipped"`
+	SkipReason                   string             `json:"skip_reason,omitempty"`
+	AutoVault                    *autoVaultResult   `json:"auto_vault,omitempty"`
+	AutoHistory                  *autoHistoryResult `json:"auto_history,omitempty"`
 }
 
-func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupWarning string, autoResult autoVaultResult, autoErr error, scheduled, skipped bool) error {
+func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupWarning string, autoResult autoVaultResult, autoErr error, historyResult autoHistoryResult, historyErr error, scheduled, skipped bool) error {
 	warnings := []string{}
 	if summary.UnknownModelTokens > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d unknown-model tokens were ingested and remain explicitly attributed to unknown.", summary.UnknownModelTokens))
@@ -144,9 +170,14 @@ func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupW
 		warnings = append(warnings, backupWarning)
 	}
 	warnings = append(warnings, autoVaultWarnings(autoResult, autoErr)...)
+	warnings = append(warnings, autoHistoryWarnings(historyResult, historyErr)...)
 	var autoData *autoVaultResult
 	if autoResult.Ran {
 		autoData = &autoResult
+	}
+	var historyData *autoHistoryResult
+	if historyResult.Ran {
+		historyData = &historyResult
 	}
 	data := jsonSyncData{
 		FilesScanned: summary.FilesScanned, FilesSkipped: summary.FilesSkipped,
@@ -155,7 +186,7 @@ func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupW
 		UsageRows: summary.UsageRows, UnknownModelTokens: summary.UnknownModelTokens,
 		UnclassifiedCacheWriteTokens: summary.UnclassifiedCacheWriteTokens,
 		FullReingest:                 summary.FullReingest, DurationMS: summary.Duration.Milliseconds(),
-		Warnings: warnings, Scheduled: scheduled, Skipped: skipped, AutoVault: autoData,
+		Warnings: warnings, Scheduled: scheduled, Skipped: skipped, AutoVault: autoData, AutoHistory: historyData,
 	}
 	if skipped {
 		data.SkipReason = "store in use"

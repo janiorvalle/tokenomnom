@@ -31,7 +31,7 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "not_indexed" {
+	if status.Status != "not_indexed" || status.AutoIndexEnabled || status.AutoInterval != "24h" || strings.Join(status.Providers, ",") != "codex,claude" || status.NextDue != nil {
 		t.Fatalf("history status = %+v", status)
 	}
 	historyPath := filepath.Join(stateDir, historystore.DatabaseName)
@@ -247,6 +247,17 @@ func TestHistoryRejectsUnsupportedSelectors(t *testing.T) {
 			t.Fatalf("%v succeeded", args)
 		}
 	}
+	for _, args := range [][]string{
+		{"history", "sample", "--unit", "occurrence"},
+		{"history", "sample", "--strategy", "randomish"},
+		{"history", "sample", "--strategy", "stratified"},
+		{"history", "sample", "--group-by", "topic"},
+		{"history", "sample", "--count", "101"},
+	} {
+		if _, err := executeReport(args, filepath.Join(root, "codex"), filepath.Join(root, "claude")); err == nil {
+			t.Fatalf("%v succeeded", args)
+		}
+	}
 }
 
 func TestSafePrettyPreviewEscapesTerminalControls(t *testing.T) {
@@ -328,6 +339,23 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	promptsEnvelope := decodeEnvelope(t, promptsOutput)
 	if err := json.Unmarshal(promptsEnvelope.Data, &prompts); err != nil || promptsEnvelope.Timezone != "UTC" || len(prompts.Prompts) != 1 || len(prompts.Prompts[0].Occurrences) != 1 || prompts.Prompts[0].Text == nil {
 		t.Fatalf("prompts err=%v value=%+v", err, prompts)
+	}
+
+	sampleOutput, err := executeReport([]string{"history", "sample", "--group-by", "month,repo", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample historystore.SampleResult
+	sampleEnvelope := decodeEnvelope(t, sampleOutput)
+	if err := json.Unmarshal(sampleEnvelope.Data, &sample); err != nil || sampleEnvelope.Timezone != "UTC" || len(sample.Items) != 1 || sample.Strategy != "stratified" || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Text != nil || sample.Items[0].Groups["repo"] != "unknown" {
+		t.Fatalf("sample err=%v envelope=%+v value=%+v", err, sampleEnvelope, sample)
+	}
+	sampleTextOutput, err := executeReport([]string{"history", "sample", "--count", "1", "--include-text", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, sampleTextOutput).Data, &sample); err != nil || sample.Items[0].Prompt.Text == nil {
+		t.Fatalf("sample text err=%v value=%+v", err, sample)
 	}
 
 	statsOutput, err := executeReport([]string{"history", "stats", "--group-by", "provider", "--format", "json"}, codexDir, claudeDir)

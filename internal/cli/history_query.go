@@ -205,6 +205,97 @@ func newHistoryPromptsCommand() *cobra.Command {
 	return command
 }
 
+func newHistorySampleCommand() *cobra.Command {
+	var flags historyQueryFlags
+	var unit, strategy, groupBy, seed string
+	var count int
+	var includeText bool
+	command := &cobra.Command{
+		Use:   "sample",
+		Short: "Sample indexed logical prompts or sessions",
+		Args:  cobra.NoArgs,
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			if err := flags.validate(cmd); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("limit") || flags.cursor != "" {
+				return errors.New("history sample does not support --limit or --cursor; use --count")
+			}
+			if unit != "prompt" && unit != "session" {
+				return fmt.Errorf("invalid --unit %q (expected prompt or session)", unit)
+			}
+			if strategy != "" && strategy != "random" && strategy != "stratified" {
+				return fmt.Errorf("invalid --strategy %q (expected random or stratified)", strategy)
+			}
+			if count < 1 || count > 100 {
+				return errors.New("--count must be between 1 and 100")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			groups := []string{}
+			if groupBy != "" {
+				for _, group := range strings.Split(groupBy, ",") {
+					if group = strings.TrimSpace(group); group != "" {
+						groups = append(groups, group)
+					}
+				}
+			}
+			query := flags.query(cmd)
+			query.IncludeText = includeText
+			var result historystore.SampleResult
+			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
+				var err error
+				result, err = database.Sample(historystore.SampleQuery{PromptQuery: query, Unit: unit, Strategy: strategy, GroupBy: groups, Count: count, Seed: seed})
+				return err
+			}); err != nil {
+				return err
+			}
+			if currentFormat(cmd) == "json" {
+				return writeJSONEnvelope(cmd, "history sample", "UTC", flags.jsonFilters(), result.Warnings, result)
+			}
+			for _, item := range result.Items {
+				groupParts := make([]string, 0, len(result.GroupBy))
+				for _, group := range result.GroupBy {
+					if value, ok := item.Groups[group]; ok {
+						groupParts = append(groupParts, group+"="+safePrettyPreview(value))
+					}
+				}
+				groupText := strings.Join(groupParts, ",")
+				if item.Prompt != nil {
+					timestamp := "-"
+					if item.Prompt.Timestamp != nil {
+						timestamp = *item.Prompt.Timestamp
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", item.Prompt.PromptID, item.Prompt.Provider, timestamp, groupText, safePrettyPreview(item.Prompt.Snippet))
+					if includeText && item.Prompt.Text != nil {
+						fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*item.Prompt.Text))
+					}
+					continue
+				}
+				if item.Session != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", item.Session.SessionID, item.Session.Provider, groupText, safePrettyPreview(item.Session.Preview))
+					if includeText && item.Text != nil {
+						fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*item.Text))
+					}
+				}
+			}
+			writeHistoryWarnings(cmd, result.Warnings)
+			return nil
+		},
+	}
+	flags.add(command, 100)
+	_ = command.Flags().MarkHidden("limit")
+	_ = command.Flags().MarkHidden("cursor")
+	command.Flags().StringVar(&unit, "unit", "prompt", "sample logical prompts or sessions")
+	command.Flags().StringVar(&strategy, "strategy", "", "sampling strategy (random or stratified)")
+	command.Flags().StringVar(&groupBy, "group-by", "", "stratify by month, repo, and/or thread-kind")
+	command.Flags().IntVar(&count, "count", 25, "maximum sampled units (1-100)")
+	command.Flags().StringVar(&seed, "seed", "", "deterministic sample seed")
+	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
+	return command
+}
+
 func newHistoryStatsCommand() *cobra.Command {
 	var flags historyQueryFlags
 	var groupBy string

@@ -91,6 +91,13 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			}
 			opened = true
 		}
+		if err := database.PrepareSampling(); err != nil {
+			if opened {
+				_ = database.Close()
+			}
+			release()
+			return nil, fmt.Errorf("prepare history sampling index: %w", err)
+		}
 		return func() {
 			if opened {
 				_ = database.Close()

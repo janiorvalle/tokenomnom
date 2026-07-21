@@ -36,8 +36,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     confidence TEXT NOT NULL DEFAULT 'unknown',
     first_ts TEXT,
     last_ts TEXT,
+	sample_key BLOB NOT NULL,
     UNIQUE(provider, identity_key)
 );
+
+CREATE INDEX IF NOT EXISTS sessions_sample_key_idx ON sessions(sample_key, public_id);
+CREATE INDEX IF NOT EXISTS sessions_sample_month_idx ON sessions(COALESCE(strftime('%Y-%m', first_ts), 'unknown'), sample_key, public_id);
+CREATE INDEX IF NOT EXISTS sessions_sample_repo_idx ON sessions(COALESCE(NULLIF(lower(repository_name), ''), 'unknown'), sample_key, public_id);
+CREATE INDEX IF NOT EXISTS sessions_sample_thread_idx ON sessions(thread_kind, sample_key, public_id);
 
 CREATE TABLE IF NOT EXISTS session_relations (
 	id INTEGER PRIMARY KEY,
@@ -182,10 +188,60 @@ CREATE TABLE IF NOT EXISTS prompts (
     model TEXT,
     evidence TEXT,
     confidence TEXT NOT NULL DEFAULT 'unknown',
-    extractor_version INTEGER NOT NULL,
-    occurrence_count INTEGER NOT NULL DEFAULT 0,
+	extractor_version INTEGER NOT NULL,
+	sample_key BLOB NOT NULL,
+	occurrence_count INTEGER NOT NULL DEFAULT 0,
     UNIQUE(session_id, logical_key)
 );
+
+CREATE INDEX IF NOT EXISTS prompts_sample_key_idx ON prompts(sample_key, public_id);
+CREATE INDEX IF NOT EXISTS prompts_session_sample_key_idx ON prompts(session_id, sample_key, public_id);
+
+CREATE TABLE IF NOT EXISTS sample_groups (
+	unit_kind TEXT NOT NULL CHECK (unit_kind IN ('prompt','session')),
+	dimensions TEXT NOT NULL,
+	group_values TEXT NOT NULL,
+	group_key BLOB NOT NULL,
+	member_count INTEGER NOT NULL CHECK (member_count > 0),
+	PRIMARY KEY(unit_kind,dimensions,group_values)
+);
+
+CREATE INDEX IF NOT EXISTS sample_groups_key_idx ON sample_groups(unit_kind,dimensions,group_key,group_values);
+
+CREATE TABLE IF NOT EXISTS sample_strata (
+	unit_kind TEXT NOT NULL CHECK (unit_kind IN ('prompt','session')),
+	unit_id INTEGER NOT NULL,
+	dimensions TEXT NOT NULL,
+	group_values TEXT NOT NULL,
+	group_key BLOB NOT NULL,
+	sample_key BLOB NOT NULL,
+	PRIMARY KEY(unit_kind,unit_id,dimensions,group_values)
+);
+
+CREATE INDEX IF NOT EXISTS sample_strata_group_key_idx ON sample_strata(unit_kind,dimensions,group_key,sample_key,unit_id);
+CREATE INDEX IF NOT EXISTS sample_strata_member_idx ON sample_strata(unit_kind,dimensions,group_values,sample_key,unit_id);
+
+CREATE TRIGGER IF NOT EXISTS sample_strata_group_insert AFTER INSERT ON sample_strata
+	WHEN new.dimensions IN ('month','repo','thread-kind','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	INSERT INTO sample_groups(unit_kind,dimensions,group_values,group_key,member_count)
+		VALUES(new.unit_kind,new.dimensions,new.group_values,new.group_key,1)
+		ON CONFLICT(unit_kind,dimensions,group_values) DO UPDATE SET member_count=member_count+1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sample_strata_group_delete AFTER DELETE ON sample_strata
+	WHEN old.dimensions IN ('month','repo','thread-kind','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	DELETE FROM sample_groups WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count=1;
+	UPDATE sample_groups SET member_count=member_count-1
+		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sample_strata_session_delete AFTER DELETE ON sessions BEGIN
+	DELETE FROM sample_strata WHERE unit_kind='session' AND unit_id=old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sample_strata_prompt_delete AFTER DELETE ON prompts BEGIN
+	DELETE FROM sample_strata WHERE unit_kind='prompt' AND unit_id=old.id;
+END;
 
 CREATE TABLE IF NOT EXISTS occurrences (
     id INTEGER PRIMARY KEY,

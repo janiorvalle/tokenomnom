@@ -63,6 +63,7 @@ func TestConfigShowAnnotatesEffectiveSources(t *testing.T) {
 		`min_age = "168h" # default`,
 		`providers = ["codex", "claude"] # default`,
 		`auto = true # default`,
+		`auto_index = false # default`,
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("config show missing %q:\n%s", want, output.String())

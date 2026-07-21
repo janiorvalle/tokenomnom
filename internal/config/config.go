@@ -36,6 +36,9 @@ const (
 	KeyVaultProviders    = "vault.providers"
 	KeyVaultAuto         = "vault.auto"
 	KeyVaultAutoInterval = "vault.auto_interval"
+	KeyHistoryAutoIndex  = "history.auto_index"
+	KeyHistoryInterval   = "history.auto_interval"
+	KeyHistoryProviders  = "history.providers"
 	KeyScheduleInterval  = "schedule.interval"
 )
 
@@ -43,6 +46,7 @@ var keys = []string{
 	KeyCodexDir, KeyClaudeDir, KeyTimezone, KeyColor, KeyCharts, KeyDailyLast,
 	KeyDefaultProvider, KeyBackupEnabled, KeyBackupInterval, KeyBackupDir, KeyBackupKeep,
 	KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval,
+	KeyHistoryAutoIndex, KeyHistoryInterval, KeyHistoryProviders,
 	KeyScheduleInterval,
 }
 
@@ -52,6 +56,7 @@ type Config struct {
 	Reports   Reports   `toml:"reports" json:"reports"`
 	Backup    Backup    `toml:"backup" json:"backup"`
 	Vault     Vault     `toml:"vault" json:"vault"`
+	History   History   `toml:"history" json:"history"`
 	Schedule  Schedule  `toml:"schedule" json:"schedule"`
 }
 
@@ -90,11 +95,18 @@ type Schedule struct {
 	Interval string `toml:"interval" json:"interval"`
 }
 
+type History struct {
+	AutoIndex    bool     `toml:"auto_index" json:"auto_index"`
+	AutoInterval string   `toml:"auto_interval" json:"auto_interval"`
+	Providers    []string `toml:"providers" json:"providers"`
+}
+
 func Defaults() Config {
 	return Config{
 		Reports:  Reports{Color: "auto", Charts: true, DailyLast: 30},
 		Backup:   Backup{Enabled: true, Interval: "24h", Keep: 14},
 		Vault:    Vault{MinAge: "168h", Providers: []string{"codex", "claude"}, Auto: true, AutoInterval: "24h"},
+		History:  History{AutoIndex: false, AutoInterval: "24h", Providers: []string{"codex", "claude"}},
 		Schedule: Schedule{Interval: "24h"},
 	}
 }
@@ -282,6 +294,10 @@ func Validate(value Config) error {
 	if err != nil || autoInterval <= 0 {
 		return validationError{KeyVaultAutoInterval, "must be a positive Go duration"}
 	}
+	historyInterval, err := time.ParseDuration(value.History.AutoInterval)
+	if err != nil || historyInterval <= 0 {
+		return validationError{KeyHistoryInterval, "must be a positive Go duration"}
+	}
 	scheduleInterval, err := time.ParseDuration(value.Schedule.Interval)
 	if err != nil || scheduleInterval < time.Second || scheduleInterval%time.Second != 0 {
 		return validationError{KeyScheduleInterval, "must be a positive whole-second Go duration"}
@@ -293,6 +309,19 @@ func Validate(value Config) error {
 		}
 		if seenProviders[provider] {
 			return validationError{KeyVaultProviders, fmt.Sprintf("contains duplicate provider %q", provider)}
+		}
+		seenProviders[provider] = true
+	}
+	seenProviders = make(map[string]bool, len(value.History.Providers))
+	if len(value.History.Providers) == 0 {
+		return validationError{KeyHistoryProviders, "must contain at least one provider"}
+	}
+	for _, provider := range value.History.Providers {
+		if provider != "codex" && provider != "claude" {
+			return validationError{KeyHistoryProviders, fmt.Sprintf("contains unknown provider %q", provider)}
+		}
+		if seenProviders[provider] {
+			return validationError{KeyHistoryProviders, fmt.Sprintf("contains duplicate provider %q", provider)}
 		}
 		seenProviders[provider] = true
 	}

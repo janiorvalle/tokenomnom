@@ -13,6 +13,7 @@ func TestDefaults(t *testing.T) {
 	if got.Reports.Color != "auto" || !got.Reports.Charts || got.Reports.DailyLast != 30 ||
 		got.Backup.Enabled != true || got.Backup.Interval != "24h" || got.Backup.Keep != 14 ||
 		got.Vault.MinAge != "168h" || !got.Vault.Auto || got.Vault.AutoInterval != "24h" ||
+		got.History.AutoIndex || got.History.AutoInterval != "24h" || strings.Join(got.History.Providers, ",") != "codex,claude" ||
 		got.Schedule.Interval != "24h" || strings.Join(got.Vault.Providers, ",") != "codex,claude" {
 		t.Fatalf("unexpected defaults: %#v", got)
 	}
@@ -41,6 +42,10 @@ min_age = "2h"
 providers = ["claude"]
 auto = false
 auto_interval = "3h"
+[history]
+auto_index = true
+auto_interval = "4h"
+providers = ["codex"]
 [schedule]
 interval = "6h"
 `
@@ -79,10 +84,13 @@ interval = "6h"
 			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
 		}
 	}
-	for _, key := range []string{KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval, KeyScheduleInterval} {
+	for _, key := range []string{KeyVaultDir, KeyVaultMinAge, KeyVaultProviders, KeyVaultAuto, KeyVaultAutoInterval, KeyHistoryAutoIndex, KeyHistoryInterval, KeyHistoryProviders, KeyScheduleInterval} {
 		if loaded.Sources[key] != "config" {
 			t.Errorf("source[%s] = %q", key, loaded.Sources[key])
 		}
+	}
+	if !loaded.Config.History.AutoIndex || loaded.Config.History.AutoInterval != "4h" || strings.Join(loaded.Config.History.Providers, ",") != "codex" {
+		t.Fatalf("history config = %#v", loaded.Config.History)
 	}
 	if loaded.Config.Vault.Dir != "/config/vault" || loaded.Config.Vault.MinAge != "2h" ||
 		strings.Join(loaded.Config.Vault.Providers, ",") != "claude" || loaded.Config.Vault.Auto ||
@@ -124,6 +132,18 @@ func TestLoadMissingMalformedInvalidAndUnknown(t *testing.T) {
 	}
 	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "vault.auto_interval") {
 		t.Fatalf("invalid auto-vault interval error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[history]\nauto_interval = \"soon\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "history.auto_interval") {
+		t.Fatalf("invalid history interval error = %v", err)
+	}
+	if err := os.WriteFile(malformed, []byte("[history]\nproviders = [\"codex\", \"codex\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: malformed, LookupEnv: none}); err == nil || !strings.Contains(err.Error(), "history.providers") {
+		t.Fatalf("invalid history providers error = %v", err)
 	}
 	if err := os.WriteFile(malformed, []byte("[schedule]\ninterval = \"0s\"\n"), 0o600); err != nil {
 		t.Fatal(err)
