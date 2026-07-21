@@ -863,8 +863,8 @@ func canonicalPromptWins(candidate history.Prompt, existingTimestamp sql.NullStr
 	if existingExtractorVersion != history.ExtractorVersion {
 		return existingExtractorVersion < history.ExtractorVersion
 	}
-	if promptSemanticRank(candidate.Classification, candidate.Searchable) != promptSemanticRank(history.Classification(existingClassification), existingSearchable) {
-		return promptSemanticRank(candidate.Classification, candidate.Searchable) > promptSemanticRank(history.Classification(existingClassification), existingSearchable)
+	if promptSemanticRank(candidate.Classification) != promptSemanticRank(history.Classification(existingClassification)) {
+		return promptSemanticRank(candidate.Classification) > promptSemanticRank(history.Classification(existingClassification))
 	}
 	if candidate.Timestamp != nil {
 		if !existingTimestamp.Valid {
@@ -886,7 +886,7 @@ func canonicalPromptWins(candidate history.Prompt, existingTimestamp sql.NullStr
 	return candidate.CleanText >= existingText
 }
 
-func promptSemanticRank(classification history.Classification, searchable bool) int {
+func promptSemanticRank(classification history.Classification) int {
 	if classification == history.ClassificationProviderMetadata {
 		return 0
 	}

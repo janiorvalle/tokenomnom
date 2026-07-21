@@ -89,9 +89,6 @@ recordsLoop:
 		}
 		if item.Type != "user" {
 			classification := history.ClassificationProviderMetadata
-			if item.Type == "assistant" {
-				classification = history.ClassificationProviderMetadata
-			}
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: classification, Message: "non-user transcript record excluded"})
 			continue
 		}
