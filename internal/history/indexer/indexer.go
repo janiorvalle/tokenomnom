@@ -311,7 +311,13 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 		return fileUnchanged, nil
 	}
 	if file.Size > checkpoint.Size && file.Size >= checkpoint.CompleteOffset && prefix == checkpoint.PrefixFingerprint && tail == checkpoint.TailFingerprint {
-		return fileAppend, nil
+		continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
+		if err != nil {
+			return fileRewrite, err
+		}
+		if continuityHash == checkpoint.ContentSHA256 {
+			return fileAppend, nil
+		}
 	}
 	return fileRewrite, nil
 }
@@ -625,6 +631,19 @@ func fullHash(path string) (string, error) {
 		return "", fmt.Errorf("hash exact fingerprint for %q: %w", path, err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func hashPathPrefix(path string, offset int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %q for exact prefix fingerprint: %w", path, err)
+	}
+	defer file.Close()
+	hash, err := hashFilePrefix(file, offset)
+	if err != nil {
+		return "", fmt.Errorf("hash exact prefix fingerprint for %q: %w", path, err)
+	}
+	return hash, nil
 }
 
 func hashFilePrefix(file *os.File, offset int64) (string, error) {

@@ -163,6 +163,22 @@ func TestGrowingRewriteRejectsMixedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRewriteThenAppendRebuildsSource(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("rewrite-append.jsonl")
+	initial := codexMeta("rewrite-append") + codexPrompt("p1", strings.Repeat("x", 100_000))
+	writeFile(t, path, initial)
+	env.index(t, false)
+
+	rewritten := []byte(initial)
+	rewritten[5_000] = 'y'
+	writeFile(t, path, string(rewritten)+codexPrompt("p2", "appended"))
+	summary := env.index(t, false)
+	if summary.RewrittenSources != 1 || summary.AppendedSources != 0 || env.health(t).Prompts != 2 {
+		t.Fatalf("rewrite then append summary=%+v health=%+v", summary, env.health(t))
+	}
+}
+
 func TestRewriteSameSizeAndShrink(t *testing.T) {
 	env := newEnvironment(t)
 	path := env.codexPath("rewrite.jsonl")
