@@ -181,23 +181,10 @@ func (s *Store) ListCatalog(query CatalogQuery) (CatalogPage, error) {
 	defer rows.Close()
 	values := make([]CatalogSession, 0, query.Limit+1)
 	for rows.Next() {
-		var value CatalogSession
-		var native, first, last, cwd, repo, branch, sourceIDs, snapshotIDs, preview sql.NullString
-		if err := rows.Scan(
-			&value.SessionID, &value.Provider, &native, &first, &last, &cwd, &repo, &branch,
-			&sourceIDs, &value.SourceHeadCount, &snapshotIDs, &value.PreservedSnapshotCount,
-			&value.LogicalPromptCount, &value.OccurrenceCount, &value.Availability.ProviderLive,
-			&value.Availability.ProviderArchive, &value.Availability.Vault, &value.Availability.ExactLiveAndVaulted,
-			&value.PreferredRetrievalSource, &preview,
-		); err != nil {
+		value, err := scanCatalogSession(rows)
+		if err != nil {
 			return CatalogPage{}, fmt.Errorf("scan history catalog: %w", err)
 		}
-		value.NativeSessionID, value.CWD = native.String, cwd.String
-		value.RepositoryName, value.Branch = optionalCatalogString(repo), optionalCatalogString(branch)
-		value.FirstTimestamp, value.LastTimestamp = optionalCatalogString(first), optionalCatalogString(last)
-		value.SourceHeadIDs, value.PreservedSnapshotIDs = splitCatalogIDs(sourceIDs.String), splitCatalogIDs(snapshotIDs.String)
-		value.Preview = boundPreview(preview.String)
-		value.Availability.Unavailable = value.Availability.ProviderLive+value.Availability.ProviderArchive+value.Availability.Vault == 0
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
@@ -223,6 +210,27 @@ func (s *Store) ListCatalog(query CatalogQuery) (CatalogPage, error) {
 		page.Sessions = []CatalogSession{}
 	}
 	return page, nil
+}
+
+func scanCatalogSession(row rowScanner) (CatalogSession, error) {
+	var value CatalogSession
+	var native, first, last, cwd, repo, branch, sourceIDs, snapshotIDs, preview sql.NullString
+	if err := row.Scan(
+		&value.SessionID, &value.Provider, &native, &first, &last, &cwd, &repo, &branch,
+		&sourceIDs, &value.SourceHeadCount, &snapshotIDs, &value.PreservedSnapshotCount,
+		&value.LogicalPromptCount, &value.OccurrenceCount, &value.Availability.ProviderLive,
+		&value.Availability.ProviderArchive, &value.Availability.Vault, &value.Availability.ExactLiveAndVaulted,
+		&value.PreferredRetrievalSource, &preview,
+	); err != nil {
+		return CatalogSession{}, err
+	}
+	value.NativeSessionID, value.CWD = native.String, cwd.String
+	value.RepositoryName, value.Branch = optionalCatalogString(repo), optionalCatalogString(branch)
+	value.FirstTimestamp, value.LastTimestamp = optionalCatalogString(first), optionalCatalogString(last)
+	value.SourceHeadIDs, value.PreservedSnapshotIDs = splitCatalogIDs(sourceIDs.String), splitCatalogIDs(snapshotIDs.String)
+	value.Preview = boundPreview(preview.String)
+	value.Availability.Unavailable = value.Availability.ProviderLive+value.Availability.ProviderArchive+value.Availability.Vault == 0
+	return value, nil
 }
 
 var catalogSelect = `SELECT s.public_id,s.provider,s.native_session_id,s.first_ts,s.last_ts,s.cwd,s.repository_name,s.branch,

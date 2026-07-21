@@ -91,15 +91,23 @@ Build the local human-prompt history index explicitly and inspect its health:
 
 ```sh
 tokenomnom history index
-tokenomnom history list --since 2026-07-01 --limit 100
+tokenomnom history search "do not implement" --since 2026-07-01
+tokenomnom history show prm_123
+tokenomnom history prompts --limit 100
+tokenomnom history stats --group-by provider
 tokenomnom history status
 ```
 
 Indexing resumes growing transcripts, detects rewrites and missing sources,
 and includes Codex live/archive files, Claude Code project files, and every
 verified vault version by default. `history list` returns one stable logical
-session row with provider/vault availability and preserved-version counts. It is
-never run implicitly by usage reports or normal syncs. `history.db` is derived
+session row with provider/vault availability and preserved-version counts.
+Search is a literal adjacent-token phrase by default; `--fts-query` explicitly
+enables raw FTS5 syntax. Results are bounded snippets unless `--include-text` or
+`history show` is requested, and raw retrieval revalidates exact indexed bytes.
+Repository/branch filters are complete for Codex but partial for Claude Code;
+use `--cwd` for cross-provider completeness and read JSON coverage warnings.
+Indexing is never run implicitly by usage reports or normal syncs. `history.db` is derived
 plaintext local data; `tokenomnom history purge` removes it without touching
 `usage.db`, provider transcripts, vault bundles, or config.
 
