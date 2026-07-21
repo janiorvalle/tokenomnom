@@ -191,6 +191,72 @@ excludes those sessions and adds an envelope warning with the excluded count.
 Use `--cwd` when cross-provider completeness matters. Page cursors are opaque,
 filter-bound, and rejected after `index_generation` changes.
 
+## History Search
+
+`tokenomnom history search <query> [--provider codex|claude] [--since
+YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
+[--source any|provider|provider-live|provider-archive|vault] [--limit N]
+[--cursor OPAQUE] [--include-text] [--fts-query] --format json`
+
+The default limit is 50 and the maximum is 500. Default search quotes the
+input as one FTS5 `unicode61` phrase: tokenizer terms must be adjacent and in
+order, punctuation separates terms, and words such as `OR` remain literal.
+`--fts-query` is the only raw boolean, NEAR, or prefix syntax route.
+
+`data.hits` is always an array. Each logical-prompt hit contains `prompt_id`,
+`session_id`, provider and session metadata, nullable timestamp/repository/
+branch, raw FTS5 `rank` with `rank_direction: "lower_is_better"`, a bounded
+highlighted `snippet`, occurrence and stable source/snapshot IDs, bounded
+`occurrences`, availability, and preferred retrieval source. `text` is present
+only with `--include-text`. Rank is not a normalized confidence score.
+`data.page` contains `limit`, `has_more`, and `next_cursor`. Search cursors bind
+the exact query, literal/raw mode, filters, rank bits, stable tie-breakers, and
+index generation.
+
+`data.coverage` contains nullable first/last indexed prompt timestamps plus
+known/unknown repository and branch session counts. Requests outside date
+coverage and repository/branch filters that exclude unknown metadata add
+envelope warnings.
+
+## History Show And Prompts
+
+`tokenomnom history show <prompt-id> --format json` returns one clean human
+prompt with full `text` and metadata. `history show <session-id> --format json`
+returns bounded session metadata. Adding `--prompts [--limit N] [--cursor
+OPAQUE]` returns `data.prompts` with full clean prompt text and `data.page`.
+
+`history show <session-id> --raw [--snapshot snap_ID] --format json` accepts
+only stored IDs. It returns the selected indexed location, `encoding`, nullable
+UTF-8 `content`, and always-populated `content_base64`. Provider bytes are
+size/hash revalidated; a file changed since indexing is rejected or skipped in
+favor of another exact location. Missing or broken vault content never returns
+success. Pretty raw mode writes only exact bytes to stdout and warnings to
+stderr.
+Raw JSON is capped at 64 MiB to bound encoding memory; omit `--format json` to
+stream larger exact transcripts directly to stdout.
+
+`tokenomnom history prompts` accepts the shared search filters plus
+`--include-text`, `--all-occurrences`, `--limit`, and `--cursor`. It defaults to
+100 deduplicated clean human prompts and bounded snippets. `--all-occurrences`
+adds at most 20 provenance objects per logical prompt; total occurrence counts
+remain exact and truncation is explicit. Its `data.page`, `coverage`, cursor,
+warning, and optional-text contracts match search.
+
+## History Stats
+
+`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|weekday,hour]
+--format json` returns SQL-computed, text-free aggregates: logical session,
+source-head, snapshot, prompt, and occurrence counts; date coverage and active
+days; total/median prompt byte lengths; provider-live, provider-archive, and
+vault availability; index bytes; and stale/error/oversized counts.
+`data.groups` contains dimension `values` and session/prompt/occurrence/length
+aggregates. Repository/CWD groups always include an explicit `unknown` group.
+Weekday/hour groups and the stats envelope timezone are explicitly UTC.
+Coverage and warnings use the same provider-uneven metadata rules as search.
+Filtered stats exclude index errors that cannot be associated with filterable
+session metadata, report their count as `unscoped_errors_excluded`, and add a
+warning instead of mixing unrelated failures into `error_count`.
+
 `tokenomnom history status --format json` returns the same bounded history
 health object used by doctor. An absent index returns `status: "not_indexed"`
 without creating a database. Status is `ready`, `degraded`, or `error` for an

@@ -9,7 +9,7 @@ import (
 
 func TestEmbeddedSkillContentGuard(t *testing.T) {
 	contents := string(Embedded())
-	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "vault list", "vault cat", "schedule status"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "schedule status", "history status", "history index", "history search", "history list", "history prompts", "history show", "history stats"} {
 		if !strings.Contains(contents, "tokenomnom "+command) {
 			t.Errorf("embedded skill does not mention command %q", command)
 		}
@@ -23,12 +23,15 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		"`--no-sync` is supported only by `summary`, `daily`, `monthly`, `models`,",
 		"Do not pass `--no-sync` to `doctor`",
 		"`sync`, `vault`, `schedule`, or `install-skill`",
-		"vault list --limit 100 --latest --format json",
+		"history search <query> --limit 50 --format json",
 		"data.page.next_cursor",
 		"Usage sync freshness",
 		"Vault archive freshness",
 		"History-index freshness",
-		"temporary fallback",
+		"Codex-complete but Claude-partial",
+		"prefer `--cwd`",
+		"Do not traverse provider directories",
+		"clean human user prompts only",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Errorf("embedded skill missing %q", fragment)

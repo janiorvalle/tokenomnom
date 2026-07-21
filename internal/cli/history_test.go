@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -252,6 +253,163 @@ func TestSafePrettyPreviewEscapesTerminalControls(t *testing.T) {
 	got := safePrettyPreview(input)
 	if strings.ContainsAny(got, "\x1b\a\b\r") || !strings.Contains(got, `\u001b]52;c;clipboard\u0007 next\u0008`) {
 		t.Fatalf("safe preview = %q", got)
+	}
+}
+
+func TestSafePrettyTextPreservesLinesAndEscapesTerminalControls(t *testing.T) {
+	input := "first\r\nsecond\tvalue\x1b]52;c;clipboard\a\rthird\u009d52;c;again\u009c"
+	got := safePrettyText(input)
+	if !strings.Contains(got, "first\nsecond\tvalue") || !strings.Contains(got, `\u001b]52;c;clipboard\u0007`+"\nthird") || !strings.Contains(got, `\u009d52;c;again\u009c`) || strings.ContainsAny(got, "\x1b\a\r\u009d\u009c") {
+		t.Fatalf("safe text = %q", got)
+	}
+}
+
+func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	providerPath := filepath.Join(codexDir, "sessions", "2026", "07", "query.jsonl")
+	fixture := historyCodexFixture("query-session", "foo OR bar exact prompt")
+	writeTextFixture(t, providerPath, fixture)
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	searchOutput, err := executeReport([]string{"history", "search", "foo OR bar", "--since", "2026-01-01", "--until", "2026-12-31", "--limit", "1", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var search historystore.SearchPage
+	searchEnvelope := decodeEnvelope(t, searchOutput)
+	if err := json.Unmarshal(searchEnvelope.Data, &search); err != nil {
+		t.Fatal(err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].Text != nil || len(search.Hits[0].Occurrences) != 1 || search.Hits[0].Rank == nil || len(searchEnvelope.Warnings) != 2 || searchEnvelope.Timezone != "UTC" {
+		t.Fatalf("search envelope=%+v page=%+v", searchEnvelope, search)
+	}
+	promptID, sessionID := search.Hits[0].PromptID, search.Hits[0].SessionID
+	emptyOutput, err := executeReport([]string{"history", "search", "definitely absent phrase", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var empty historystore.SearchPage
+	if err := json.Unmarshal(decodeEnvelope(t, emptyOutput).Data, &empty); err != nil || empty.Hits == nil || len(empty.Hits) != 0 {
+		t.Fatalf("empty search err=%v page=%+v", err, empty)
+	}
+
+	showPrompt, err := executeReport([]string{"history", "show", promptID, "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompt historystore.PromptResult
+	if err := json.Unmarshal(decodeEnvelope(t, showPrompt).Data, &prompt); err != nil || prompt.Text == nil || *prompt.Text != "foo OR bar exact prompt" {
+		t.Fatalf("show prompt err=%v value=%+v", err, prompt)
+	}
+
+	showSession, err := executeReport([]string{"history", "show", sessionID, "--prompts", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionPrompts historystore.PromptsPage
+	if err := json.Unmarshal(decodeEnvelope(t, showSession).Data, &sessionPrompts); err != nil || len(sessionPrompts.Prompts) != 1 || sessionPrompts.Prompts[0].Text == nil {
+		t.Fatalf("show session prompts err=%v value=%+v", err, sessionPrompts)
+	}
+
+	promptsOutput, err := executeReport([]string{"history", "prompts", "--all-occurrences", "--include-text", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompts historystore.PromptsPage
+	promptsEnvelope := decodeEnvelope(t, promptsOutput)
+	if err := json.Unmarshal(promptsEnvelope.Data, &prompts); err != nil || promptsEnvelope.Timezone != "UTC" || len(prompts.Prompts) != 1 || len(prompts.Prompts[0].Occurrences) != 1 || prompts.Prompts[0].Text == nil {
+		t.Fatalf("prompts err=%v value=%+v", err, prompts)
+	}
+
+	statsOutput, err := executeReport([]string{"history", "stats", "--group-by", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statistics historystore.Statistics
+	statsEnvelope := decodeEnvelope(t, statsOutput)
+	if err := json.Unmarshal(statsEnvelope.Data, &statistics); err != nil || statsEnvelope.Timezone != "UTC" || statistics.LogicalSessions != 1 || statistics.LogicalPrompts != 1 || len(statistics.Groups) != 1 || statistics.Groups[0].Values["provider"] != "codex" {
+		t.Fatalf("stats err=%v value=%+v", err, statistics)
+	}
+	prettyStats, err := executeReport([]string{"history", "stats", "--group-by", "provider, provider, repo,"}, codexDir, claudeDir)
+	if err != nil || !strings.Contains(prettyStats, "provider=codex,repo=unknown") || strings.Contains(prettyStats, "provider=codex,provider=") || strings.Contains(prettyStats, ",=") {
+		t.Fatalf("pretty stats err=%v output=%q", err, prettyStats)
+	}
+
+	rawOutput, err := executeReport([]string{"history", "show", sessionID, "--raw"}, codexDir, claudeDir)
+	if err != nil || rawOutput != fixture {
+		t.Fatalf("raw err=%v\ngot=%q\nwant=%q", err, rawOutput, fixture)
+	}
+	writeTextFixture(t, providerPath, fixture+historyCodexFixture("query-session", "new prompt"))
+	if _, err := executeReport([]string{"history", "show", sessionID, "--raw"}, codexDir, claudeDir); err == nil || !strings.Contains(err.Error(), "changed since indexing") {
+		t.Fatalf("stale raw error=%v", err)
+	}
+}
+
+func TestHistoryRawFallsBackToExactVaultSnapshot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	providerPath := filepath.Join(codexDir, "sessions", "2026", "07", "vaulted.jsonl")
+	fixture := historyCodexFixture("vaulted-session", "vaulted exact prompt")
+	writeTextFixture(t, providerPath, fixture)
+	if _, err := executeReport([]string{"vault", "archive", "--all"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	searchOutput, err := executeReport([]string{"history", "search", "vaulted exact", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var search historystore.SearchPage
+	if err := json.Unmarshal(decodeEnvelope(t, searchOutput).Data, &search); err != nil || len(search.Hits) != 1 || len(search.Hits[0].PreservedSnapshotIDs) != 1 {
+		t.Fatalf("vault search err=%v value=%+v", err, search)
+	}
+	writeTextFixture(t, providerPath, fixture+historyCodexFixture("vaulted-session", "changed"))
+	var fallbackOutput, fallbackErrors bytes.Buffer
+	fallbackCommand := NewRootCommand()
+	fallbackCommand.SetOut(&fallbackOutput)
+	fallbackCommand.SetErr(&fallbackErrors)
+	fallbackCommand.SetArgs([]string{"history", "show", search.Hits[0].SessionID, "--raw", "--codex-dir", codexDir, "--claude-dir", claudeDir})
+	err = fallbackCommand.Execute()
+	if err != nil || fallbackOutput.String() != fixture || !strings.Contains(fallbackErrors.String(), "changed since indexing") {
+		t.Fatalf("vault fallback raw err=%v\nstdout=%q\nstderr=%q\nwant=%q", err, fallbackOutput.String(), fallbackErrors.String(), fixture)
+	}
+	rawOutput, err := executeReport([]string{"history", "show", search.Hits[0].SessionID, "--raw", "--snapshot", search.Hits[0].PreservedSnapshotIDs[0], "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Encoding string  `json:"encoding"`
+		Content  *string `json:"content"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, rawOutput).Data, &raw); err != nil || raw.Encoding != "utf-8" || raw.Content == nil || *raw.Content != fixture {
+		t.Fatalf("vault raw err=%v value=%+v", err, raw)
+	}
+}
+
+func TestHistoryShowRejectsSessionPaginationWithoutPrompts(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	for _, args := range [][]string{
+		{"history", "show", "ses_00000000000000000000000000000000", "--limit", "1"},
+		{"history", "show", "ses_00000000000000000000000000000000", "--cursor", "v1:invalid"},
+	} {
+		if _, err := executeReport(args, filepath.Join(root, "codex"), filepath.Join(root, "claude")); err == nil || !strings.Contains(err.Error(), "require --prompts") {
+			t.Fatalf("show args %v error=%v", args, err)
+		}
 	}
 }
 
