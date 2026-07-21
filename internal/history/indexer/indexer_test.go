@@ -166,6 +166,27 @@ func TestAppendDuringIndexingRemainsPendingForNextRun(t *testing.T) {
 	}
 }
 
+func TestAppendReadRejectsPrefixChangedAfterClassification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "append-race.jsonl")
+	initial := codexMeta("append-race") + codexPrompt("p1", strings.Repeat("x", 10_000))
+	writeFile(t, path, initial)
+	parsed, err := readRecords(path, jsonl.Position{}, historystore.Checkpoint{}, fileNew, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := historystore.Checkpoint{
+		ContentSHA256: parsed.contentHash, ContentHashState: parsed.hashState,
+		CompleteOffset: parsed.position.ByteOffset, LineCount: parsed.position.LineNumber,
+	}
+	rewritten := []byte(initial)
+	rewritten[5_000] = 'y'
+	writeFile(t, path, string(rewritten)+codexPrompt("p2", "appended"))
+	_, err = readRecords(path, jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}, checkpoint, fileAppend, nil)
+	if !errors.Is(err, errSourceChanged) {
+		t.Fatalf("append read error = %v, want errSourceChanged", err)
+	}
+}
+
 func TestGrowingRewriteRejectsMixedSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "growing-rewrite.jsonl")
 	initial := strings.Repeat("x", 100_000) + "\n"

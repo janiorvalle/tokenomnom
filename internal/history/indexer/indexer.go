@@ -443,6 +443,15 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 	if !ok {
 		return parsedSource{}, errors.New("SHA-256 implementation does not support resumable state")
 	}
+	if kind == fileAppend {
+		continuityHash, err := hashFilePrefix(file, position.ByteOffset)
+		if err != nil {
+			return parsedSource{}, fmt.Errorf("verify append prefix for %q: %w", path, err)
+		}
+		if continuityHash != checkpoint.ContentSHA256 {
+			return parsedSource{}, fmt.Errorf("%w: checkpoint prefix of %s changed", errSourceChanged, path)
+		}
+	}
 	if kind == fileAppend && checkpoint.ContentHashState != "" {
 		encoded, err := hex.DecodeString(checkpoint.ContentHashState)
 		if err != nil {
