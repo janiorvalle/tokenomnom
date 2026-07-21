@@ -113,6 +113,9 @@ func TestListCatalogRejectsCursorFilterReuseAndBounds(t *testing.T) {
 		if _, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceVault, Cursor: page.NextCursor}); err == nil {
 			t.Fatal("cursor filter reuse succeeded")
 		}
+		if _, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, ThreadKind: "root", Cursor: page.NextCursor}); err == nil {
+			t.Fatal("cursor thread-kind reuse succeeded")
+		}
 	}
 }
 
@@ -183,6 +186,43 @@ func TestCatalogCursorRejectsInvalidTimestamp(t *testing.T) {
 	}
 	if _, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Cursor: malformed}); err == nil || !strings.Contains(err.Error(), "invalid history cursor") {
 		t.Fatalf("invalid timestamp cursor error = %v", err)
+	}
+}
+
+func TestCatalogCursorUsesSQLiteSortKeyForOffsetTimestamp(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	ids := []string{}
+	for index := range 3 {
+		source := sourceRef(fmt.Sprintf("/provider/offset-%d.jsonl", index), history.LocationProviderLive)
+		when := time.Date(2026, 7, 21, 12-index, 0, 0, 0, time.UTC)
+		extract := extraction(fmt.Sprintf("native:offset-%d", index), fmt.Sprintf("offset-%d", index), source, prompt("native:p", "p", "offset", 1))
+		extract.Session.FirstTimestamp, extract.Session.LastTimestamp = &when, &when
+		result, err := database.ApplySource(extract, head(source, fmt.Sprintf("hash-%d", index), 10, 1), ApplyReplace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, result.SessionID)
+	}
+	if _, err := database.db.Exec(`UPDATE sessions SET first_ts='2026-07-21T12:00:00.123-04:00',last_ts='2026-07-21T12:00:00.123-04:00' WHERE native_session_id='offset-0'`); err != nil {
+		t.Fatal(err)
+	}
+	var sortKey string
+	if err := database.db.QueryRow(`SELECT ` + sqliteTimestampKey("'2026-07-21T12:00:00.123456789-04:00'")).Scan(&sortKey); err != nil || sortKey != "2026-07-21T16:00:00.123456789Z" {
+		t.Fatalf("offset sort key=%q err=%v", sortKey, err)
+	}
+	first, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Limit: 1})
+	if err != nil || len(first.Sessions) != 1 || first.Sessions[0].SessionID != ids[0] || first.NextCursor == "" {
+		t.Fatalf("first offset page err=%v page=%+v", err, first)
+	}
+	second, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Cursor: first.NextCursor})
+	if err != nil || len(second.Sessions) != 1 || second.Sessions[0].SessionID == ids[0] {
+		t.Fatalf("offset continuation duplicated/skipped row err=%v page=%+v", err, second)
+	}
+	since := time.Date(2026, 7, 21, 15, 0, 0, 0, time.UTC)
+	filtered, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Since: &since})
+	if err != nil || len(filtered.Sessions) != 1 || filtered.Sessions[0].SessionID != ids[0] {
+		t.Fatalf("offset instant filter err=%v page=%+v", err, filtered)
 	}
 }
 

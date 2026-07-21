@@ -3,6 +3,7 @@ package claude
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,7 +23,8 @@ type envelope struct {
 	Compact     bool            `json:"isCompactSummary"`
 	Message     json.RawMessage `json:"message"`
 	ForkedFrom  *struct {
-		SessionID string `json:"sessionId"`
+		SessionID   string `json:"sessionId"`
+		MessageUUID string `json:"messageUuid"`
 	} `json:"forkedFrom"`
 }
 
@@ -60,13 +62,19 @@ func ExtractWithSession(source history.SourceReference, records []jsonl.Record, 
 // records and later suffix reads.
 func ExtractWithState(source history.SourceReference, records []jsonl.Record, state State) (history.Extraction, State) {
 	result := history.Extraction{Provider: history.ProviderClaude, Source: source, Session: state.Session}
+	sourceFact := claudeSourceFact(source.Path)
 	if result.Session.ThreadKind == "" {
 		result.Session.ThreadKind = history.ThreadUnknown
+	}
+	if result.Session.ThreadConfidence == "" {
+		result.Session.ThreadConfidence = history.ConfidenceUnknown
 	}
 	if result.Session.Confidence == "" {
 		result.Session.Confidence = history.ConfidenceUnknown
 	}
+	applyClaudeSourceFact(&result.Session, sourceFact)
 	if state.Stopped {
+		result.Relationships = claudeRelationships(result.Session, sourceFact)
 		return result, state
 	}
 	var firstRecord []byte
@@ -83,13 +91,13 @@ recordsLoop:
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "malformed JSON"})
 			continue
 		}
-		if item.SessionID != "" && result.Session.NativeSessionID != "" && result.Session.NativeSessionID != item.SessionID {
+		if sourceFact.threadKind != history.ThreadSubagent && item.SessionID != "" && result.Session.NativeSessionID != "" && result.Session.NativeSessionID != item.SessionID {
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "conflicting sessionId record excluded"})
 			state.Stopped = true
 			break recordsLoop
 		}
 		updateRange(&result.Session, parseTime(item.Timestamp))
-		if item.SessionID != "" && result.Session.NativeSessionID == "" {
+		if sourceFact.threadKind != history.ThreadSubagent && item.SessionID != "" && result.Session.NativeSessionID == "" {
 			result.Session.NativeSessionID = item.SessionID
 			foundSessionID = true
 			result.Session.Evidence = "sessionId"
@@ -100,8 +108,9 @@ recordsLoop:
 		}
 		if item.ForkedFrom != nil && result.Session.ForkedFromSessionID == "" {
 			result.Session.ForkedFromSessionID = item.ForkedFrom.SessionID
+			result.Session.ForkedFromMessageID = item.ForkedFrom.MessageUUID
 		}
-		if item.IsSidechain {
+		if item.IsSidechain && sourceFact.threadKind != history.ThreadSubagent {
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationProviderMetadata, Message: "sidechain record excluded"})
 			continue
 		}
@@ -155,10 +164,93 @@ recordsLoop:
 	}
 
 	if result.Session.IdentityKey == "" || foundSessionID || (strings.HasPrefix(result.Session.FallbackKey, "source-path:") && len(firstRecord) > 0) {
+		if result.Session.NativeSessionID == "" && sourceFact.threadKind == history.ThreadRoot && len(firstRecord) > 0 {
+			result.Session.NativeSessionID = sourceFact.nativeSessionID
+		}
 		result.Session.IdentityKey, result.Session.FallbackKey = history.SessionIdentityKey(history.ProviderClaude, result.Session.NativeSessionID, source.Path, firstRecord)
 	}
+	result.Relationships = claudeRelationships(result.Session, sourceFact)
 	state.Session = result.Session
 	return result, state
+}
+
+type sourceRelationshipFact struct {
+	threadKind      history.ThreadKind
+	nativeSessionID string
+	parentSessionID string
+	originator      string
+	providerValue   string
+	evidence        string
+}
+
+func claudeSourceFact(path string) sourceRelationshipFact {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	projects := -1
+	for index, part := range parts {
+		if part == "projects" {
+			projects = index
+		}
+	}
+	if projects < 0 || len(parts) < projects+3 {
+		return sourceRelationshipFact{}
+	}
+	relative := parts[projects+1:]
+	if len(relative) == 2 && strings.HasSuffix(relative[1], ".jsonl") {
+		return sourceRelationshipFact{
+			threadKind: history.ThreadRoot, nativeSessionID: strings.TrimSuffix(relative[1], ".jsonl"),
+			evidence: "source_path.main_transcript",
+		}
+	}
+	if len(relative) >= 4 && relative[2] == "subagents" && strings.HasSuffix(relative[len(relative)-1], ".jsonl") {
+		subpath := append([]string(nil), relative[2:]...)
+		subpath[len(subpath)-1] = strings.TrimSuffix(subpath[len(subpath)-1], ".jsonl")
+		providerValue := strings.Join(subpath, "/")
+		return sourceRelationshipFact{
+			threadKind: history.ThreadSubagent, nativeSessionID: relative[1] + "/" + providerValue,
+			parentSessionID: relative[1], originator: subpath[len(subpath)-1], providerValue: providerValue,
+			evidence: "source_path.subagent_transcript",
+		}
+	}
+	return sourceRelationshipFact{}
+}
+
+func applyClaudeSourceFact(session *history.Session, fact sourceRelationshipFact) {
+	if fact.threadKind == "" {
+		return
+	}
+	if fact.threadKind == history.ThreadSubagent {
+		session.NativeSessionID = fact.nativeSessionID
+	}
+	session.ThreadKind = fact.threadKind
+	session.ThreadEvidence = fact.evidence
+	session.ThreadConfidence = history.ConfidenceDerived
+	session.ThreadRuleVersion = history.RelationshipRuleVersion
+	if fact.parentSessionID != "" {
+		session.ParentNativeSessionID = fact.parentSessionID
+	}
+	if fact.originator != "" {
+		session.Originator = fact.originator
+	}
+}
+
+func claudeRelationships(session history.Session, fact sourceRelationshipFact) []history.Relationship {
+	relationships := []history.Relationship{}
+	if session.ThreadKind == history.ThreadSubagent && session.ParentNativeSessionID != "" {
+		relationships = append(relationships, history.Relationship{
+			Kind: history.RelationSubagent, ParentNativeSessionID: session.ParentNativeSessionID,
+			ProviderNativeValue: fact.providerValue, Evidence: session.ThreadEvidence,
+			Confidence: session.ThreadConfidence, RuleVersion: history.RelationshipRuleVersion,
+		})
+	}
+	if session.ForkedFromSessionID != "" {
+		relationships = append(relationships, history.Relationship{
+			Kind: history.RelationFork, ParentNativeSessionID: session.ForkedFromSessionID,
+			ParentNativeMessageID: session.ForkedFromMessageID, ProviderNativeValue: session.ForkedFromSessionID,
+			Evidence: "forkedFrom.sessionId", Confidence: history.ConfidenceExact,
+			RuleVersion: history.RelationshipRuleVersion,
+		})
+	}
+	return relationships
 }
 
 func textContent(raw json.RawMessage) (string, bool) {

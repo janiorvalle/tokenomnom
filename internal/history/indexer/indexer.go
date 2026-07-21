@@ -584,6 +584,7 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 		return fmt.Errorf("unsupported history provider %q", a.source.Provider)
 	}
 	a.extraction.Session = part.Session
+	a.extraction.Relationships = part.Relationships
 	for _, prompt := range part.Prompts {
 		if index, found := a.promptIndex[prompt.LogicalKey]; found {
 			if history.CanonicalPromptWins(prompt, a.extraction.Prompts[index]) {

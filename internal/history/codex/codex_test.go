@@ -10,7 +10,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/ingest/jsonl"
 )
 
-func TestExtractSyntheticRollout(t *testing.T) {
+func TestExtractSyntheticRolloutSubagentOrigin(t *testing.T) {
 	records := readRecords(t, filepath.Join("testdata", "history.jsonl"))
 	result := Extract(history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationProviderLive, Path: "rollout.jsonl"}, records)
 	if result.Session.NativeSessionID != "11111111-1111-4111-8111-111111111111" || result.Session.ParentNativeSessionID == "" || result.Session.ThreadKind != history.ThreadSubagent {
@@ -18,6 +18,11 @@ func TestExtractSyntheticRollout(t *testing.T) {
 	}
 	if result.Session.Branch != "feature/history" || result.Session.CWD != "/workspace/demo" || result.Session.Originator != "codex_cli_rs" {
 		t.Fatalf("metadata = %#v", result.Session)
+	}
+	if len(result.Relationships) != 1 || result.Relationships[0].Kind != history.RelationSubagent ||
+		result.Relationships[0].ParentNativeSessionID != "00000000-0000-4000-8000-000000000001" ||
+		result.Relationships[0].Evidence != "session_meta.source.subagent" {
+		t.Fatalf("subagent relationships = %#v", result.Relationships)
 	}
 	if len(result.Prompts) != 4 || len(result.Occurrences) != 5 {
 		t.Fatalf("prompts=%d occurrences=%d diagnostics=%#v", len(result.Prompts), len(result.Occurrences), result.Diagnostics)
@@ -88,6 +93,17 @@ func TestExtractDoesNotTreatForkAsSubagent(t *testing.T) {
 	result := Extract(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, []jsonl.Record{record})
 	if result.Session.ThreadKind != history.ThreadUnknown || result.Session.ParentNativeSessionID != "" || result.Session.ForkedFromSessionID != "parent" {
 		t.Fatalf("fork relationship = %#v", result.Session)
+	}
+	if len(result.Relationships) != 1 || result.Relationships[0].Kind != history.RelationFork || result.Relationships[0].ParentNativeSessionID != "parent" {
+		t.Fatalf("fork evidence = %#v", result.Relationships)
+	}
+}
+
+func TestExtractRootFromProviderThreadSource(t *testing.T) {
+	result := Extract(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, readRecords(t, filepath.Join("testdata", "root.jsonl")))
+	if result.Session.ThreadKind != history.ThreadRoot || result.Session.ThreadEvidence != "session_meta.thread_source=user" ||
+		result.Session.ThreadConfidence != history.ConfidenceExact || result.Session.ThreadRuleVersion != history.RelationshipRuleVersion {
+		t.Fatalf("root classification = %#v", result.Session)
 	}
 }
 

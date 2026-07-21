@@ -58,6 +58,10 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	if !validCatalogSource(query.Source) {
 		return Statistics{}, fmt.Errorf("invalid history source %q", query.Source)
 	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if !validThreadKindFilter(query.ThreadKind) {
+		return Statistics{}, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
 	dimensions, expressions, err := statisticsDimensions(query.GroupBy)
 	if err != nil {
 		return Statistics{}, err
@@ -72,7 +76,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	}
 	sessionWhere, sessionArgs := catalogWhere(CatalogQuery{
 		Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
-		Repo: query.Repo, Branch: query.Branch, Source: query.Source,
+		Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind,
 	}, true)
 	promptFilters, promptArgs := promptWhere(query.PromptQuery, true, "p", "s")
 	oversizedFilters := append([]string{"p.oversized=1"}, promptFilters[1:]...)
@@ -165,16 +169,18 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 }
 
 func statisticsQueryIsUnfiltered(query PromptQuery) bool {
-	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Branch == "" && (query.Source == "" || query.Source == CatalogSourceAny)
+	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Branch == "" &&
+		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all")
 }
 
 func statisticsDimensions(requested []string) ([]string, []string, error) {
 	expressionByDimension := map[string]string{
-		"provider": "s.provider",
-		"repo":     "COALESCE(NULLIF(s.repository_name,''),'unknown')",
-		"cwd":      "COALESCE(NULLIF(s.cwd,''),'unknown')",
-		"weekday":  "CASE strftime('%w',p.timestamp) WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' WHEN '6' THEN 'Saturday' ELSE 'unknown' END",
-		"hour":     "CASE WHEN p.timestamp IS NULL OR p.timestamp='' THEN 'unknown' ELSE strftime('%H',p.timestamp) END",
+		"provider":    "s.provider",
+		"repo":        "COALESCE(NULLIF(s.repository_name,''),'unknown')",
+		"cwd":         "COALESCE(NULLIF(s.cwd,''),'unknown')",
+		"thread-kind": "s.thread_kind",
+		"weekday":     "CASE strftime('%w',p.timestamp) WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' WHEN '6' THEN 'Saturday' ELSE 'unknown' END",
+		"hour":        "CASE WHEN p.timestamp IS NULL OR p.timestamp='' THEN 'unknown' ELSE strftime('%H',p.timestamp) END",
 	}
 	seen := map[string]bool{}
 	dimensions, expressions := []string{}, []string{}
@@ -185,7 +191,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 		}
 		expression, ok := expressionByDimension[value]
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, repo, cwd, weekday, or hour)", value)
+			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, repo, cwd, thread-kind, weekday, or hour)", value)
 		}
 		seen[value] = true
 		dimensions = append(dimensions, value)

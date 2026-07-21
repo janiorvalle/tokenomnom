@@ -159,8 +159,9 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 }
 
 func newHistoryListCommand() *cobra.Command {
-	var provider, since, until, cwd, repo, branch, source, cursor string
+	var provider, since, until, cwd, repo, branch, source, cursor, threadKind string
 	var limit int
+	var rootOnly bool
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List indexed logical transcript sessions",
@@ -180,6 +181,12 @@ func newHistoryListCommand() *cobra.Command {
 			}
 			if source != "any" && source != "provider" && source != "provider-live" && source != "provider-archive" && source != "vault" {
 				return fmt.Errorf("invalid --source %q (expected any, provider, provider-live, provider-archive, or vault)", source)
+			}
+			if rootOnly && cmd.Flags().Changed("thread-kind") {
+				return errors.New("--root-only and --thread-kind are mutually exclusive")
+			}
+			if threadKind != "all" && threadKind != "root" && threadKind != "subagent" && threadKind != "unknown" {
+				return fmt.Errorf("invalid --thread-kind %q (expected root, subagent, unknown, or all)", threadKind)
 			}
 			if cmd.Flags().Changed("limit") && (limit < 1 || limit > 500) {
 				return errors.New("--limit must be between 1 and 500")
@@ -216,7 +223,11 @@ func newHistoryListCommand() *cobra.Command {
 			if cursor != "" && !cmd.Flags().Changed("limit") {
 				requestedLimit = 0
 			}
-			query := historystore.CatalogQuery{Provider: history.Provider(provider), CWD: cwd, Repo: repo, Branch: branch, Source: historystore.CatalogSource(source), Limit: requestedLimit, Cursor: cursor}
+			effectiveThreadKind := threadKind
+			if rootOnly {
+				effectiveThreadKind = "root"
+			}
+			query := historystore.CatalogQuery{Provider: history.Provider(provider), CWD: cwd, Repo: repo, Branch: branch, Source: historystore.CatalogSource(source), ThreadKind: effectiveThreadKind, Limit: requestedLimit, Cursor: cursor}
 			if since != "" {
 				value, _ := time.Parse("2006-01-02", since)
 				query.Since = &value
@@ -231,7 +242,7 @@ func newHistoryListCommand() *cobra.Command {
 				return err
 			}
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history list", "", jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until)}, page.Warnings, page)
+				return writeJSONEnvelope(cmd, "history list", "", jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until), ThreadKind: optionalString(effectiveThreadKind)}, page.Warnings, page)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%-38s %-7s %-20s %-8s %-8s %s\n", "SESSION", "SOURCE", "LAST", "PROMPTS", "VERSIONS", "PREVIEW")
 			for _, session := range page.Sessions {
@@ -259,6 +270,8 @@ func newHistoryListCommand() *cobra.Command {
 	command.Flags().StringVar(&source, "source", "any", "filter by availability source")
 	command.Flags().IntVar(&limit, "limit", 100, "maximum page rows (1-500)")
 	command.Flags().StringVar(&cursor, "cursor", "", "continue a previous page")
+	command.Flags().StringVar(&threadKind, "thread-kind", "all", "filter by thread kind (root, subagent, unknown, or all)")
+	command.Flags().BoolVar(&rootOnly, "root-only", false, "include only directly evidenced root sessions")
 	return command
 }
 

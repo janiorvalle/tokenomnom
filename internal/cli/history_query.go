@@ -23,15 +23,17 @@ import (
 const maxHistoryRawJSONBytes int64 = 64 << 20
 
 type historyQueryFlags struct {
-	provider string
-	since    string
-	until    string
-	cwd      string
-	repo     string
-	branch   string
-	source   string
-	limit    int
-	cursor   string
+	provider   string
+	since      string
+	until      string
+	cwd        string
+	repo       string
+	branch     string
+	source     string
+	limit      int
+	cursor     string
+	threadKind string
+	rootOnly   bool
 }
 
 func (flags *historyQueryFlags) add(command *cobra.Command, defaultLimit int) {
@@ -44,6 +46,8 @@ func (flags *historyQueryFlags) add(command *cobra.Command, defaultLimit int) {
 	command.Flags().StringVar(&flags.source, "source", "any", "filter by availability source")
 	command.Flags().IntVar(&flags.limit, "limit", defaultLimit, "maximum page rows (1-500)")
 	command.Flags().StringVar(&flags.cursor, "cursor", "", "continue a previous page")
+	command.Flags().StringVar(&flags.threadKind, "thread-kind", "all", "filter by thread kind (root, subagent, unknown, or all)")
+	command.Flags().BoolVar(&flags.rootOnly, "root-only", false, "include only directly evidenced root sessions")
 }
 
 func (flags historyQueryFlags) validate(command *cobra.Command) error {
@@ -62,6 +66,12 @@ func (flags historyQueryFlags) validate(command *cobra.Command) error {
 	if flags.source != "any" && flags.source != "provider" && flags.source != "provider-live" && flags.source != "provider-archive" && flags.source != "vault" {
 		return fmt.Errorf("invalid --source %q (expected any, provider, provider-live, provider-archive, or vault)", flags.source)
 	}
+	if flags.rootOnly && command.Flags().Changed("thread-kind") {
+		return errors.New("--root-only and --thread-kind are mutually exclusive")
+	}
+	if flags.threadKind != "all" && flags.threadKind != "root" && flags.threadKind != "subagent" && flags.threadKind != "unknown" {
+		return fmt.Errorf("invalid --thread-kind %q (expected root, subagent, unknown, or all)", flags.threadKind)
+	}
 	if command.Flags().Changed("limit") && (flags.limit < 1 || flags.limit > 500) {
 		return errors.New("--limit must be between 1 and 500")
 	}
@@ -75,7 +85,7 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 	}
 	query := historystore.PromptQuery{
 		Provider: history.Provider(flags.provider), CWD: flags.cwd, Repo: flags.repo, Branch: flags.branch,
-		Source: historystore.CatalogSource(flags.source), Limit: limit, Cursor: flags.cursor,
+		Source: historystore.CatalogSource(flags.source), ThreadKind: flags.effectiveThreadKind(), Limit: limit, Cursor: flags.cursor,
 	}
 	if flags.since != "" {
 		value, _ := time.Parse("2006-01-02", flags.since)
@@ -90,7 +100,14 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 }
 
 func (flags historyQueryFlags) jsonFilters() jsonFilters {
-	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until)}
+	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until), ThreadKind: optionalString(flags.effectiveThreadKind())}
+}
+
+func (flags historyQueryFlags) effectiveThreadKind() string {
+	if flags.rootOnly {
+		return "root"
+	}
+	return flags.threadKind
 }
 
 func newHistorySearchCommand() *cobra.Command {
@@ -248,7 +265,7 @@ func newHistoryStatsCommand() *cobra.Command {
 	flags.add(command, 100)
 	_ = command.Flags().MarkHidden("limit")
 	_ = command.Flags().MarkHidden("cursor")
-	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, weekday, and/or hour")
+	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, thread-kind, weekday, and/or hour")
 	return command
 }
 

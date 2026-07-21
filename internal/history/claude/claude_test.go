@@ -9,7 +9,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/ingest/jsonl"
 )
 
-func TestExtractSyntheticTranscript(t *testing.T) {
+func TestExtractSyntheticTranscriptFork(t *testing.T) {
 	var records []jsonl.Record
 	_, err := jsonl.ReadPositioned(filepath.Join("testdata", "history.jsonl"), jsonl.Position{}, func(record jsonl.Record) {
 		record.Raw = append([]byte(nil), record.Raw...)
@@ -21,6 +21,11 @@ func TestExtractSyntheticTranscript(t *testing.T) {
 	result := Extract(history.SourceReference{Provider: history.ProviderClaude, Kind: history.LocationProviderLive, Path: "session.jsonl"}, records)
 	if result.Session.NativeSessionID != "22222222-2222-4222-8222-222222222222" || result.Session.ParentNativeSessionID != "" || result.Session.ForkedFromSessionID == "" || result.Session.ThreadKind != history.ThreadUnknown {
 		t.Fatalf("session = %#v", result.Session)
+	}
+	if len(result.Relationships) != 1 || result.Relationships[0].Kind != history.RelationFork ||
+		result.Relationships[0].ParentNativeSessionID != "11111111-1111-4111-8111-111111111111" ||
+		result.Relationships[0].ParentNativeMessageID != "11111111-1111-4111-8111-111111111101" {
+		t.Fatalf("fork relationships = %#v", result.Relationships)
 	}
 	if len(result.Prompts) != 4 || len(result.Occurrences) != 5 {
 		t.Fatalf("prompts=%d occurrences=%d", len(result.Prompts), len(result.Occurrences))
@@ -36,6 +41,32 @@ func TestExtractSyntheticTranscript(t *testing.T) {
 	}
 	if got := result.Prompts[3]; got.Classification != history.ClassificationLocalCommand || got.Searchable || got.Timestamp != nil {
 		t.Fatalf("command = %#v", got)
+	}
+}
+
+func TestExtractRootAndSubagentFromProviderPath(t *testing.T) {
+	rootRecord := jsonl.Record{Raw: []byte("{\"type\":\"user\",\"uuid\":\"root-prompt\",\"sessionId\":\"parent\",\"message\":{\"role\":\"user\",\"content\":\"root work\"}}\n"), LineNumber: 1, EndOffset: 130}
+	root := Extract(history.SourceReference{Provider: history.ProviderClaude, Path: "/claude/projects/project/parent.jsonl"}, []jsonl.Record{rootRecord})
+	if root.Session.ThreadKind != history.ThreadRoot || root.Session.ThreadConfidence != history.ConfidenceDerived || root.Session.ThreadEvidence != "source_path.main_transcript" {
+		t.Fatalf("root path classification = %#v", root.Session)
+	}
+
+	var subagentRecords []jsonl.Record
+	_, err := jsonl.ReadPositioned(filepath.Join("testdata", "subagent.jsonl"), jsonl.Position{}, func(record jsonl.Record) {
+		record.Raw = append([]byte(nil), record.Raw...)
+		subagentRecords = append(subagentRecords, record)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subagent := Extract(history.SourceReference{Provider: history.ProviderClaude, Path: "/claude/projects/project/33333333-3333-4333-8333-333333333333/subagents/agent-child.jsonl"}, subagentRecords)
+	if subagent.Session.ThreadKind != history.ThreadSubagent || subagent.Session.NativeSessionID != "33333333-3333-4333-8333-333333333333/subagents/agent-child" ||
+		subagent.Session.ParentNativeSessionID != "33333333-3333-4333-8333-333333333333" || subagent.Session.Originator != "agent-child" || len(subagent.Prompts) != 1 {
+		t.Fatalf("subagent path classification = %#v prompts=%#v", subagent.Session, subagent.Prompts)
+	}
+	if len(subagent.Relationships) != 1 || subagent.Relationships[0].Kind != history.RelationSubagent ||
+		subagent.Relationships[0].ProviderNativeValue != "subagents/agent-child" {
+		t.Fatalf("subagent relationship = %#v", subagent.Relationships)
 	}
 }
 

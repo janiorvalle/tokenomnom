@@ -175,14 +175,20 @@ complete-success timestamp.
 `tokenomnom history list [--provider codex|claude] [--since YYYY-MM-DD]
 [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
-[--cursor OPAQUE] --format json`
+[--cursor OPAQUE] [--root-only | --thread-kind root|subagent|unknown|all]
+--format json`
 
 The default page contains at most 100 current logical sessions; the maximum is
 500. Results use descending activity time and stable session-ID tie-breaking.
 `data.sessions` contains stable `ses_` IDs, provider/native IDs, first/last
 timestamps, cwd/repository/branch metadata, `src_` and `snap_` IDs and counts,
 logical prompt and occurrence counts, availability components, preferred exact
-retrieval source, and a byte/line-bounded first-human-prompt preview. Exact
+retrieval source, explicit thread classification and evidence, relationship
+details, and a byte/line-bounded first-human-prompt preview. Relationship
+objects contain nullable resolved parent and child session IDs, provider-native
+parent/message values, evidence, confidence, rule version, and resolution
+state. Relationship arrays are capped and disclose `relationships_truncated`.
+Exact
 provider and vault copies remain one logical prompt with multiple occurrences.
 
 `data.coverage` reports known and unknown repository and branch counts. Claude
@@ -190,13 +196,18 @@ Code repository and branch values remain unknown; `--repo` or `--branch`
 excludes those sessions and adds an envelope warning with the excluded count.
 Use `--cwd` when cross-provider completeness matters. Page cursors are opaque,
 filter-bound, and rejected after `index_generation` changes.
+`root` requires direct evidence or a versioned deterministic provider rule;
+absence of an observed parent remains `unknown`. `--root-only` is shorthand
+for `--thread-kind root`, and combining it with an explicit `--thread-kind` is
+an error. The default and `all` include root, subagent, and unknown sessions.
 
 ## History Search
 
 `tokenomnom history search <query> [--provider codex|claude] [--since
 YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
-[--cursor OPAQUE] [--include-text] [--fts-query] --format json`
+[--cursor OPAQUE] [--include-text] [--fts-query]
+[--root-only | --thread-kind root|subagent|unknown|all] --format json`
 
 The default limit is 50 and the maximum is 500. Default search quotes the
 input as one FTS5 `unicode61` phrase: tokenizer terms must be adjacent and in
@@ -214,7 +225,8 @@ the exact query, literal/raw mode, filters, rank bits, stable tie-breakers, and
 index generation.
 
 `data.coverage` contains nullable first/last indexed prompt timestamps plus
-known/unknown repository and branch session counts. Requests outside date
+known/unknown repository and branch session counts plus root, subagent, and
+unknown relationship counts. Requests outside date
 coverage and repository/branch filters that exclude unknown metadata add
 envelope warnings.
 
@@ -244,7 +256,7 @@ warning, and optional-text contracts match search.
 
 ## History Stats
 
-`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|weekday,hour]
+`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday,hour]
 --format json` returns SQL-computed, text-free aggregates: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
 days; total/median prompt byte lengths; provider-live, provider-archive, and
