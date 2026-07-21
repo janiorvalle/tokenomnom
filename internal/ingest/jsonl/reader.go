@@ -56,6 +56,22 @@ func ReadCompleteFile(file *os.File, offset int64, visit func([]byte)) (int64, e
 
 // ReadPositionedFile is ReadPositioned for an already-open descriptor.
 func ReadPositionedFile(file *os.File, position Position, visit func(Record)) (Position, error) {
+	return readPositionedFile(file, position, file, visit)
+}
+
+// ReadPositionedFileLimit reads only through endOffset, so a growing live file
+// cannot move the snapshot boundary during one indexing attempt.
+func ReadPositionedFileLimit(file *os.File, position Position, endOffset int64, visit func(Record)) (Position, error) {
+	if position.ByteOffset < 0 || position.LineNumber < 0 {
+		return position, fmt.Errorf("invalid JSONL position: offset and line number must be non-negative")
+	}
+	if endOffset < position.ByteOffset {
+		return position, fmt.Errorf("invalid JSONL end offset %d before start %d", endOffset, position.ByteOffset)
+	}
+	return readPositionedFile(file, position, io.LimitReader(file, endOffset-position.ByteOffset), visit)
+}
+
+func readPositionedFile(file *os.File, position Position, source io.Reader, visit func(Record)) (Position, error) {
 	if position.ByteOffset < 0 || position.LineNumber < 0 {
 		return position, fmt.Errorf("invalid JSONL position: offset and line number must be non-negative")
 	}
@@ -63,7 +79,7 @@ func ReadPositionedFile(file *os.File, position Position, visit func(Record)) (P
 		return position, fmt.Errorf("seek JSONL file %q: %w", file.Name(), err)
 	}
 
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(source)
 	complete := position
 	for {
 		line, readErr := reader.ReadBytes('\n')

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,13 +100,13 @@ func TestAppendDuringIndexingRemainsPendingForNextRun(t *testing.T) {
 	initial := codexMeta("concurrent-session") + codexPrompt("p1", "first")
 	appended := codexPrompt("p2", "second")
 	writeFile(t, path, initial)
-	parsed, err := readRecordsWithHook(path, jsonl.Position{}, historystore.Checkpoint{}, fileNew, func() {
+	parsed, err := readRecordsWithHook(path, jsonl.Position{}, historystore.Checkpoint{}, fileNew, nil, func() {
 		appendFile(t, path, appended)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.size != int64(len(initial)) || parsed.position.ByteOffset != int64(len(initial)) || len(parsed.records) != 2 || parsed.modTimeUnixNano != 0 {
+	if parsed.size != int64(len(initial)) || parsed.position.ByteOffset != int64(len(initial)) || parsed.recordCount != 2 || parsed.modTimeUnixNano == 0 {
 		t.Fatalf("concurrent parsed source = %+v", parsed)
 	}
 	stat, err := os.Stat(path)
@@ -126,9 +127,39 @@ func TestAppendDuringIndexingRemainsPendingForNextRun(t *testing.T) {
 	if kind != fileAppend {
 		t.Fatalf("concurrent append classified as %v", kind)
 	}
-	suffix, err := readRecords(path, jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}, checkpoint, fileAppend)
-	if err != nil || len(suffix.records) != 1 || suffix.position.ByteOffset != int64(len(initial)+len(appended)) {
+	suffix, err := readRecords(path, jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}, checkpoint, fileAppend, nil)
+	if err != nil || suffix.recordCount != 1 || suffix.position.ByteOffset != int64(len(initial)+len(appended)) {
 		t.Fatalf("pending append was not resumed: parsed=%+v err=%v", suffix, err)
+	}
+}
+
+func TestGrowingRewriteRejectsMixedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "growing-rewrite.jsonl")
+	initial := strings.Repeat("x", 100_000) + "\n"
+	writeFile(t, path, initial)
+	_, err := readRecordsWithHook(path, jsonl.Position{}, historystore.Checkpoint{}, fileNew, nil, func() {
+		file, openErr := os.OpenFile(path, os.O_WRONLY, 0o644)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		if _, writeErr := file.WriteAt([]byte("y"), 5_000); writeErr != nil {
+			_ = file.Close()
+			t.Fatal(writeErr)
+		}
+		if _, seekErr := file.Seek(0, io.SeekEnd); seekErr != nil {
+			_ = file.Close()
+			t.Fatal(seekErr)
+		}
+		if _, writeErr := file.WriteString("appended\n"); writeErr != nil {
+			_ = file.Close()
+			t.Fatal(writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	})
+	if !errors.Is(err, errSourceChanged) {
+		t.Fatalf("growing rewrite error = %v, want errSourceChanged", err)
 	}
 }
 

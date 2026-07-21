@@ -64,3 +64,28 @@ func TestReadPositionedResumesLineNumbers(t *testing.T) {
 		t.Fatalf("position = %#v", position)
 	}
 }
+
+func TestReadPositionedFileLimitKeepsSnapshotBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.jsonl")
+	if err := os.WriteFile(path, []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	position, err := ReadPositionedFileLimit(file, Position{}, 4, func(record Record) {
+		got = append(got, string(record.Raw))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"one\n"}) || position != (Position{ByteOffset: 4, LineNumber: 1}) {
+		t.Fatalf("got lines %q position %#v", got, position)
+	}
+}

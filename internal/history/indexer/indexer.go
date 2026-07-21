@@ -325,10 +325,16 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if kind == fileAppend {
 		position = jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}
 	}
+	source := history.SourceReference{Provider: history.Provider(file.Provider), Kind: locationKind(file.Kind), Path: file.Path}
 	var parsed parsedSource
+	var accumulator *extractionAccumulator
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		parsed, err = readRecords(file.Path, position, checkpoint, kind)
+		accumulator, err = newExtractionAccumulator(source, checkpoint, kind)
+		if err != nil {
+			return indexedFile{}, err
+		}
+		parsed, err = readRecords(file.Path, position, checkpoint, kind, accumulator.visit)
 		if !errors.Is(err, errSourceChanged) {
 			break
 		}
@@ -338,8 +344,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if err != nil {
 		return indexedFile{}, err
 	}
-	source := history.SourceReference{Provider: history.Provider(file.Provider), Kind: locationKind(file.Kind), Path: file.Path}
-	extraction, extractorState, err := extract(source, parsed.records, checkpoint, kind)
+	extraction, extractorState, err := accumulator.result()
 	if err != nil {
 		return indexedFile{}, err
 	}
@@ -350,7 +355,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 		LineCount: parsed.position.LineNumber, Available: true,
 		VerifiedContinuity: found && kind != fileRewrite,
 	}
-	if kind == fileAppend && len(parsed.records) == 0 {
+	if kind == fileAppend && parsed.recordCount == 0 {
 		if err := database.UpdateCheckpointOnly(head); err != nil {
 			return indexedFile{}, err
 		}
@@ -373,7 +378,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 var errSourceChanged = errors.New("history source changed during indexing")
 
 type parsedSource struct {
-	records           []jsonl.Record
+	recordCount       int
 	position          jsonl.Position
 	contentHash       string
 	hashState         string
@@ -390,11 +395,11 @@ type hashState interface {
 	encoding.BinaryUnmarshaler
 }
 
-func readRecords(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind) (parsedSource, error) {
-	return readRecordsWithHook(path, position, checkpoint, kind, nil)
+func readRecords(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind, visit func(jsonl.Record)) (parsedSource, error) {
+	return readRecordsWithHook(path, position, checkpoint, kind, visit, nil)
 }
 
-func readRecordsWithHook(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind, afterRead func()) (parsedSource, error) {
+func readRecordsWithHook(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind, visit func(jsonl.Record), afterRead func()) (parsedSource, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return parsedSource{}, fmt.Errorf("open history source %q: %w", path, err)
@@ -403,6 +408,13 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 	initialStat, err := file.Stat()
 	if err != nil {
 		return parsedSource{}, fmt.Errorf("stat initial history source %q: %w", path, err)
+	}
+	if position.ByteOffset > initialStat.Size() {
+		return parsedSource{}, fmt.Errorf("%w: %s is shorter than its checkpoint", errSourceChanged, path)
+	}
+	snapshotBefore, err := prefixFingerprintFile(file, initialStat.Size())
+	if err != nil {
+		return parsedSource{}, err
 	}
 	hasher, ok := sha256.New().(hashState)
 	if !ok {
@@ -421,11 +433,13 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 			return parsedSource{}, fmt.Errorf("hash existing content prefix for %q: %w", path, err)
 		}
 	}
-	var records []jsonl.Record
-	finalPosition, err := jsonl.ReadPositionedFile(file, position, func(record jsonl.Record) {
-		record.Raw = append([]byte(nil), record.Raw...)
-		records = append(records, record)
+	recordCount := 0
+	finalPosition, err := jsonl.ReadPositionedFileLimit(file, position, initialStat.Size(), func(record jsonl.Record) {
+		recordCount++
 		_, _ = hasher.Write(record.Raw)
+		if visit != nil {
+			visit(record)
+		}
 	})
 	if err != nil {
 		return parsedSource{}, err
@@ -433,21 +447,33 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 	if afterRead != nil {
 		afterRead()
 	}
-	observedEOF, err := file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return parsedSource{}, fmt.Errorf("read observed EOF for history source %q: %w", path, err)
-	}
 	stat, err := file.Stat()
 	if err != nil {
 		return parsedSource{}, fmt.Errorf("stat history source %q: %w", path, err)
 	}
-	if stat.Size() < observedEOF {
+	if stat.Size() < initialStat.Size() {
 		return parsedSource{}, fmt.Errorf("%w: %s shrank while being read", errSourceChanged, path)
 	}
 	if stat.Size() == initialStat.Size() && stat.ModTime().UnixNano() != initialStat.ModTime().UnixNano() {
 		return parsedSource{}, fmt.Errorf("%w: %s was rewritten while being read", errSourceChanged, path)
 	}
+	snapshotAfter, err := prefixFingerprintFile(file, initialStat.Size())
+	if err != nil {
+		return parsedSource{}, fmt.Errorf("%w: verify snapshot of %s: %v", errSourceChanged, path, err)
+	}
+	if snapshotBefore != snapshotAfter {
+		return parsedSource{}, fmt.Errorf("%w: bounded fingerprint of %s changed", errSourceChanged, path)
+	}
 	contentHash := hex.EncodeToString(hasher.Sum(nil))
+	if stat.Size() > initialStat.Size() {
+		verifiedHash, err := hashFilePrefix(file, finalPosition.ByteOffset)
+		if err != nil {
+			return parsedSource{}, fmt.Errorf("%w: verify indexed prefix of %s: %v", errSourceChanged, path, err)
+		}
+		if verifiedHash != contentHash {
+			return parsedSource{}, fmt.Errorf("%w: indexed prefix of %s changed", errSourceChanged, path)
+		}
+	}
 	prefixFingerprint, err := prefixFingerprintFile(file, finalPosition.ByteOffset)
 	if err != nil {
 		return parsedSource{}, err
@@ -460,48 +486,90 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 	if err != nil {
 		return parsedSource{}, fmt.Errorf("encode content hash state for %q: %w", path, err)
 	}
-	modTimeUnixNano := stat.ModTime().UnixNano()
-	if stat.Size() != observedEOF {
-		modTimeUnixNano = 0
-	}
 	return parsedSource{
-		records: records, position: finalPosition, contentHash: contentHash, hashState: hex.EncodeToString(state),
+		recordCount: recordCount, position: finalPosition, contentHash: contentHash, hashState: hex.EncodeToString(state),
 		prefixFingerprint: prefixFingerprint, tailFingerprint: tailFingerprint,
-		size: observedEOF, modTimeUnixNano: modTimeUnixNano,
+		size: initialStat.Size(), modTimeUnixNano: initialStat.ModTime().UnixNano(),
 	}, nil
 }
 
-func extract(source history.SourceReference, records []jsonl.Record, checkpoint historystore.Checkpoint, kind fileKind) (history.Extraction, string, error) {
-	switch source.Provider {
-	case history.ProviderCodex:
-		state := codex.State{}
-		if kind == fileAppend {
-			state.Session = checkpoint.Session
-			if checkpoint.ExtractorState != "" {
-				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &state); err != nil {
-					return history.Extraction{}, "", fmt.Errorf("decode Codex history extractor state for %q: %w", source.Path, err)
-				}
-			}
-		}
-		extraction, state := codex.ExtractWithState(source, records, state)
-		encoded, err := json.Marshal(state)
-		return extraction, string(encoded), err
-	case history.ProviderClaude:
-		prior := history.Session{}
-		if kind == fileAppend {
-			prior = checkpoint.Session
-			if checkpoint.ExtractorState != "" {
-				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &prior); err != nil {
-					return history.Extraction{}, "", fmt.Errorf("decode Claude history extractor state for %q: %w", source.Path, err)
-				}
-			}
-		}
-		extraction := claude.ExtractWithSession(source, records, prior)
-		encoded, err := json.Marshal(extraction.Session)
-		return extraction, string(encoded), err
-	default:
-		return history.Extraction{}, "", fmt.Errorf("unsupported history provider %q", source.Provider)
+type extractionAccumulator struct {
+	source        history.SourceReference
+	extraction    history.Extraction
+	promptIndex   map[string]int
+	codexState    codex.State
+	claudeSession history.Session
+}
+
+func newExtractionAccumulator(source history.SourceReference, checkpoint historystore.Checkpoint, kind fileKind) (*extractionAccumulator, error) {
+	value := &extractionAccumulator{
+		source:      source,
+		extraction:  history.Extraction{Provider: source.Provider, Source: source},
+		promptIndex: make(map[string]int),
 	}
+	if kind == fileAppend {
+		switch source.Provider {
+		case history.ProviderCodex:
+			value.codexState.Session = checkpoint.Session
+			if checkpoint.ExtractorState != "" {
+				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &value.codexState); err != nil {
+					return nil, fmt.Errorf("decode Codex history extractor state for %q: %w", source.Path, err)
+				}
+			}
+		case history.ProviderClaude:
+			value.claudeSession = checkpoint.Session
+			if checkpoint.ExtractorState != "" {
+				if err := json.Unmarshal([]byte(checkpoint.ExtractorState), &value.claudeSession); err != nil {
+					return nil, fmt.Errorf("decode Claude history extractor state for %q: %w", source.Path, err)
+				}
+			}
+		}
+	}
+	if err := value.consume(nil); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (a *extractionAccumulator) visit(record jsonl.Record) {
+	_ = a.consume([]jsonl.Record{record})
+}
+
+func (a *extractionAccumulator) consume(records []jsonl.Record) error {
+	var part history.Extraction
+	switch a.source.Provider {
+	case history.ProviderCodex:
+		part, a.codexState = codex.ExtractWithState(a.source, records, a.codexState)
+	case history.ProviderClaude:
+		part = claude.ExtractWithSession(a.source, records, a.claudeSession)
+		a.claudeSession = part.Session
+	default:
+		return fmt.Errorf("unsupported history provider %q", a.source.Provider)
+	}
+	a.extraction.Session = part.Session
+	for _, prompt := range part.Prompts {
+		if index, found := a.promptIndex[prompt.LogicalKey]; found {
+			if history.CanonicalPromptWins(prompt, a.extraction.Prompts[index]) {
+				a.extraction.Prompts[index] = prompt
+			}
+			continue
+		}
+		a.promptIndex[prompt.LogicalKey] = len(a.extraction.Prompts)
+		a.extraction.Prompts = append(a.extraction.Prompts, prompt)
+	}
+	a.extraction.Occurrences = append(a.extraction.Occurrences, part.Occurrences...)
+	return nil
+}
+
+func (a *extractionAccumulator) result() (history.Extraction, string, error) {
+	var state any
+	if a.source.Provider == history.ProviderCodex {
+		state = a.codexState
+	} else {
+		state = a.claudeSession
+	}
+	encoded, err := json.Marshal(state)
+	return a.extraction, string(encoded), err
 }
 
 func locationKind(kind discover.SourceKind) history.LocationKind {
@@ -555,6 +623,17 @@ func fullHash(path string) (string, error) {
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
 		return "", fmt.Errorf("hash exact fingerprint for %q: %w", path, err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func hashFilePrefix(file *os.File, offset int64) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hasher := sha256.New()
+	if _, err := io.CopyN(hasher, file, offset); err != nil {
+		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
