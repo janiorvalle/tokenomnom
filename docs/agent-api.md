@@ -138,6 +138,8 @@ extractor versions, logical session/source-head/prompt/occurrence counts,
 live and provider-archive source counts, stale/error/missing counts, nullable
 last-index/attempt/complete-success timestamps, and `index_generation`.
 `last_run_error_count` makes an incomplete most-recent run explicit.
+`inspection_error` is nullable and lets doctor report a corrupt optional index
+without aborting its other diagnostics.
 
 ## History Index
 

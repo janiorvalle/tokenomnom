@@ -13,6 +13,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/ingest/jsonl"
 	_ "modernc.org/sqlite"
 )
 
@@ -90,6 +91,44 @@ func TestPartialTrailingLineCompletion(t *testing.T) {
 	third := env.index(t, false)
 	if third.AppendedSources != 1 || third.IndexedPrompts != 1 || env.health(t).Prompts != 1 {
 		t.Fatalf("completed partial summary = %+v health=%+v", third, env.health(t))
+	}
+}
+
+func TestAppendDuringIndexingRemainsPendingForNextRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.jsonl")
+	initial := codexMeta("concurrent-session") + codexPrompt("p1", "first")
+	appended := codexPrompt("p2", "second")
+	writeFile(t, path, initial)
+	parsed, err := readRecordsWithHook(path, jsonl.Position{}, historystore.Checkpoint{}, fileNew, func() {
+		appendFile(t, path, appended)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.size != int64(len(initial)) || parsed.position.ByteOffset != int64(len(initial)) || len(parsed.records) != 2 || parsed.modTimeUnixNano != 0 {
+		t.Fatalf("concurrent parsed source = %+v", parsed)
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := historystore.Checkpoint{
+		Provider: history.ProviderCodex, Path: path, Kind: history.LocationProviderLive,
+		Size: parsed.size, CompleteOffset: parsed.position.ByteOffset, LineCount: parsed.position.LineNumber,
+		ContentSHA256: parsed.contentHash, ContentHashState: parsed.hashState,
+		PrefixFingerprint: parsed.physicalFingerprint, TailFingerprint: parsed.tailFingerprint,
+		ExtractorVersion: history.ExtractorVersion,
+	}
+	kind, err := classify(discover.SourceFile{Provider: discover.ProviderCodex, Kind: discover.SourceCodexLive, Path: path, Size: stat.Size(), ModTime: stat.ModTime()}, checkpoint, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != fileAppend {
+		t.Fatalf("concurrent append classified as %v", kind)
+	}
+	suffix, err := readRecords(path, jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}, checkpoint, fileAppend)
+	if err != nil || len(suffix.records) != 1 || suffix.position.ByteOffset != int64(len(initial)+len(appended)) {
+		t.Fatalf("pending append was not resumed: parsed=%+v err=%v", suffix, err)
 	}
 }
 

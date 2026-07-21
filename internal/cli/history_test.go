@@ -55,6 +55,33 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsCorruptOptionalHistoryIndexWithoutAborting(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, historystore.DatabaseName), []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeReport([]string{"doctor", "--format", "json"}, filepath.Join(root, "codex"), filepath.Join(root, "claude"))
+	if err != nil {
+		t.Fatalf("doctor aborted on corrupt optional history index: %v\n%s", err, output)
+	}
+	var doctor struct {
+		History jsonHistoryHealth `json:"history"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &doctor); err != nil {
+		t.Fatal(err)
+	}
+	if doctor.History.Status != "error" || doctor.History.InspectionError == nil || *doctor.History.InspectionError == "" {
+		t.Fatalf("doctor corrupt history = %+v", doctor.History)
+	}
+}
+
 func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")

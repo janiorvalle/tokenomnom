@@ -54,6 +54,7 @@ type Health struct {
 	LastCompleteSuccessUnix int64
 	LastRunErrorCount       int
 	IndexGeneration         int64
+	InspectionError         string
 }
 
 // Checkpoints returns provider source checkpoints keyed by provider and path.

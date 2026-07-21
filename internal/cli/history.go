@@ -225,6 +225,9 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Prompts:", health.Prompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Occurrences:", health.Occurrences)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Index generation:", health.IndexGeneration)
+	if health.InspectionError != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Inspection error:", health.InspectionError)
+	}
 	return nil
 }
 
@@ -248,6 +251,7 @@ type jsonHistoryHealth struct {
 	LastCompleteSuccess    *string `json:"last_complete_success"`
 	LastRunErrorCount      int     `json:"last_run_error_count"`
 	IndexGeneration        int64   `json:"index_generation"`
+	InspectionError        *string `json:"inspection_error"`
 }
 
 func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
@@ -260,5 +264,6 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 		LastIndex: optionalUnix(health.LastIndexUnix), LastAttempt: optionalUnix(health.LastAttemptUnix),
 		LastCompleteSuccess: optionalUnix(health.LastCompleteSuccessUnix), IndexGeneration: health.IndexGeneration,
 		LastRunErrorCount: health.LastRunErrorCount,
+		InspectionError:   optionalString(health.InspectionError),
 	}
 }

@@ -312,31 +312,32 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if kind == fileAppend {
 		position = jsonl.Position{ByteOffset: checkpoint.CompleteOffset, LineNumber: checkpoint.LineCount}
 	}
-	records, finalPosition, contentHash, hashState, stat, err := readRecords(file.Path, position, checkpoint, kind)
-	if err != nil {
-		return indexedFile{}, err
+	var parsed parsedSource
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		parsed, err = readRecords(file.Path, position, checkpoint, kind)
+		if !errors.Is(err, errSourceChanged) {
+			break
+		}
+		kind = fileRewrite
+		position = jsonl.Position{}
 	}
-	physicalFingerprint, err := fullHash(file.Path)
-	if err != nil {
-		return indexedFile{}, err
-	}
-	tailFingerprint, err := tailHash(file.Path, finalPosition.ByteOffset)
 	if err != nil {
 		return indexedFile{}, err
 	}
 	source := history.SourceReference{Provider: history.Provider(file.Provider), Kind: locationKind(file.Kind), Path: file.Path}
-	extraction, extractorState, err := extract(source, records, checkpoint, kind)
+	extraction, extractorState, err := extract(source, parsed.records, checkpoint, kind)
 	if err != nil {
 		return indexedFile{}, err
 	}
 	head := history.SourceHead{
-		Source: source, ContentSHA256: contentHash, ContentHashState: hashState,
-		PrefixFingerprint: physicalFingerprint, TailFingerprint: tailFingerprint, ExtractorState: extractorState,
-		Size: stat.Size(), ModTimeUnix: stat.ModTime().UnixNano(), CompleteOffset: finalPosition.ByteOffset,
-		LineCount: finalPosition.LineNumber, Available: true,
+		Source: source, ContentSHA256: parsed.contentHash, ContentHashState: parsed.hashState,
+		PrefixFingerprint: parsed.physicalFingerprint, TailFingerprint: parsed.tailFingerprint, ExtractorState: extractorState,
+		Size: parsed.size, ModTimeUnix: parsed.modTimeUnixNano, CompleteOffset: parsed.position.ByteOffset,
+		LineCount: parsed.position.LineNumber, Available: true,
 		VerifiedContinuity: found && kind != fileRewrite,
 	}
-	if kind == fileAppend && len(records) == 0 {
+	if kind == fileAppend && len(parsed.records) == 0 {
 		if err := database.UpdateCheckpointOnly(head); err != nil {
 			return indexedFile{}, err
 		}
@@ -347,13 +348,26 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 		mode = historystore.ApplyAppend
 	}
 	advanceGeneration := true
-	if kind == fileRewrite && found && !checkpoint.Missing && checkpoint.Kind == source.Kind && checkpoint.ContentSHA256 == contentHash && checkpoint.ExtractorVersion == history.ExtractorVersion {
+	if kind == fileRewrite && found && !checkpoint.Missing && checkpoint.Kind == source.Kind && checkpoint.ContentSHA256 == parsed.contentHash && checkpoint.ExtractorVersion == history.ExtractorVersion {
 		advanceGeneration = false
 	}
 	if _, err := database.ApplySourceWithGeneration(extraction, head, mode, advanceGeneration); err != nil {
 		return indexedFile{}, err
 	}
 	return indexedFile{Prompts: extraction.Prompts}, nil
+}
+
+var errSourceChanged = errors.New("history source changed during indexing")
+
+type parsedSource struct {
+	records             []jsonl.Record
+	position            jsonl.Position
+	contentHash         string
+	hashState           string
+	physicalFingerprint string
+	tailFingerprint     string
+	size                int64
+	modTimeUnixNano     int64
 }
 
 type hashState interface {
@@ -363,27 +377,31 @@ type hashState interface {
 	encoding.BinaryUnmarshaler
 }
 
-func readRecords(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind) ([]jsonl.Record, jsonl.Position, string, string, os.FileInfo, error) {
+func readRecords(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind) (parsedSource, error) {
+	return readRecordsWithHook(path, position, checkpoint, kind, nil)
+}
+
+func readRecordsWithHook(path string, position jsonl.Position, checkpoint historystore.Checkpoint, kind fileKind, afterRead func()) (parsedSource, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, position, "", "", nil, fmt.Errorf("open history source %q: %w", path, err)
+		return parsedSource{}, fmt.Errorf("open history source %q: %w", path, err)
 	}
 	defer file.Close()
 	hasher, ok := sha256.New().(hashState)
 	if !ok {
-		return nil, position, "", "", nil, errors.New("SHA-256 implementation does not support resumable state")
+		return parsedSource{}, errors.New("SHA-256 implementation does not support resumable state")
 	}
 	if kind == fileAppend && checkpoint.ContentHashState != "" {
 		encoded, err := hex.DecodeString(checkpoint.ContentHashState)
 		if err != nil {
-			return nil, position, "", "", nil, fmt.Errorf("decode content hash state for %q: %w", path, err)
+			return parsedSource{}, fmt.Errorf("decode content hash state for %q: %w", path, err)
 		}
 		if err := hasher.UnmarshalBinary(encoded); err != nil {
-			return nil, position, "", "", nil, fmt.Errorf("restore content hash state for %q: %w", path, err)
+			return parsedSource{}, fmt.Errorf("restore content hash state for %q: %w", path, err)
 		}
 	} else if position.ByteOffset > 0 {
 		if _, err := io.CopyN(hasher, file, position.ByteOffset); err != nil {
-			return nil, position, "", "", nil, fmt.Errorf("hash existing content prefix for %q: %w", path, err)
+			return parsedSource{}, fmt.Errorf("hash existing content prefix for %q: %w", path, err)
 		}
 	}
 	var records []jsonl.Record
@@ -393,17 +411,51 @@ func readRecords(path string, position jsonl.Position, checkpoint historystore.C
 		_, _ = hasher.Write(record.Raw)
 	})
 	if err != nil {
-		return nil, position, "", "", nil, err
+		return parsedSource{}, err
+	}
+	if afterRead != nil {
+		afterRead()
+	}
+	observedEOF, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return parsedSource{}, fmt.Errorf("read observed EOF for history source %q: %w", path, err)
 	}
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, position, "", "", nil, fmt.Errorf("stat history source %q: %w", path, err)
+		return parsedSource{}, fmt.Errorf("stat history source %q: %w", path, err)
+	}
+	if stat.Size() < observedEOF {
+		return parsedSource{}, fmt.Errorf("%w: %s shrank while being read", errSourceChanged, path)
+	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+	physicalFingerprint, err := prefixHashFile(file, observedEOF)
+	if err != nil {
+		return parsedSource{}, err
+	}
+	verifiedContentHash, err := prefixHashFile(file, finalPosition.ByteOffset)
+	if err != nil {
+		return parsedSource{}, err
+	}
+	if verifiedContentHash != contentHash {
+		return parsedSource{}, fmt.Errorf("%w: complete prefix of %s was rewritten", errSourceChanged, path)
+	}
+	tailFingerprint, err := tailHashFile(file, finalPosition.ByteOffset)
+	if err != nil {
+		return parsedSource{}, err
 	}
 	state, err := hasher.MarshalBinary()
 	if err != nil {
-		return nil, position, "", "", nil, fmt.Errorf("encode content hash state for %q: %w", path, err)
+		return parsedSource{}, fmt.Errorf("encode content hash state for %q: %w", path, err)
 	}
-	return records, finalPosition, hex.EncodeToString(hasher.Sum(nil)), hex.EncodeToString(state), stat, nil
+	modTimeUnixNano := stat.ModTime().UnixNano()
+	if stat.Size() != observedEOF {
+		modTimeUnixNano = 0
+	}
+	return parsedSource{
+		records: records, position: finalPosition, contentHash: contentHash, hashState: hex.EncodeToString(state),
+		physicalFingerprint: physicalFingerprint, tailFingerprint: tailFingerprint,
+		size: observedEOF, modTimeUnixNano: modTimeUnixNano,
+	}, nil
 }
 
 func extract(source history.SourceReference, records []jsonl.Record, checkpoint historystore.Checkpoint, kind fileKind) (history.Extraction, string, error) {
@@ -463,6 +515,10 @@ func tailHash(path string, offset int64) (string, error) {
 		return "", fmt.Errorf("open %q for history fingerprint: %w", path, err)
 	}
 	defer file.Close()
+	return tailHashFile(file, offset)
+}
+
+func tailHashFile(file *os.File, offset int64) (string, error) {
 	start := offset - fingerprintWindow
 	if start < 0 {
 		start = 0
@@ -472,7 +528,7 @@ func tailHash(path string, offset int64) (string, error) {
 	}
 	hasher := sha256.New()
 	if _, err := io.CopyN(hasher, file, offset-start); err != nil {
-		return "", fmt.Errorf("read history fingerprint for %q: %w", path, err)
+		return "", fmt.Errorf("read history fingerprint for %q: %w", file.Name(), err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
@@ -496,9 +552,16 @@ func prefixHash(path string, size int64) (string, error) {
 		return "", fmt.Errorf("open %q for exact prefix hash: %w", path, err)
 	}
 	defer file.Close()
+	return prefixHashFile(file, size)
+}
+
+func prefixHashFile(file *os.File, size int64) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek exact prefix for %q: %w", file.Name(), err)
+	}
 	hasher := sha256.New()
 	if _, err := io.CopyN(hasher, file, size); err != nil {
-		return "", fmt.Errorf("hash exact prefix for %q: %w", path, err)
+		return "", fmt.Errorf("hash exact prefix for %q: %w", file.Name(), err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
