@@ -14,9 +14,15 @@ work — and they don't survive on their own. Claude Code deletes transcripts
 after about 30 days, and a busy Codex directory grows by tens of GB until you
 wipe it. Either way the history is gone. tokenomnom's vault compresses every
 session roughly 9x into a local, verified, byte-exact archive, so you can
-reclaim the disk and still hand your agents years of raw history to mine:
-how you prompt, which iterations worked, what patterns are worth turning
-into skills. The bundled agent skill teaches them to do exactly that.
+reclaim the disk without losing anything.
+
+On top of that archive sits a local history engine: index your sessions once,
+then search years of your own prompts by exact phrase, list and filter
+sessions, separate your work from delegated agent work, and pull
+representative samples — all offline, all bounded. It's how you (or your
+agents) answer "what did I work on in March" or "find where I said do not
+implement" without grepping raw transcript directories. The bundled agent
+skill teaches Codex and Claude Code to do exactly that.
 
 Those dollar figures are API list-price equivalents. They are not your actual
 Codex or Claude subscription bill.
@@ -87,7 +93,17 @@ tokenomnom export --out usage.csv
 Every report accepts provider, model, and date filters. `--no-sync` uses the
 stored data immediately when you are making several queries in a row.
 
-Build the local user-prompt history index explicitly and inspect its health:
+Search your own session history — see [History](#history) for the full story:
+
+```sh
+tokenomnom history index
+tokenomnom history search "do not implement" --since 2026-07-01
+```
+
+## History
+
+Your transcripts are a searchable record of how you work. Build the index
+once, explicitly, then query it:
 
 ```sh
 tokenomnom history index
@@ -103,31 +119,37 @@ tokenomnom history status
 tokenomnom history purge
 ```
 
-Indexing resumes growing transcripts, detects rewrites and missing sources,
-and includes Codex live/archive files, Claude Code project files, and every
-verified vault version by default. `history list` returns one stable logical
-session row with provider/vault availability and preserved-version counts.
+Indexing covers Codex live and archived files, Claude Code project files, and
+every verified vault version by default. It resumes growing transcripts and
+detects rewrites and missing sources, so live and vaulted copies of the same
+session show up as one logical session with availability and version counts
+in `history list`.
+
 Search is a literal adjacent-token phrase by default; `--fts-query` explicitly
-enables raw FTS5 syntax. Results are bounded snippets unless `--include-text` or
-`history show` is requested, and raw retrieval revalidates exact indexed bytes.
-Repository/branch filters are complete for Codex but partial for Claude Code;
-use `--cwd` for cross-provider completeness and read JSON coverage warnings.
-Root/subagent filters use direct provider evidence or versioned deterministic
-provider rules; missing parent metadata remains explicitly `unknown`, and
-unresolved native parent IDs remain inspectable in JSON relationship details.
-Sampling walks indexed SHA-256 keys from a deterministic seed rather than
-sorting the corpus randomly. It defaults to 25 logical prompts, caps results at
-100, and stratifies deterministically when `--group-by month,repo,thread-kind`
-is supplied. Full prompt text still requires `--include-text`.
-Indexing is never run implicitly by usage reports or normal syncs. User prompts
-remain the default corpus. Setting `history.index_assistant = true` is explicit
-consent to store assistant text blocks too; the next explicit or scheduled
-`history index` re-extracts affected sources. Assistant text typically dwarfs
-user text and can multiply plaintext storage. Disabling the setting prunes
-assistant rows on the next index run. `history.db` may be more sensitive than
-`usage.db` and is excluded from automatic backups. Protect the state directory
-as you would provider transcripts. `tokenomnom history purge` removes all indexed
-user and assistant plaintext without touching
+enables raw FTS5 syntax. Results are bounded snippets unless you ask for
+`--include-text` or `history show`, and raw retrieval revalidates the exact
+indexed bytes before returning them.
+
+A few honesty rules are built in. Repository and branch filters are complete
+for Codex but partial for Claude Code — use `--cwd` when you need
+cross-provider completeness, and read the JSON coverage warnings. Root versus
+subagent classification comes from direct provider evidence or versioned
+deterministic rules; when the evidence is missing, sessions stay explicitly
+`unknown` instead of being guessed.
+
+`history sample` pulls a representative, deterministic sample — same seed,
+same corpus, same sample. It walks indexed SHA-256 keys instead of sorting
+the corpus randomly, defaults to 25 logical prompts, caps at 100, and
+stratifies when you pass `--group-by month,repo,thread-kind`.
+
+On privacy: indexing never runs implicitly from usage reports or normal
+syncs, and user prompts are the only corpus by default. Setting
+`history.index_assistant = true` is explicit consent to store assistant text
+too — expect it to multiply plaintext storage, since assistant output dwarfs
+user prompts. Disabling it prunes assistant rows on the next index run.
+`history.db` can be more sensitive than `usage.db`, so it's excluded from
+automatic backups; protect the state directory as you would the transcripts
+themselves. `history purge` removes all indexed plaintext without touching
 `usage.db`, provider transcripts, vault bundles, or config.
 
 ## Agents
@@ -137,8 +159,10 @@ user and assistant plaintext without touching
 [docs/agent-api.md](docs/agent-api.md).
 
 tokenomnom also ships an opt-in skill that teaches Codex and Claude Code which
-commands answer common token and spend questions, and how to mine vaulted
-session history for workflow analysis:
+commands answer common token and spend questions, and how to search indexed
+session history for workflow analysis — check readiness with `doctor`, index
+deliberately, search or sample with bounded filters, and retrieve only
+selected evidence:
 
 ```sh
 tokenomnom install-skill
