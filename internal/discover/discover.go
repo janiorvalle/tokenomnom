@@ -21,6 +21,16 @@ const (
 	ProviderClaude Provider = "claude"
 )
 
+// SourceKind distinguishes mutable provider transcript locations that have
+// different lifecycle semantics.
+type SourceKind string
+
+const (
+	SourceCodexLive     SourceKind = "codex_live"
+	SourceCodexArchive  SourceKind = "codex_archive"
+	SourceClaudeProject SourceKind = "claude_project"
+)
+
 // Root describes a provider data root and how it was selected.
 type Root struct {
 	Provider Provider
@@ -32,6 +42,7 @@ type Root struct {
 // SourceFile describes a discovered JSONL session file without reading it.
 type SourceFile struct {
 	Provider Provider
+	Kind     SourceKind
 	Path     string
 	Size     int64
 	ModTime  time.Time
@@ -122,7 +133,7 @@ func ListSourceFiles(root Root) ([]SourceFile, []error) {
 	files := make([]SourceFile, 0)
 	walkErrors := make([]error, 0)
 	for _, subtree := range subtrees {
-		start := filepath.Join(resolvedRoot, subtree)
+		start := filepath.Join(resolvedRoot, subtree.path)
 		_, err := os.Lstat(start)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
@@ -151,6 +162,7 @@ func ListSourceFiles(root Root) ([]SourceFile, []error) {
 
 			files = append(files, SourceFile{
 				Provider: root.Provider,
+				Kind:     subtree.kind,
 				Path:     path,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
@@ -166,12 +178,20 @@ func ListSourceFiles(root Root) ([]SourceFile, []error) {
 	return files, walkErrors
 }
 
-func providerSubtrees(provider Provider) []string {
+type providerSubtree struct {
+	path string
+	kind SourceKind
+}
+
+func providerSubtrees(provider Provider) []providerSubtree {
 	switch provider {
 	case ProviderCodex:
-		return []string{"sessions", "archived_sessions"}
+		return []providerSubtree{
+			{path: "sessions", kind: SourceCodexLive},
+			{path: "archived_sessions", kind: SourceCodexArchive},
+		}
 	case ProviderClaude:
-		return []string{"projects"}
+		return []providerSubtree{{path: "projects", kind: SourceClaudeProject}}
 	default:
 		return nil
 	}

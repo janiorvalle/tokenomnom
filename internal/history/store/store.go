@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	SchemaVersion = 1
+	SchemaVersion = 2
 	DatabaseName  = "history.db"
 )
 
@@ -146,11 +146,43 @@ func historyMigrationPlan() sqliteutil.MigrationPlan {
 		Label:    "history store",
 		Current:  SchemaVersion,
 		FreshSQL: schemaSQL,
-		Steps:    map[int]string{},
+		Steps: map[int]string{
+			2: `
+ALTER TABLE source_heads ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'codex_live' CHECK (source_kind IN ('codex_live', 'codex_archive', 'claude_project'));
+ALTER TABLE source_heads ADD COLUMN content_hash_state TEXT NOT NULL DEFAULT '';
+ALTER TABLE source_heads ADD COLUMN prefix_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE source_heads ADD COLUMN tail_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE source_heads ADD COLUMN extractor_state TEXT NOT NULL DEFAULT '';
+ALTER TABLE source_heads ADD COLUMN last_attempt_unix INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE source_heads ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+UPDATE source_heads SET source_kind='claude_project' WHERE provider='claude';
+UPDATE source_heads SET source_kind='codex_archive' WHERE provider='codex' AND EXISTS (
+	SELECT 1 FROM locations WHERE locations.source_head_id=source_heads.id AND locations.kind='provider_archive'
+);
+CREATE TABLE prompt_tombstones (
+	id INTEGER PRIMARY KEY,
+	source_head_id INTEGER REFERENCES source_heads(id) ON DELETE CASCADE,
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	prompt_public_id TEXT NOT NULL,
+	logical_key TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	deleted_at INTEGER NOT NULL
+);
+CREATE INDEX prompt_tombstones_source_idx ON prompt_tombstones(source_head_id, deleted_at DESC);
+CREATE TABLE source_errors (
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	last_attempt_unix INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	PRIMARY KEY(provider, source_path)
+);
+`,
+		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, _ int) error {
 			if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES
 				('extractor_version', ?), ('index_generation', '0'),
-				('last_attempt_unix', '0'), ('last_success_unix', '0')
+				('last_attempt_unix', '0'), ('last_complete_success_unix', '0'), ('last_run_error_count', '0')
 				ON CONFLICT(key) DO NOTHING`, history.ExtractorVersion); err != nil {
 				return fmt.Errorf("record history metadata: %w", err)
 			}

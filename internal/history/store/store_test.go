@@ -220,6 +220,76 @@ func TestIdentityAppendFullReindexAndSourceRewrite(t *testing.T) {
 	}
 }
 
+func TestRewriteRetainsBoundedTombstonesWithoutPromptText(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/tombstones.jsonl", history.LocationProviderLive)
+	prompts := make([]history.Prompt, 0, 300)
+	for index := range 300 {
+		prompts = append(prompts, prompt(fmt.Sprintf("native:old-%03d", index), fmt.Sprintf("old-%03d", index), fmt.Sprintf("private prompt %03d", index), int64(index+1)))
+	}
+	if _, err := database.ApplySource(extraction("native:old-session", "old-session", source, prompts...), head(source, "old-hash", 1000, 300), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	replacement := extraction("native:new-session", "new-session", source, prompt("native:new", "new", "replacement", 1))
+	if _, err := database.ApplySource(replacement, head(source, "new-hash", 20, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM prompt_tombstones`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 256 {
+		t.Fatalf("tombstone count = %d, want 256", count)
+	}
+	rows, err := database.db.Query(`PRAGMA table_info(prompt_tombstones)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "clean_text" {
+			t.Fatal("tombstones retain prompt text")
+		}
+	}
+}
+
+func TestNewSourceErrorsRemainVisibleUntilResolved(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	path := "/provider/unpublished.jsonl"
+	if err := database.RecordSourceError(history.ProviderCodex, path, errors.New("source disappeared")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordRun(time.Now(), 0); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.ErrorSources != 1 || health.LastRunErrorCount != 0 {
+		t.Fatalf("unpublished error health = %+v", health)
+	}
+	retained, err := database.SourceErrors()
+	if err != nil || len(retained) != 1 || retained[0].Path != path {
+		t.Fatalf("retained source errors = %+v err=%v", retained, err)
+	}
+	if err := database.ClearSourceError(history.ProviderCodex, path); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.Health()
+	if err != nil || health.ErrorSources != 0 {
+		t.Fatalf("resolved source error health = %+v err=%v", health, err)
+	}
+}
+
 func TestApplySourceRejectsMismatchedExtractionReference(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()
@@ -826,6 +896,37 @@ func TestSourceReplacementRecomputesSessionTimestampBounds(t *testing.T) {
 	}
 	if first != julyFirst.Format(time.RFC3339Nano) || last != julyLast.Format(time.RFC3339Nano) {
 		t.Fatalf("replacement bounds = %q..%q", first, last)
+	}
+}
+
+func TestMissingSourceRecomputesSessionTimestampBounds(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	olderSource := sourceRef("/older.jsonl", history.LocationProviderLive)
+	older := extraction("native:session", "session", olderSource, prompt("native:old", "old", "older", 1))
+	olderFirst, olderLast := base.Add(-2*time.Hour), base.Add(-time.Hour)
+	older.Session.FirstTimestamp, older.Session.LastTimestamp = &olderFirst, &olderLast
+	if _, err := database.ApplySource(older, head(olderSource, "older", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	newerSource := sourceRef("/newer.jsonl", history.LocationProviderLive)
+	newer := extraction("native:session", "session", newerSource, prompt("native:new", "new", "newer", 1))
+	newerFirst, newerLast := base, base.Add(time.Hour)
+	newer.Session.FirstTimestamp, newer.Session.LastTimestamp = &newerFirst, &newerLast
+	if _, err := database.ApplySource(newer, head(newerSource, "newer", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := database.MarkSourceMissing(history.ProviderCodex, olderSource.Path)
+	if err != nil || !changed {
+		t.Fatalf("mark missing changed=%v err=%v", changed, err)
+	}
+	var first, last string
+	if err := database.db.QueryRow(`SELECT first_ts,last_ts FROM sessions WHERE identity_key='native:session'`).Scan(&first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if first != newerFirst.Format(time.RFC3339Nano) || last != newerLast.Format(time.RFC3339Nano) {
+		t.Fatalf("bounds after missing source = %q..%q", first, last)
 	}
 }
 

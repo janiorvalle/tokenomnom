@@ -21,6 +21,12 @@ writes only under existing Codex and Claude skill directories.
 Pricing overrides are parsed as data, not executed as code. They should not
 contain secrets.
 
+The optional `history.db` contains normalized human prompt text in plaintext
+for local search. It is created only by an explicit `history index` command;
+status, doctor, reports, and normal syncs do not create it. Protect the local
+account and state directory accordingly. `history purge` removes the derived
+database and SQLite sidecars, but does not promise forensic secure deletion.
+
 Useful reports include the affected version, concrete impact, and a minimal
 reproduction. Scanner output without an impact path is less useful, but
 uncertain reports are still welcome through the private channel.

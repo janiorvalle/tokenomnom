@@ -37,6 +37,13 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
+// State carries session identity and a terminal conflict decision across
+// positioned incremental reads.
+type State struct {
+	history.Session
+	Stopped bool
+}
+
 // Extract normalizes complete positioned transcript records without DB writes.
 func Extract(source history.SourceReference, records []jsonl.Record) history.Extraction {
 	return ExtractWithSession(source, records, history.Session{})
@@ -45,12 +52,22 @@ func Extract(source history.SourceReference, records []jsonl.Record) history.Ext
 // ExtractWithSession carries a previously established session identity across
 // a positioned suffix read.
 func ExtractWithSession(source history.SourceReference, records []jsonl.Record, prior history.Session) history.Extraction {
-	result := history.Extraction{Provider: history.ProviderClaude, Source: source, Session: prior}
+	result, _ := ExtractWithState(source, records, State{Session: prior})
+	return result
+}
+
+// ExtractWithState preserves the extractor's stop decision across streamed
+// records and later suffix reads.
+func ExtractWithState(source history.SourceReference, records []jsonl.Record, state State) (history.Extraction, State) {
+	result := history.Extraction{Provider: history.ProviderClaude, Source: source, Session: state.Session}
 	if result.Session.ThreadKind == "" {
 		result.Session.ThreadKind = history.ThreadUnknown
 	}
 	if result.Session.Confidence == "" {
 		result.Session.Confidence = history.ConfidenceUnknown
+	}
+	if state.Stopped {
+		return result, state
 	}
 	var firstRecord []byte
 	seen := make(map[string]int)
@@ -68,6 +85,7 @@ recordsLoop:
 		}
 		if item.SessionID != "" && result.Session.NativeSessionID != "" && result.Session.NativeSessionID != item.SessionID {
 			result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "conflicting sessionId record excluded"})
+			state.Stopped = true
 			break recordsLoop
 		}
 		updateRange(&result.Session, parseTime(item.Timestamp))
@@ -139,7 +157,8 @@ recordsLoop:
 	if result.Session.IdentityKey == "" || foundSessionID || (strings.HasPrefix(result.Session.FallbackKey, "source-path:") && len(firstRecord) > 0) {
 		result.Session.IdentityKey, result.Session.FallbackKey = history.SessionIdentityKey(history.ProviderClaude, result.Session.NativeSessionID, source.Path, firstRecord)
 	}
-	return result
+	state.Session = result.Session
+	return result, state
 }
 
 func textContent(raw json.RawMessage) (string, bool) {

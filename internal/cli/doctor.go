@@ -13,6 +13,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/backup"
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/schedule"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
@@ -75,6 +76,11 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
+	if err := writeDoctorHistoryReport(cmd, databasePath); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	if err := writeBackupsReport(cmd, databasePath); err != nil {
 		return err
 	}
@@ -133,6 +139,7 @@ type jsonDoctorData struct {
 	Skills    []jsonDoctorSkill    `json:"skills"`
 	Offer     *string              `json:"offer"`
 	Store     jsonDoctorStore      `json:"store"`
+	History   jsonHistoryHealth    `json:"history"`
 	Backups   jsonDoctorBackups    `json:"backups"`
 	Vault     jsonDoctorVault      `json:"vault"`
 	Schedule  jsonScheduleData     `json:"schedule"`
@@ -271,7 +278,25 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		return err
 	}
 	data.Vault = vaultData
+	historyHealth, err := doctorHistory(databasePath)
+	if err != nil {
+		return err
+	}
+	data.History = historyHealthJSON(historyHealth)
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func doctorHistory(usageDatabasePath string) (historystore.Health, error) {
+	path := filepath.Join(filepath.Dir(usageDatabasePath), historystore.DatabaseName)
+	return inspectHistoryHealth(path)
+}
+
+func writeDoctorHistoryReport(cmd *cobra.Command, usageDatabasePath string) error {
+	health, err := doctorHistory(usageDatabasePath)
+	if err != nil {
+		return err
+	}
+	return writeHistoryStatus(cmd, health)
 }
 
 func doctorSchedule(cmd *cobra.Command) (jsonScheduleData, error) {

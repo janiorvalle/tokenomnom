@@ -129,6 +129,7 @@ API list-price equivalents, not actual bills.`,
 	cmd.AddCommand(newInstallSkillCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newVaultCommand(&codexDir, &claudeDir))
+	cmd.AddCommand(newHistoryCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newScheduleCommand())
 
 	return cmd

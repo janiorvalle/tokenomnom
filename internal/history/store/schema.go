@@ -40,8 +40,13 @@ CREATE TABLE IF NOT EXISTS source_heads (
     public_id TEXT NOT NULL UNIQUE,
     provider TEXT NOT NULL,
     source_path TEXT NOT NULL,
+	source_kind TEXT NOT NULL DEFAULT 'codex_live' CHECK (source_kind IN ('codex_live', 'codex_archive', 'claude_project')),
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     current_sha256 TEXT NOT NULL DEFAULT '',
+	content_hash_state TEXT NOT NULL DEFAULT '',
+	prefix_fingerprint TEXT NOT NULL DEFAULT '',
+	tail_fingerprint TEXT NOT NULL DEFAULT '',
+	extractor_state TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL DEFAULT 0,
     mtime_unix INTEGER NOT NULL DEFAULT 0,
     complete_offset INTEGER NOT NULL DEFAULT 0,
@@ -49,8 +54,10 @@ CREATE TABLE IF NOT EXISTS source_heads (
 	available INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0, 1)),
 	first_ts TEXT,
 	last_ts TEXT,
-	extractor_version INTEGER NOT NULL,
-    indexed_at INTEGER NOT NULL,
+    extractor_version INTEGER NOT NULL,
+	indexed_at INTEGER NOT NULL,
+	last_attempt_unix INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
     UNIQUE(provider, source_path)
 );
 
@@ -132,12 +139,32 @@ CREATE TABLE IF NOT EXISTS occurrences (
     UNIQUE(prompt_id, location_id, line_number, start_offset, end_offset)
 );
 
+CREATE TABLE IF NOT EXISTS prompt_tombstones (
+	id INTEGER PRIMARY KEY,
+	source_head_id INTEGER REFERENCES source_heads(id) ON DELETE CASCADE,
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	prompt_public_id TEXT NOT NULL,
+	logical_key TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	deleted_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_errors (
+	provider TEXT NOT NULL,
+	source_path TEXT NOT NULL,
+	last_attempt_unix INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	PRIMARY KEY(provider, source_path)
+);
+
 CREATE INDEX IF NOT EXISTS source_heads_session_idx ON source_heads(session_id);
 CREATE INDEX IF NOT EXISTS snapshots_session_idx ON preserved_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS prompts_session_idx ON prompts(session_id);
 CREATE INDEX IF NOT EXISTS occurrences_prompt_idx ON occurrences(prompt_id);
 CREATE INDEX IF NOT EXISTS occurrences_source_idx ON occurrences(source_head_id);
 CREATE INDEX IF NOT EXISTS occurrences_snapshot_idx ON occurrences(snapshot_id);
+CREATE INDEX IF NOT EXISTS prompt_tombstones_source_idx ON prompt_tombstones(source_head_id, deleted_at DESC);
 
 CREATE VIEW IF NOT EXISTS searchable_prompts AS
 SELECT id, clean_text FROM prompts WHERE searchable = 1;

@@ -182,6 +182,30 @@ func TestListSourceFiles(t *testing.T) {
 	}
 }
 
+func TestListSourceFilesClassifiesProviderSourceKinds(t *testing.T) {
+	root := t.TempDir()
+	writeFixtureFile(t, filepath.Join(root, "sessions", "live.jsonl"), "live\n")
+	writeFixtureFile(t, filepath.Join(root, "archived_sessions", "archive.jsonl"), "archive\n")
+
+	files, errs := ListSourceFiles(Root{Provider: ProviderCodex, Path: root})
+	if len(errs) != 0 || len(files) != 2 {
+		t.Fatalf("files=%#v errors=%v", files, errs)
+	}
+	got := map[string]SourceKind{}
+	for _, file := range files {
+		got[filepath.Base(file.Path)] = file.Kind
+	}
+	if got["live.jsonl"] != SourceCodexLive || got["archive.jsonl"] != SourceCodexArchive {
+		t.Fatalf("source kinds = %#v", got)
+	}
+	claudeRoot := t.TempDir()
+	writeFixtureFile(t, filepath.Join(claudeRoot, "projects", "project", "claude.jsonl"), "claude\n")
+	claudeFiles, errs := ListSourceFiles(Root{Provider: ProviderClaude, Path: claudeRoot})
+	if len(errs) != 0 || len(claudeFiles) != 1 || claudeFiles[0].Kind != SourceClaudeProject {
+		t.Fatalf("Claude source kinds = %#v errors=%v", claudeFiles, errs)
+	}
+}
+
 func TestListSourceFilesFollowsRootSymlink(t *testing.T) {
 	tempDir := t.TempDir()
 	realRoot := filepath.Join(tempDir, "real")

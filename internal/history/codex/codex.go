@@ -52,6 +52,7 @@ type responseItem struct {
 type State struct {
 	Session         history.Session
 	PendingResponse PendingResponse
+	Stopped         bool
 }
 
 // PendingResponse identifies the immediately preceding user response item.
@@ -85,6 +86,9 @@ func ExtractWithState(source history.SourceReference, records []jsonl.Record, st
 	if result.Session.Confidence == "" {
 		result.Session.Confidence = history.ConfidenceUnknown
 	}
+	if state.Stopped {
+		return result, state
+	}
 	var firstRecord []byte
 	seen := make(map[string]int)
 	foundSessionMeta := false
@@ -112,6 +116,7 @@ recordsLoop:
 			nativeSessionID := firstNonEmpty(meta.SessionID, meta.ID)
 			if nativeSessionID != "" && result.Session.NativeSessionID != "" && result.Session.NativeSessionID != nativeSessionID {
 				result.Diagnostics = append(result.Diagnostics, history.Diagnostic{LineNumber: record.LineNumber, Classification: history.ClassificationUnknown, Message: "conflicting session_meta record excluded"})
+				state.Stopped = true
 				break recordsLoop
 			}
 			updateRange(&result.Session, parseTime(item.Timestamp))

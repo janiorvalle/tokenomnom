@@ -3,7 +3,7 @@
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
 `pricing`, `doctor`, `sync`, `export`, `install-skill`, `config show`, every
-`vault` subcommand, and every `schedule` subcommand. The `export` command defaults to CSV;
+`vault` subcommand, every `history` subcommand, and every `schedule` subcommand. The `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
@@ -131,6 +131,42 @@ optional provider root alone does not produce that warning.
 `binary_exists`, `configured_interval`, nullable `installed_interval`,
 `interval_drift`, and nullable `last_sync`, `last_backup`, and
 `last_auto_vault` timestamps.
+
+`data.history` reports the rebuildable transcript index without creating it.
+It contains `status`, `database_path`, `database_size_bytes`, schema and
+extractor versions, logical session/source-head/prompt/occurrence counts,
+live and provider-archive source counts, stale/error/missing counts, nullable
+last-index/attempt/complete-success timestamps, and `index_generation`.
+`last_run_error_count` makes an incomplete most-recent run explicit.
+`inspection_error` is nullable and lets doctor report a corrupt optional index
+without aborting its other diagnostics.
+
+## History Index
+
+`tokenomnom history index [--provider codex|claude] [--source provider]
+[--full] --format json`
+
+The first explicit index creates `history.db`. The provider source set includes
+Codex `sessions/`, Codex `archived_sessions/`, and Claude Code `projects/`.
+`--full` safely rebuilds selected mutable source heads; it does not index vault
+bundles. Indexing is not triggered by usage reports or ordinary syncs.
+
+`data` contains aggregate `scanned_sources`, `indexed_sources`, `new_sources`,
+`skipped_sources`, `appended_sources`, `rewritten_sources`, `missing_sources`,
+`indexed_prompts`, `oversized_prompts`, `error_count`, bounded `errors` and
+`warnings`, `full`, and `duration_ms`. Independent source failures do not roll
+back successful sources, but the command exits nonzero and does not update the
+complete-success timestamp.
+
+`tokenomnom history status --format json` returns the same bounded history
+health object used by doctor. An absent index returns `status: "not_indexed"`
+without creating a database. Status is `ready`, `degraded`, or `error` for an
+existing index according to its missing/stale/error counts.
+
+`tokenomnom history purge --format json` acquires the history lock and removes
+only `history.db` plus its SQLite WAL/SHM files. It returns `path` and
+`files_removed`. Usage data, provider transcripts, vault bundles, and config
+are untouched.
 
 ## Vault
 

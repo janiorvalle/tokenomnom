@@ -87,6 +87,19 @@ tokenomnom export --out usage.csv
 Every report accepts provider, model, and date filters. `--no-sync` uses the
 stored data immediately when you are making several queries in a row.
 
+Build the local human-prompt history index explicitly and inspect its health:
+
+```sh
+tokenomnom history index
+tokenomnom history status
+```
+
+Indexing resumes growing transcripts, detects rewrites and missing sources,
+and includes Codex live/archive files plus Claude Code project files. It is
+never run implicitly by usage reports or normal syncs. `history.db` is derived
+plaintext local data; `tokenomnom history purge` removes it without touching
+`usage.db`, provider transcripts, vault bundles, or config.
+
 ## Agents
 
 `--format json` is the stable machine interface. It returns one
@@ -205,7 +218,8 @@ supports intervals from 1 minute through 31 days.
 The SQLite store lives at `~/.local/state/tokenomnom/usage.db` on macOS and
 Linux, or `%LOCALAPPDATA%\tokenomnom\usage.db` on Windows. Use
 `TOKENOMNOM_STATE_DIR` to replace that directory. `XDG_STATE_HOME` is also
-honored on Unix.
+honored on Unix. The explicit transcript index uses `history.db` beside it and
+is deliberately excluded from automatic usage-database backups.
 
 Pricing overrides live at `~/.config/tokenomnom/pricing.json`, or under
 `TOKENOMNOM_CONFIG_DIR`. `XDG_CONFIG_HOME` is honored on Unix. An override
