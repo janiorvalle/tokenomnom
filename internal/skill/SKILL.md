@@ -37,6 +37,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
 - Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; use `--include-text` only when complete clean prompts are necessary.
 - Corpus statistics: `tokenomnom history stats --group-by provider --format json`; never infer conclusions from counts without checking coverage and warnings.
+- Broad corpus analysis: `tokenomnom history sample --strategy stratified --group-by month,repo --count 25 --format json`; use a different `--seed` only when another deterministic sample is needed.
 
 Provider, model, and explicit date filters are available on report commands.
 
@@ -52,30 +53,41 @@ Provider, model, and explicit date filters are available on report commands.
 
 For "what did I work on" or "how did I prompt X":
 
-1. Run `tokenomnom doctor --format json` and surface its warnings.
-2. Run `tokenomnom history status --format json`. If the index is missing,
+1. Run `tokenomnom doctor --format json` and `tokenomnom history status
+   --format json`; surface readiness, coverage, and warnings.
+2. If the index is missing,
    stale, degraded, or does not cover the needed dates, run
    `tokenomnom history index --format json` and surface partial-index errors.
-3. Use bounded `tokenomnom history search <query> --limit 50 --format json` for
-   exact adjacent terms, or `tokenomnom history list --limit 100 --format json`
-   to discover sessions. Follow `data.page.next_cursor` with identical filters.
+3. Apply bounded provider, date, cwd, repo, branch, source, and thread filters
+   before retrieving text.
+4. Use `tokenomnom history search <query> --limit 50 --format json` for known
+   exact adjacent language. Follow `data.page.next_cursor` with identical filters.
    Literal search treats punctuation as token separation; use `--fts-query`
    only when boolean, NEAR, or prefix syntax is actually required.
+5. For broad corpus questions without known language, use deterministic
+   stratified sampling: `tokenomnom history sample --group-by month,repo
+   --count 25 --format json`. The default seed is stable; state the strata and
+   returned-sample coverage rather than treating the sample as a generated
+   topic model. Use status or stats for full-index coverage.
+6. Use `tokenomnom history list --limit 100 --format json` to discover
+   sessions when session metadata is the evidence needed.
    Add `--root-only` for the user's own initiated sessions, `--thread-kind
    subagent` for delegated work only, and no relationship filter when both
    matter.
-4. Retrieve selected evidence with `tokenomnom history show <prompt-id>
+7. Retrieve only selected evidence with `tokenomnom history show <prompt-id>
    --format json`, `history show <session-id> --prompts --limit 100 --format
    json`, or explicit `history show <session-id> --raw --format json`.
-5. Read `data.coverage` and surface every envelope warning. Date requests can
+8. Read `data.coverage` and surface every envelope warning. Date requests can
    extend outside indexed coverage. Repository and branch metadata are
    Codex-complete but Claude-partial; prefer `--cwd` for cross-provider
    completeness and disclose that limitation in the final answer.
-6. Read `data.coverage.thread_kind.unknown` and disclose unknown relationship
+9. Read `data.coverage.thread_kind.unknown`, disclose unknown relationship
    coverage. Root/subagent classification is evidence-backed but is not
-   complete for every provider version or transcript.
+   complete for every provider version or transcript, and state the searched
+   index coverage in the final answer.
 
-Do not traverse provider directories for a supported indexed workflow. The
+Do not traverse provider directories unless tokenomnom reports an unsupported schema or index failure
+that prevents this workflow. The
 index contains clean human user prompts only at this stage; do not claim that
 search covers assistant, system, developer, tool-call, or tool-result text.
 

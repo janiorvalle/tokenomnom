@@ -105,6 +105,9 @@ func Index(options Options) (Summary, error) {
 	}
 	attempt := now()
 	selected := selectedProviders(options.Providers)
+	if err := options.Store.PrepareSampling(); err != nil {
+		return summary, fmt.Errorf("prepare history sampling index: %w", err)
+	}
 
 	checkpoints, err := options.Store.Checkpoints()
 	if err != nil {

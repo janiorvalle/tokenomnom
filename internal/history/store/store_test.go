@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -95,11 +96,16 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; DROP TABLE session_thread_supports; DROP TABLE session_relation_supports; DROP TRIGGER session_relations_parent_delete; DROP TABLE session_relations;
+	if _, err := database.db.Exec(`DROP TRIGGER sample_strata_session_delete; DROP TRIGGER sample_strata_prompt_delete; DROP TRIGGER sample_strata_group_insert; DROP TRIGGER sample_strata_group_delete; DROP TABLE sample_strata; DROP TABLE sample_groups;
+		DROP INDEX sessions_sample_key_idx; DROP INDEX sessions_sample_month_idx; DROP INDEX sessions_sample_repo_idx; DROP INDEX sessions_sample_thread_idx; DROP INDEX prompts_sample_key_idx; DROP INDEX prompts_session_sample_key_idx;
+		ALTER TABLE sessions DROP COLUMN sample_key;
+		ALTER TABLE prompts DROP COLUMN sample_key;
+		DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; DROP TABLE session_thread_supports; DROP TABLE session_relation_supports; DROP TRIGGER session_relations_parent_delete; DROP TABLE session_relations;
 		ALTER TABLE sessions DROP COLUMN thread_evidence;
 		ALTER TABLE sessions DROP COLUMN thread_confidence;
 		ALTER TABLE sessions DROP COLUMN thread_rule_version;
 		ALTER TABLE sessions DROP COLUMN forked_from_message_id;
+		DELETE FROM meta WHERE key='sampling_ready';
 		UPDATE meta SET value='2' WHERE key='schema_version';
 		UPDATE meta SET value='1' WHERE key='extractor_version'`); err != nil {
 		t.Fatal(err)
@@ -121,6 +127,26 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	}
 	if extractorVersion, err := database.Meta("extractor_version"); err != nil || extractorVersion != fmt.Sprint(history.ExtractorVersion) {
 		t.Fatalf("migrated extractor version=%q err=%v", extractorVersion, err)
+	}
+	if ready, err := database.Meta("sampling_ready"); err != nil || ready != "0" {
+		t.Fatalf("migration sampling readiness=%q err=%v", ready, err)
+	}
+	if _, err := database.Sample(SampleQuery{Count: 1}); err == nil || !strings.Contains(err.Error(), "run history index") {
+		t.Fatalf("sample before explicit preparation error=%v", err)
+	}
+	if err := database.PrepareSampling(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"sessions", "prompts"} {
+		var publicID string
+		var key []byte
+		if err := database.db.QueryRow(`SELECT public_id,sample_key FROM `+table+` LIMIT 1`).Scan(&publicID, &key); err != nil || !bytes.Equal(key, sampleKey(publicID)) {
+			t.Fatalf("migrated %s sample key=%x public_id=%q err=%v", table, key, publicID, err)
+		}
+	}
+	var strata int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sample_strata`).Scan(&strata); err != nil || strata < 14 {
+		t.Fatalf("migrated sample strata=%d err=%v", strata, err)
 	}
 }
 
@@ -1316,6 +1342,14 @@ func TestProviderArchiveMovePreservesSourceIDAndCopyDoesNot(t *testing.T) {
 	}
 	if occurrencePath != archive.Path {
 		t.Fatalf("relocated occurrence path = %q", occurrencePath)
+	}
+	archiveSample, err := database.Sample(SampleQuery{PromptQuery: PromptQuery{Source: CatalogSourceProviderArchive}, Count: 1})
+	if err != nil || len(archiveSample.Items) != 1 {
+		t.Fatalf("archive sample after relocation=%+v err=%v", archiveSample, err)
+	}
+	liveSample, err := database.Sample(SampleQuery{PromptQuery: PromptQuery{Source: CatalogSourceProviderLive}, Count: 1})
+	if err != nil || len(liveSample.Items) != 0 {
+		t.Fatalf("live sample after relocation=%+v err=%v", liveSample, err)
 	}
 	extract.Source = archive
 	moved, err := database.ApplySource(extract, head(archive, "hash", 10, 1), ApplyReplace)

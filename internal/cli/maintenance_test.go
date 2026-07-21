@@ -3,12 +3,17 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 )
 
@@ -123,6 +128,131 @@ func TestScheduledSyncIsQuietAndSkipsHeldStore(t *testing.T) {
 	warningOutput := executeMaintenanceCommand(t, broken, "sync", "--scheduled")
 	if strings.Count(warningOutput, "\n") != 1 || !strings.Contains(warningOutput, "warnings: 1") {
 		t.Fatalf("scheduled warning output is not one summarized line:\n%s", warningOutput)
+	}
+}
+
+func TestScheduledHistoryIndexIsOptInDueAndReportSyncNeverRunsIt(t *testing.T) {
+	paths := setupMaintenanceTest(t, false, filepath.Join(t.TempDir(), "vault"))
+	configPath := filepath.Join(paths.configDir, "config.toml")
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("[history]\nauto_index = true\nauto_interval = \"24h\"\nproviders = [\"codex\"]\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeTextFixture(t, filepath.Join(paths.codexDir, "sessions", "history.jsonl"), historyCodexFixture("scheduled-history", "scheduled history prompt"))
+	historyPath := filepath.Join(paths.stateDir, historystore.DatabaseName)
+	executeMaintenanceCommand(t, paths, "summary")
+	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
+		t.Fatalf("ordinary report created history index: %v", err)
+	}
+
+	output := executeMaintenanceCommand(t, paths, "sync", "--scheduled", "--format", "json")
+	var envelope struct {
+		Data jsonSyncData `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatalf("decode scheduled sync: %v\n%s", err, output)
+	}
+	if envelope.Data.AutoHistory == nil || !envelope.Data.AutoHistory.Ran || envelope.Data.AutoHistory.ErrorCount != 0 {
+		t.Fatalf("scheduled history result = %+v", envelope.Data.AutoHistory)
+	}
+	health, err := historystore.InspectHealth(historyPath)
+	if err != nil || !health.Exists || health.LastAttemptUnix == 0 || health.LastCompleteSuccessUnix != 0 || health.Prompts != 1 {
+		t.Fatalf("scheduled history health=%+v err=%v", health, err)
+	}
+
+	output = executeMaintenanceCommand(t, paths, "sync", "--scheduled", "--format", "json")
+	envelope = struct {
+		Data jsonSyncData `json:"data"`
+	}{}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.AutoHistory != nil {
+		t.Fatalf("history maintenance ignored interval: %+v", envelope.Data.AutoHistory)
+	}
+}
+
+func TestScheduledHistoryFailureIsOneNonFatalWarningAfterVaultAndOutsideUsageLock(t *testing.T) {
+	paths := setupMaintenanceTest(t, true, filepath.Join(t.TempDir(), "vault"))
+	writeMaintenanceSource(t, paths.codexDir, "history-order.jsonl")
+	original := dueHistoryIndex
+	dueHistoryIndex = func(_ *cobra.Command, _ []discover.Root) (autoHistoryResult, error) {
+		databasePath := filepath.Join(paths.stateDir, store.DatabaseName)
+		release, err := store.Lock(databasePath)
+		if err != nil {
+			t.Fatalf("usage lock remained held during history maintenance: %v", err)
+		}
+		release()
+		database, err := store.Open(databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files, err := database.VaultFiles()
+		database.Close()
+		if err != nil || len(files) != 1 {
+			t.Fatalf("history ran before due vault maintenance: files=%d err=%v", len(files), err)
+		}
+		historyPath := filepath.Join(paths.stateDir, historystore.DatabaseName)
+		historyRelease, err := historystore.Lock(historyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		historyDatabase, err := historystore.Open(historyPath)
+		if err != nil {
+			historyRelease()
+			t.Fatal(err)
+		}
+		if err := historyDatabase.RecordRun(time.Now(), 1); err != nil {
+			historyDatabase.Close()
+			historyRelease()
+			t.Fatal(err)
+		}
+		historyDatabase.Close()
+		historyRelease()
+		return autoHistoryResult{Ran: true, ErrorCount: 1}, errors.New("synthetic history failure")
+	}
+	t.Cleanup(func() { dueHistoryIndex = original })
+	output := executeMaintenanceCommand(t, paths, "sync", "--scheduled")
+	if !strings.Contains(output, "sync complete:") || !strings.Contains(output, "warnings: 1") || strings.Count(output, "WARNING: auto-index history:") != 1 {
+		t.Fatalf("scheduled history failure output=%q", output)
+	}
+	doctorOutput := executeMaintenanceCommand(t, paths, "doctor", "--format", "json")
+	envelope := decodeEnvelope(t, doctorOutput)
+	var doctor struct {
+		History jsonHistoryHealth `json:"history"`
+	}
+	if err := json.Unmarshal(envelope.Data, &doctor); err != nil || doctor.History.LastErrorSummary == nil || !strings.Contains(*doctor.History.LastErrorSummary, "1 error") || len(envelope.Warnings) != 1 {
+		t.Fatalf("doctor history failure err=%v history=%+v warnings=%+v", err, doctor.History, envelope.Warnings)
+	}
+}
+
+func TestFilteredHistoryFailureRemainsVisibleWithoutAdvancingFullSuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), historystore.DatabaseName)
+	database, err := historystore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	if err := database.RecordScopedRun(first, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordScopedRun(second, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	health, err := historystore.InspectHealth(path)
+	if err != nil || health.LastAttemptUnix != second.Unix() || health.LastCompleteSuccessUnix != first.Unix() || health.LastRunErrorCount != 2 || health.LastErrorSummary == "" {
+		t.Fatalf("filtered failure health=%+v err=%v", health, err)
 	}
 }
 

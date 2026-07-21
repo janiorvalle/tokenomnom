@@ -97,7 +97,9 @@ tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
 tokenomnom history stats --group-by provider
+tokenomnom history sample --group-by month,repo --count 25
 tokenomnom history status
+tokenomnom history purge
 ```
 
 Indexing resumes growing transcripts, detects rewrites and missing sources,
@@ -112,8 +114,14 @@ use `--cwd` for cross-provider completeness and read JSON coverage warnings.
 Root/subagent filters use direct provider evidence or versioned deterministic
 provider rules; missing parent metadata remains explicitly `unknown`, and
 unresolved native parent IDs remain inspectable in JSON relationship details.
-Indexing is never run implicitly by usage reports or normal syncs. `history.db` is derived
-plaintext local data; `tokenomnom history purge` removes it without touching
+Sampling walks indexed SHA-256 keys from a deterministic seed rather than
+sorting the corpus randomly. It defaults to 25 logical prompts, caps results at
+100, and stratifies deterministically when `--group-by month,repo,thread-kind`
+is supplied. Full prompt text still requires `--include-text`.
+Indexing is never run implicitly by usage reports or normal syncs. `history.db`
+contains derived plaintext prompt content and metadata, may be more sensitive
+than `usage.db`, and is excluded from automatic backups. Protect the state
+directory as you would the provider transcripts. `tokenomnom history purge` removes it without touching
 `usage.db`, provider transcripts, vault bundles, or config.
 
 ## Agents
@@ -147,8 +155,10 @@ tokenomnom schedule status
 tokenomnom schedule uninstall
 ```
 
-Each tick runs one quiet `sync --scheduled`, then performs a due database
-backup and a due settled-transcript auto-vault pass. tokenomnom uses launchd
+Each tick runs one quiet `sync --scheduled`. Maintenance order is usage sync,
+due database backup, due settled-transcript auto-vault, then due history
+indexing when explicitly enabled. History failures produce one warning but do
+not discard successful usage, backup, or vault work. tokenomnom uses launchd
 on macOS, a systemd user timer on Linux, and Windows Task Scheduler on Windows.
 There is no daemon, watcher, or resident tokenomnom process.
 
@@ -195,6 +205,11 @@ providers = ["codex", "claude"]
 auto = true
 auto_interval = "24h"
 
+[history]
+auto_index = false
+auto_interval = "24h"
+providers = ["codex", "claude"]
+
 [schedule]
 interval = "24h"
 ```
@@ -224,6 +239,11 @@ time before a transcript is eligible for archiving, and `vault.providers`
 selects `codex`, `claude`, or both. When `vault.auto` is true, successful syncs
 run a settled-file archive pass at most once per `vault.auto_interval`.
 Failures warn and retry on a later tick; source transcripts are never deleted.
+
+`history.auto_index` is explicit consent for scheduled plaintext indexing and
+defaults to `false`. When enabled, only `sync --scheduled` runs a due index pass
+at most once per `history.auto_interval`; ordinary reports and ordinary `sync`
+never do. `history.providers` selects `codex`, `claude`, or both.
 
 `schedule.interval` controls the installed OS schedule and defaults to 24
 hours. It must be a whole-second Go duration. Changing it requires another

@@ -97,6 +97,13 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 		if err != nil {
 			return err
 		}
+		var beforeSampleMetadata storedSessionMetadata
+		if preferredSessionID != 0 {
+			beforeSampleMetadata, err = tx.readSessionMetadata(preferredSessionID)
+			if err != nil {
+				return err
+			}
+		}
 		if err := tx.promoteClaudeSubagentSessionIdentity(extraction.Provider, extraction.Session, preferredSessionID); err != nil {
 			return err
 		}
@@ -155,6 +162,9 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 			if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 				return err
 			}
+			if err := tx.refreshAllSampleStrata(sessionID); err != nil {
+				return err
+			}
 			return tx.advanceGenerationIf(advanceGeneration || relationshipChanged)
 		}
 		promptIDs, promptDBIDs, err := tx.ensurePrompts(sessionID, extraction.Prompts)
@@ -177,6 +187,18 @@ func (s *Store) ApplySourceWithGeneration(extraction history.Extraction, head hi
 			return err
 		}
 		if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
+			return err
+		}
+		afterSampleMetadata, err := tx.readSessionMetadata(sessionID)
+		if err != nil {
+			return err
+		}
+		promptDatabaseIDs := promptIDValues(promptDBIDs)
+		if mode == ApplyAppend && preferredSessionID == sessionID && !sampleRelevantSessionMetadataChanged(beforeSampleMetadata, afterSampleMetadata) && !threadChanged {
+			if err := tx.refreshPromptSampleStrata(promptDatabaseIDs); err != nil {
+				return err
+			}
+		} else if err := tx.refreshAllSampleStrata(sessionID); err != nil {
 			return err
 		}
 		return tx.advanceGenerationIf(advanceGeneration || relationshipChanged)
@@ -417,6 +439,9 @@ func (s *Store) RecordVaultBundleError(archive string, attempt time.Time, bundle
 			if err := tx.recomputeSessionBounds(sessionID); err != nil {
 				return err
 			}
+			if err := tx.refreshAllSampleStrata(sessionID); err != nil {
+				return err
+			}
 		}
 		return tx.advanceGenerationIf(true)
 	})
@@ -582,6 +607,9 @@ func (tx *Tx) preserveSnapshot(extraction history.Extraction, snapshot history.P
 	if err := tx.finishSourceSessionReconciliation(preferredSessionID, sessionID); err != nil {
 		return ApplyResult{}, err
 	}
+	if err := tx.refreshAllSampleStrata(sessionID); err != nil {
+		return ApplyResult{}, err
+	}
 	return ApplyResult{SessionID: sessionPublicID, SourceID: snapshotPublicID, PromptIDs: promptIDs}, nil
 }
 
@@ -628,7 +656,7 @@ func (tx *Tx) restoreVaultPromptIDs(provider history.Provider, sessionID int64, 
 			if err := tx.recordPublicIDAlias(currentID, restoredID, "prompt"); err != nil {
 				return err
 			}
-			if _, err := tx.tx.Exec(`UPDATE prompts SET public_id=? WHERE id=?`, restoredID, databaseID); err != nil {
+			if _, err := tx.tx.Exec(`UPDATE prompts SET public_id=?,sample_key=? WHERE id=?`, restoredID, sampleKey(restoredID), databaseID); err != nil {
 				return fmt.Errorf("restore vault prompt ID: %w", err)
 			}
 			publicIDs[logicalKey] = restoredID
@@ -667,6 +695,13 @@ func (s *Store) RelocateSource(provider history.Provider, oldPath string, source
 		}
 		if _, err := tx.tx.Exec(`DELETE FROM locations WHERE source_head_id=? AND id<>? AND available=0 AND NOT EXISTS (SELECT 1 FROM occurrences WHERE occurrences.location_id=locations.id)`, sourceID, locationID); err != nil {
 			return fmt.Errorf("remove retired source locations: %w", err)
+		}
+		var sessionID int64
+		if err := tx.tx.QueryRow(`SELECT session_id FROM source_heads WHERE id=?`, sourceID).Scan(&sessionID); err != nil {
+			return err
+		}
+		if err := tx.refreshAllSampleStrata(sessionID); err != nil {
+			return err
 		}
 		return tx.advanceGenerationIf(true)
 	})
@@ -756,7 +791,23 @@ func (tx *Tx) recomputeSessionBounds(sessionID int64) error {
 	if _, err := tx.tx.Exec(`UPDATE sessions SET first_ts=?,last_ts=? WHERE id=?`, nullableTimestamp(earliestTimestamp(firstValues...)), nullableTimestamp(latestTimestamp(lastValues...)), sessionID); err != nil {
 		return fmt.Errorf("recompute history session timestamp bounds: %w", err)
 	}
-	return nil
+	return tx.refreshSessionSampleStratum(sessionID)
+}
+
+func sampleRelevantSessionMetadataChanged(before, after storedSessionMetadata) bool {
+	return before.cwd != after.cwd || before.repositoryName != after.repositoryName || before.branch != after.branch || before.threadKind != after.threadKind
+}
+
+func promptIDValues(values map[string]int64) []int64 {
+	result := make([]int64, 0, len(values))
+	seen := make(map[int64]bool, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (tx *Tx) finishSourceSessionReconciliation(previousSessionID, sessionID int64) error {
@@ -1151,14 +1202,14 @@ func (tx *Tx) ensureSession(provider history.Provider, value history.Session, pr
 		result, err := tx.tx.Exec(`INSERT INTO sessions(
 			public_id, provider, identity_key, native_session_id, fallback_key, cwd,
 			repository_root, repository_name, repository_identity, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
-			parent_native_session_id, forked_from_session_id, forked_from_message_id, originator, evidence, confidence, first_ts, last_ts)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
+			parent_native_session_id, forked_from_session_id, forked_from_message_id, originator, evidence, confidence, first_ts, last_ts, sample_key)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
 			nullText(value.NativeSessionID), value.FallbackKey, nullText(value.CWD),
 			nullText(value.RepositoryRoot), nullText(value.RepositoryName), nullText(value.RepositoryIdentity),
 			nullText(value.Branch), normalizedThreadKind(value.ThreadKind), value.ThreadEvidence, normalizedConfidence(value.ThreadConfidence), value.ThreadRuleVersion,
 			nullText(value.ParentNativeSessionID), nullText(value.ForkedFromSessionID), nullText(value.ForkedFromMessageID),
 			nullText(value.Originator), nullText(value.Evidence), normalizedConfidence(value.Confidence),
-			timeText(value.FirstTimestamp), timeText(value.LastTimestamp))
+			timeText(value.FirstTimestamp), timeText(value.LastTimestamp), sampleKey(publicID))
 		if err != nil {
 			return 0, "", fmt.Errorf("insert history session: %w", err)
 		}
@@ -1357,9 +1408,9 @@ func (tx *Tx) ensurePrompts(sessionID int64, prompts []history.Prompt) (map[stri
 			if err != nil {
 				return nil, nil, err
 			}
-			result, err := tx.tx.Exec(`INSERT INTO prompts(public_id,session_id,logical_key,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, sessionID, prompt.LogicalKey, nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText,
-				normalizedClassification(prompt.Classification), boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion)
+			result, err := tx.tx.Exec(`INSERT INTO prompts(public_id,session_id,logical_key,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version,sample_key)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, sessionID, prompt.LogicalKey, nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText,
+				normalizedClassification(prompt.Classification), boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion, sampleKey(publicID))
 			if err != nil {
 				return nil, nil, fmt.Errorf("insert logical prompt: %w", err)
 			}

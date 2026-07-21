@@ -284,3 +284,56 @@ func TestCodexSourceAliasIsolationDoesNotCreateConversationalEdge(t *testing.T) 
 		t.Fatalf("physical alias created %d relationship(s), err=%v", count, err)
 	}
 }
+
+func TestRehomeSessionRelationshipsPreservesEdgesSupportsAndResolution(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+
+	parentSource := sourceRef("/provider/merge-parent.jsonl", history.LocationProviderLive)
+	parent := extraction("native:merge-parent", "merge-parent", parentSource, prompt("native:p", "p", "parent", 1))
+	if _, err := database.ApplySource(parent, head(parentSource, "parent-hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	relations := []history.Relationship{
+		{Kind: history.RelationFork, ParentNativeSessionID: "merge-parent", ProviderNativeValue: "merge-parent", Evidence: "resolved", Confidence: history.ConfidenceExact, RuleVersion: history.RelationshipRuleVersion},
+		{Kind: history.RelationSubagent, ParentNativeSessionID: "missing-parent", ProviderNativeValue: "missing-parent", Evidence: "unresolved", Confidence: history.ConfidenceExact, RuleVersion: history.RelationshipRuleVersion},
+	}
+	donorSource := sourceRef("/provider/merge-donor.jsonl", history.LocationProviderLive)
+	donor := extraction("native:merge-target", "merge-target", donorSource, prompt("native:p", "p", "donor", 1))
+	donor.Relationships = relations
+	if _, err := database.ApplySource(donor, head(donorSource, "donor-hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	recipientSource := sourceRef("/provider/merge-recipient.jsonl", history.LocationProviderLive)
+	recipient := extraction("fallback:source-path:/provider/merge-recipient.jsonl", "", recipientSource, prompt("native:p", "p", "recipient", 1))
+	recipient.Relationships = relations
+	if _, err := database.ApplySource(recipient, head(recipientSource, "recipient-hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	promoted := recipient
+	promoted.Session.IdentityKey = "native:merge-target"
+	promoted.Session.NativeSessionID = "merge-target"
+	result, err := database.ApplySource(promoted, head(recipientSource, "recipient-hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sessions, edges, supports, resolved, unresolved int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE native_session_id='merge-target'`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRow(`SELECT COUNT(*),SUM(resolution_state='resolved'),SUM(resolution_state='unresolved') FROM session_relations`).Scan(&edges, &resolved, &unresolved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM session_relation_supports`).Scan(&supports); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 || edges != 2 || supports != 4 || resolved != 1 || unresolved != 1 {
+		t.Fatalf("merge relationships sessions=%d edges=%d supports=%d resolved=%d unresolved=%d", sessions, edges, supports, resolved, unresolved)
+	}
+	session, err := database.GetSession(result.SessionID)
+	if err != nil || len(session.Relationships) != 2 {
+		t.Fatalf("merged session=%+v err=%v", session, err)
+	}
+}

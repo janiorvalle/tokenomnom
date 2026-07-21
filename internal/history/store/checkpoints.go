@@ -72,6 +72,8 @@ type Health struct {
 	LastAttemptUnix         int64
 	LastCompleteSuccessUnix int64
 	LastRunErrorCount       int
+	LastErrorSummary        string
+	SamplingReady           bool
 	IndexGeneration         int64
 	InspectionError         string
 }
@@ -181,6 +183,9 @@ func (s *Store) MarkSourceMissing(provider history.Provider, path string) (bool,
 		if err := tx.recomputeSessionBounds(sessionID); err != nil {
 			return err
 		}
+		if err := tx.refreshAllSampleStrata(sessionID); err != nil {
+			return err
+		}
 		changed = true
 		return tx.advanceGenerationIf(true)
 	})
@@ -257,23 +262,29 @@ func (s *Store) RecordRun(attempt time.Time, errorCount int) error {
 	return s.RecordScopedRun(attempt, errorCount, true)
 }
 
-// RecordScopedRun always records the attempt, but filtered runs do not replace
-// the health of the last run that covered every provider.
+// RecordScopedRun always records attempts and failures. Successful filtered
+// runs do not clear errors or advance success for the full provider scope.
 func (s *Store) RecordScopedRun(attempt time.Time, errorCount int, completeScope bool) error {
 	return s.Transaction(func(tx *Tx) error {
 		if err := tx.SetMeta("last_attempt_unix", strconv.FormatInt(attempt.Unix(), 10)); err != nil {
 			return err
 		}
+		if errorCount > 0 {
+			if err := tx.SetMeta("last_run_error_count", strconv.Itoa(errorCount)); err != nil {
+				return err
+			}
+			return tx.SetMeta("last_error_summary", fmt.Sprintf("history index completed with %d error(s)", errorCount))
+		}
 		if !completeScope {
 			return nil
 		}
-		if errorCount == 0 {
-			if err := tx.SetMeta("last_run_error_count", "0"); err != nil {
-				return err
-			}
-			return tx.SetMeta("last_complete_success_unix", strconv.FormatInt(attempt.Unix(), 10))
+		if err := tx.SetMeta("last_run_error_count", "0"); err != nil {
+			return err
 		}
-		return tx.SetMeta("last_run_error_count", strconv.Itoa(errorCount))
+		if err := tx.SetMeta("last_error_summary", ""); err != nil {
+			return err
+		}
+		return tx.SetMeta("last_complete_success_unix", strconv.FormatInt(attempt.Unix(), 10))
 	})
 }
 
@@ -353,6 +364,8 @@ var healthQuery = `SELECT
 		COALESCE((SELECT value FROM meta WHERE key='last_attempt_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_complete_success_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_run_error_count'),'0'),
+		COALESCE((SELECT value FROM meta WHERE key='last_error_summary'),''),
+		COALESCE((SELECT value FROM meta WHERE key='sampling_ready'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='index_generation'),'0')`
 
 type rowScanner interface {
@@ -367,7 +380,8 @@ func scanHealth(row rowScanner, value *Health) error {
 		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,
 		&value.BrokenSkippedBundles, &value.CoverageFirst, &value.CoverageLast,
 		&value.StaleSources, &value.ErrorSources, &value.MissingSources,
-		&value.LastIndexUnix, &value.LastAttemptUnix, &value.LastCompleteSuccessUnix, &value.LastRunErrorCount, &value.IndexGeneration)
+		&value.LastIndexUnix, &value.LastAttemptUnix, &value.LastCompleteSuccessUnix, &value.LastRunErrorCount, &value.LastErrorSummary,
+		&value.SamplingReady, &value.IndexGeneration)
 }
 
 func parseOptionalTime(value string) *time.Time {

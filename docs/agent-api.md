@@ -139,7 +139,11 @@ live, provider-archive, preserved-snapshot, and vault-location counts;
 provider-live-only, provider-archive-only, vault-only, exact-live-and-vaulted,
 and unavailable-metadata coverage; indexed vault bundle/version counts;
 broken/skipped bundle counts; stale/error/missing counts; nullable coverage and
-last-index/attempt/complete-success timestamps, and `index_generation`.
+last-index/attempt/complete-success timestamps, `next_due`, and
+`index_generation`. `sampling_ready` is false after an upgrade that still needs
+the explicit corpus-sized sampling backfill; `history index` performs it while
+database open remains bounded. It also reports `auto_index_enabled`, `auto_interval`,
+configured `providers`, and nullable `last_error_summary` without prompt text.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
 without aborting its other diagnostics.
@@ -254,6 +258,37 @@ adds at most 20 provenance objects per logical prompt; total occurrence counts
 remain exact and truncation is explicit. Its `data.page`, `coverage`, cursor,
 warning, and optional-text contracts match search.
 
+## History Sample
+
+`tokenomnom history sample [--unit prompt|session] [--strategy
+random|stratified] [--group-by month,repo,thread-kind] [--count N] [--seed
+STRING] [shared filters] [--include-text] --format json`
+
+The default unit is `prompt`, the default count is 25, and the maximum is 100.
+Without grouping, the default strategy is deterministic random sampling; with
+grouping it is stratified. The omitted seed is the constant `tokenomnom`.
+Logical prompts and sessions are sampled once regardless of how many live or
+vault occurrences they have. Default items contain metadata and bounded
+snippets; complete clean text requires `--include-text`.
+
+Each unit has an indexed 64-bit key from SHA-256 of its stable opaque ID. The
+seed hashes to a pivot, selection walks keys at or after the pivot, then wraps
+once. There is no `ORDER BY random()` or whole-FTS-corpus random sort.
+Stratification sorts nonempty normalized groups, gives each group one unit
+while capacity remains, then distributes the remainder round-robin without
+duplicates. If groups outnumber the count, the seed pivot deterministically
+selects groups. Missing month, repository, or thread metadata is the explicit
+`unknown` group; session month uses its first known timestamp.
+
+`data.items` is always an array. Each item has `unit`, grouping `groups`, and
+either a `prompt` or `session` object. Session samples may add `text` only with
+`--include-text`. The response also includes the effective `strategy`, sorted
+`group_by`, returned `count`, effective `seed`, `index_generation`, and
+`coverage`. Sample coverage describes the returned logical sessions, not a
+corpus-wide aggregate; use `history status` or `history stats` when full index
+coverage is needed. Repository and branch filters add bounded provider-uneven
+warnings without scanning excluded rows.
+
 ## History Stats
 
 `tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday,hour]
@@ -350,13 +385,17 @@ returns `uninstalled: true`.
 
 The scheduler is per-user: launchd on macOS, a systemd user timer on Linux,
 and Windows Task Scheduler on Windows. It runs the installed absolute binary
-as `sync --scheduled`; no daemon remains resident.
+as `sync --scheduled`; no daemon remains resident. Scheduled maintenance runs
+usage sync, due backup, due vault archive, then due history indexing. History
+indexing runs only when `history.auto_index = true`, after the usage process
+lock is released. Its failure is one bounded warning and does not make an
+otherwise successful scheduled usage sync exit nonzero.
 
 ## Config Show
 
 `tokenomnom config show --format json` uses command `config`. `data.config`
-contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`, and
-`schedule` sections. `data.sources` maps every supported dotted key to
+contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`,
+`history`, and `schedule` sections. `data.sources` maps every supported dotted key to
 `default`, `config`, an environment source, or `flag`; `path` is the resolved
 config path and `found` says whether the file existed.
 
@@ -368,8 +407,10 @@ config path and `found` says whether the file existed.
 `files_rewritten`, `files_missing`, `events_applied`, `usage_rows`,
 `unknown_model_tokens`, `unclassified_cache_write_tokens`, `full_reingest`, and
 `duration_ms`, `scheduled`, `skipped`, optional `skip_reason`, and optional
-`auto_vault`. Auto-vault data contains `ran`, `archived`, per-provider archive
-counts, and warnings. Its `warnings` array repeats the sync-specific envelope
+`auto_vault`, and optional scheduled `auto_history`. Auto-vault data contains
+`ran`, `archived`, per-provider archive counts, and warnings. Auto-history data
+contains `ran`, provider scan/index counts, indexed prompt and vault-bundle
+counts, and `error_count`. Its `warnings` array repeats the sync-specific envelope
 warnings so the sync result remains self-contained. A scheduled tick that
 finds the store lock held succeeds with `skipped: true` and `skip_reason:
 "store in use"`.

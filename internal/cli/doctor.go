@@ -282,7 +282,10 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 	if err != nil {
 		return err
 	}
-	data.History = historyHealthJSON(historyHealth)
+	data.History = configuredHistoryHealth(cmd, historyHealth)
+	if historyHealth.LastErrorSummary != "" {
+		warnings = append(warnings, historyHealth.LastErrorSummary)
+	}
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
 }
 
