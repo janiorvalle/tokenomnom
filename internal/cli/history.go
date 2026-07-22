@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -42,6 +43,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	var provider string
 	var source string
 	var full bool
+	var verbose bool
 	command := &cobra.Command{
 		Use:   "index",
 		Short: "Incrementally index provider transcript history",
@@ -185,7 +187,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					}
 				}
 			}
-			if writeErr := writeHistoryIndex(cmd, provider, source, providerSummary, vaultSummary, threadKindDeltas); writeErr != nil {
+			if writeErr := writeHistoryIndex(cmd, provider, source, providerSummary, vaultSummary, threadKindDeltas, verbose); writeErr != nil {
 				return writeErr
 			}
 			indexErr := errors.Join(providerErr, vaultErr)
@@ -198,6 +200,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	command.Flags().StringVar(&provider, "provider", "", "index only codex or claude")
 	command.Flags().StringVar(&source, "source", "all", "source set to index (all, provider, or vault)")
 	command.Flags().BoolVar(&full, "full", false, "rebuild selected source kinds")
+	command.Flags().BoolVar(&verbose, "verbose", false, "include bounded per-record exclusion details")
 	return command
 }
 
@@ -468,6 +471,7 @@ type jsonHistoryIndexData struct {
 	OversizedPrompts      int                             `json:"oversized_prompts"`
 	ReclassifiedPrompts   int                             `json:"reclassified_prompts"`
 	PromptKindCounts      map[history.PromptKind]int      `json:"prompt_kind_counts"`
+	ExclusionCounts       []indexer.ExclusionCount        `json:"exclusion_counts"`
 	ErrorCount            int                             `json:"error_count"`
 	Errors                []indexer.Issue                 `json:"errors"`
 	Warnings              []indexer.Issue                 `json:"warnings"`
@@ -484,9 +488,14 @@ type jsonHistoryIndexData struct {
 	ThreadKindDeltas      historystore.ThreadKindCoverage `json:"thread_kind_deltas"`
 }
 
-func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary, threadKindDeltas historystore.ThreadKindCoverage) error {
+func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary, threadKindDeltas historystore.ThreadKindCoverage, verbose bool) error {
 	errorsFound := append(append([]indexer.Issue{}, summary.Errors...), vaultSummary.Errors...)
-	warnings := append(append([]indexer.Issue{}, summary.Warnings...), vaultSummary.Warnings...)
+	warnings := []indexer.Issue{}
+	if verbose {
+		warnings = append(append(warnings, summary.Warnings...), vaultSummary.Warnings...)
+	}
+	exclusionCounts := append(append([]indexer.ExclusionCount{}, summary.ExclusionCounts...), vaultSummary.ExclusionCounts...)
+	exclusionCounts = combineExclusionCounts(exclusionCounts)
 	errorCount := summary.ErrorCount + vaultSummary.ErrorCount
 	duration := summary.Duration
 	if source == "vault" || source == "all" {
@@ -505,7 +514,7 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 			ScannedSources: summary.ScannedSources, IndexedSources: summary.IndexedSources, NewSources: summary.NewSources,
 			SkippedSources: summary.SkippedSources, AppendedSources: summary.AppendedSources, RewrittenSources: summary.RewrittenSources,
 			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts + vaultSummary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts + vaultSummary.OversizedPrompts,
-			ReclassifiedPrompts: summary.ReclassifiedPrompts + vaultSummary.ReclassifiedPrompts, PromptKindCounts: promptKindCounts,
+			ReclassifiedPrompts: summary.ReclassifiedPrompts + vaultSummary.ReclassifiedPrompts, PromptKindCounts: promptKindCounts, ExclusionCounts: exclusionCounts,
 			ErrorCount: errorCount, Errors: errorsFound, Warnings: warnings, Full: summary.Full || vaultSummary.Full,
 			DurationMS: duration.Milliseconds(), Source: source,
 			SelectedVaultBundles: vaultSummary.SelectedBundles, SelectedVaultVersions: vaultSummary.SelectedVersions,
@@ -521,7 +530,51 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 	fmt.Fprintf(cmd.OutOrStdout(), "  Prompts: %d  Oversized: %d  Errors: %d  Duration: %s\n", summary.IndexedPrompts+vaultSummary.IndexedPrompts, summary.OversizedPrompts+vaultSummary.OversizedPrompts, errorCount, duration.Round(time.Millisecond))
 	fmt.Fprintf(cmd.OutOrStdout(), "  Reclassified prompts: %d\n", summary.ReclassifiedPrompts+vaultSummary.ReclassifiedPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Thread kinds: root %+d  subagent %+d  unknown %+d\n", threadKindDeltas.Root, threadKindDeltas.Subagent, threadKindDeltas.Unknown)
+	for _, count := range exclusionCounts {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Excluded %s / %s: %d\n", count.Classification, count.Reason, count.Count)
+	}
+	for _, indexError := range errorsFound {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Error: %s\n", formatHistoryIndexIssue(indexError))
+	}
+	if verbose {
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Warning: %s\n", formatHistoryIndexIssue(warning))
+		}
+	}
 	return nil
+}
+
+func combineExclusionCounts(values []indexer.ExclusionCount) []indexer.ExclusionCount {
+	type key struct {
+		classification history.Classification
+		reason         string
+	}
+	counts := make(map[key]int, len(values))
+	for _, value := range values {
+		counts[key{classification: value.Classification, reason: value.Reason}] += value.Count
+	}
+	combined := make([]indexer.ExclusionCount, 0, len(counts))
+	for value, count := range counts {
+		combined = append(combined, indexer.ExclusionCount{Classification: value.classification, Reason: value.reason, Count: count})
+	}
+	slices.SortFunc(combined, func(left, right indexer.ExclusionCount) int {
+		if compared := strings.Compare(string(left.Classification), string(right.Classification)); compared != 0 {
+			return compared
+		}
+		return strings.Compare(left.Reason, right.Reason)
+	})
+	return combined
+}
+
+func formatHistoryIndexIssue(issue indexer.Issue) string {
+	location := issue.Path
+	if issue.Provider != "" {
+		location = issue.Provider + ":" + location
+	}
+	if location == "" {
+		return issue.Error
+	}
+	return location + ": " + issue.Error
 }
 
 func historyStatusValue(health historystore.Health) string {

@@ -5,10 +5,10 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 5
+	ExtractorVersion = 6
 	// PromptKindVersion identifies the exact wrapper allowlist used to refine
 	// provider user records without guessing from their prose.
-	PromptKindVersion = 1
+	PromptKindVersion = 2
 	// RelationshipRuleVersion identifies the deterministic provider rules used
 	// to classify threads and extract conversational relationships.
 	RelationshipRuleVersion = 2

@@ -161,7 +161,7 @@ intentionally separate and existing count fields keep their original meaning.
 ## History Index
 
 `tokenomnom history index [--provider codex|claude] [--source all|provider|vault]
-[--full] --format json`
+[--full] [--verbose] --format json`
 
 The first explicit index creates `history.db`. `--source all` is the default and
 combines Codex `sessions/`, Codex `archived_sessions/`, Claude Code `projects/`,
@@ -199,8 +199,14 @@ idempotent.
 
 `data` contains aggregate `scanned_sources`, `indexed_sources`, `new_sources`,
 `skipped_sources`, `appended_sources`, `rewritten_sources`, `missing_sources`,
-`indexed_prompts`, `oversized_prompts`, `error_count`, bounded `errors` and
-`warnings`, `full`, and `duration_ms`. Vault fields include selected,
+`indexed_prompts`, `oversized_prompts`, `reclassified_prompts`,
+`prompt_kind_counts`, `error_count`, bounded `errors`, `full`, and
+`duration_ms`. Routine record exclusions are grouped by classification and
+reason in `exclusion_counts`; each entry contains `classification`, `reason`,
+and `count`, without prompt text. `warnings` is `[]` by default. `--verbose`
+restores bounded per-record path-and-line details there, while source and
+integrity failures remain individually visible in `errors` in either mode.
+Vault fields include selected,
 traversed, indexed, skipped, and failed bundle/version counts. Independent source failures do not roll
 back successful sources, but the command exits nonzero and does not update the
 complete-success timestamp.

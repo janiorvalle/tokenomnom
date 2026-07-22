@@ -45,6 +45,7 @@ type VaultSummary struct {
 	OversizedPrompts     int                        `json:"oversized_prompts"`
 	ReclassifiedPrompts  int                        `json:"reclassified_prompts"`
 	PromptKindCounts     map[history.PromptKind]int `json:"prompt_kind_counts"`
+	ExclusionCounts      []ExclusionCount           `json:"exclusion_counts"`
 	BrokenSkippedBundles int                        `json:"broken_skipped_bundles"`
 	ErrorCount           int                        `json:"error_count"`
 	Errors               []Issue                    `json:"errors"`
@@ -57,7 +58,7 @@ type VaultSummary struct {
 // bundle is decompressed once and committed in one history transaction.
 func IndexVault(options VaultOptions) (VaultSummary, error) {
 	started := time.Now()
-	summary := VaultSummary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
+	summary := VaultSummary{Errors: []Issue{}, Warnings: []Issue{}, ExclusionCounts: []ExclusionCount{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
 	if options.Vault == nil || (options.Store == nil && options.StorePath == "") {
 		return summary, errors.New("history store path and vault are required")
 	}
@@ -156,6 +157,7 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 		bundleOversized := 0
 		bundleReclassified := 0
 		bundleKindCounts := map[history.PromptKind]int{}
+		bundleExclusionCounts := []ExclusionCount{}
 		for {
 			member, err := bundle.Next()
 			if errors.Is(err, io.EOF) {
@@ -164,10 +166,11 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			if err != nil {
 				return err
 			}
-			extraction, err := extractVaultMember(member, options.IndexAssistant)
+			extraction, exclusionCounts, err := extractVaultMember(member, options.IndexAssistant)
 			if err != nil {
 				return err
 			}
+			bundleExclusionCounts = mergeExclusionCounts(bundleExclusionCounts, exclusionCounts)
 			if err := writer.Apply(historystore.SnapshotInput{
 				Extraction: extraction,
 				Snapshot: history.PreservedSnapshot{
@@ -213,6 +216,7 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 		} else {
 			summary.SkippedBundles++
 		}
+		summary.ExclusionCounts = mergeExclusionCounts(summary.ExclusionCounts, bundleExclusionCounts)
 		return nil
 	}, func(result vault.BundleWalkResult) (err error) {
 		defer func() { completeErr = err }()
@@ -258,7 +262,7 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 	return summary, nil
 }
 
-func extractVaultMember(member vault.VerifiedMember, indexAssistant bool) (history.Extraction, error) {
+func extractVaultMember(member vault.VerifiedMember, indexAssistant bool) (history.Extraction, []ExclusionCount, error) {
 	provider := history.Provider(member.Manifest.Provider)
 	source := history.SourceReference{
 		Provider: provider, Kind: history.LocationVault, Path: member.Manifest.SourcePath,
@@ -266,14 +270,14 @@ func extractVaultMember(member vault.VerifiedMember, indexAssistant bool) (histo
 	}
 	accumulator, err := newExtractionAccumulator(source, historystore.Checkpoint{}, fileNew, indexAssistant)
 	if err != nil {
-		return history.Extraction{}, err
+		return history.Extraction{}, nil, err
 	}
 	_, err = jsonl.ReadPositionedReader(member.Content, jsonl.Position{}, accumulator.visit)
 	if err != nil {
-		return history.Extraction{}, err
+		return history.Extraction{}, nil, err
 	}
-	extraction, _, err := accumulator.result()
-	return extraction, err
+	extraction, _, exclusionCounts, err := accumulator.result()
+	return extraction, exclusionCounts, err
 }
 
 func bundleFingerprint(files []store.VaultFile) string {

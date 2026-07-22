@@ -126,6 +126,12 @@ detects rewrites and missing sources, so live and vaulted copies of the same
 session show up as one logical session with availability and version counts
 in `history list`.
 
+`history index --format json` groups routine record exclusions under
+`data.exclusion_counts`; it does not emit one warning per excluded record.
+Add `--verbose` only when you need the bounded path-and-line details in
+`data.warnings`. Source and integrity failures remain individually listed in
+`data.errors` in either mode.
+
 Search is a literal adjacent-token phrase by default; `--fts-query` explicitly
 enables raw FTS5 syntax. Results are bounded snippets unless you ask for
 `--include-text` or `history show`, and raw retrieval revalidates the exact

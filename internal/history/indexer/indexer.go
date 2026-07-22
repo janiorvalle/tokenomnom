@@ -52,6 +52,14 @@ type Issue struct {
 	Error    string `json:"error"`
 }
 
+// ExclusionCount summarizes routine non-content diagnostics without exposing
+// one path and line entry per excluded record.
+type ExclusionCount struct {
+	Classification history.Classification `json:"classification"`
+	Reason         string                 `json:"reason"`
+	Count          int                    `json:"count"`
+}
+
 // Summary reports aggregate work without emitting one object per source.
 type Summary struct {
 	ScannedSources      int                        `json:"scanned_sources"`
@@ -65,6 +73,7 @@ type Summary struct {
 	OversizedPrompts    int                        `json:"oversized_prompts"`
 	ReclassifiedPrompts int                        `json:"reclassified_prompts"`
 	PromptKindCounts    map[history.PromptKind]int `json:"prompt_kind_counts"`
+	ExclusionCounts     []ExclusionCount           `json:"exclusion_counts"`
 	ErrorCount          int                        `json:"error_count"`
 	Errors              []Issue                    `json:"errors"`
 	Warnings            []Issue                    `json:"warnings"`
@@ -92,7 +101,7 @@ const (
 // Index discovers and reconciles selected provider sources.
 func Index(options Options) (Summary, error) {
 	started := time.Now()
-	summary := Summary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
+	summary := Summary{Errors: []Issue{}, Warnings: []Issue{}, ExclusionCounts: []ExclusionCount{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
 	if options.Store == nil {
 		return summary, errors.New("history store is required")
 	}
@@ -152,6 +161,7 @@ func Index(options Options) (Summary, error) {
 		}
 		summary.IndexedSources++
 		summary.IndexedPrompts += len(indexed.Prompts)
+		summary.ExclusionCounts = mergeExclusionCounts(summary.ExclusionCounts, indexed.ExclusionCounts)
 		for _, diagnostic := range indexed.Diagnostics {
 			addIssue(&summary, Issue{
 				Provider: string(provider),
@@ -385,9 +395,10 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 }
 
 type indexedFile struct {
-	Prompts     []history.Prompt
-	Diagnostics []history.Diagnostic
-	Kind        fileKind
+	Prompts         []history.Prompt
+	Diagnostics     []history.Diagnostic
+	ExclusionCounts []ExclusionCount
+	Kind            fileKind
 }
 
 func indexFile(database *historystore.Store, file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, kind fileKind, indexAssistant bool) (indexedFile, error) {
@@ -414,7 +425,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if err != nil {
 		return indexedFile{}, err
 	}
-	extraction, extractorState, err := accumulator.result()
+	extraction, extractorState, exclusionCounts, err := accumulator.result()
 	if err != nil {
 		return indexedFile{}, err
 	}
@@ -442,7 +453,7 @@ func indexFile(database *historystore.Store, file discover.SourceFile, checkpoin
 	if _, err := database.ApplySourceWithGeneration(extraction, head, mode, advanceGeneration); err != nil {
 		return indexedFile{}, err
 	}
-	return indexedFile{Prompts: extraction.Prompts, Diagnostics: extraction.Diagnostics, Kind: kind}, nil
+	return indexedFile{Prompts: extraction.Prompts, Diagnostics: extraction.Diagnostics, ExclusionCounts: exclusionCounts, Kind: kind}, nil
 }
 
 var errSourceChanged = errors.New("history source changed during indexing")
@@ -573,20 +584,27 @@ func readRecordsWithHook(path string, position jsonl.Position, checkpoint histor
 }
 
 type extractionAccumulator struct {
-	source      history.SourceReference
-	extraction  history.Extraction
-	promptIndex map[string]int
-	codexState  codex.State
-	claudeState claude.State
-	options     history.ExtractionOptions
+	source           history.SourceReference
+	extraction       history.Extraction
+	promptIndex      map[string]int
+	diagnosticCounts map[diagnosticKey]int
+	codexState       codex.State
+	claudeState      claude.State
+	options          history.ExtractionOptions
+}
+
+type diagnosticKey struct {
+	classification history.Classification
+	reason         string
 }
 
 func newExtractionAccumulator(source history.SourceReference, checkpoint historystore.Checkpoint, kind fileKind, indexAssistant bool) (*extractionAccumulator, error) {
 	value := &extractionAccumulator{
-		source:      source,
-		extraction:  history.Extraction{Provider: source.Provider, Source: source},
-		promptIndex: make(map[string]int),
-		options:     history.ExtractionOptions{IndexAssistant: indexAssistant},
+		source:           source,
+		extraction:       history.Extraction{Provider: source.Provider, Source: source},
+		promptIndex:      make(map[string]int),
+		diagnosticCounts: make(map[diagnosticKey]int),
+		options:          history.ExtractionOptions{IndexAssistant: indexAssistant},
 	}
 	if kind == fileAppend {
 		switch source.Provider {
@@ -639,6 +657,9 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 		a.extraction.Prompts = append(a.extraction.Prompts, prompt)
 	}
 	a.extraction.Occurrences = append(a.extraction.Occurrences, part.Occurrences...)
+	for _, diagnostic := range part.Diagnostics {
+		a.diagnosticCounts[diagnosticKey{classification: diagnostic.Classification, reason: diagnostic.Message}]++
+	}
 	remainingDiagnostics := maxIssues - len(a.extraction.Diagnostics)
 	if remainingDiagnostics > len(part.Diagnostics) {
 		remainingDiagnostics = len(part.Diagnostics)
@@ -649,7 +670,7 @@ func (a *extractionAccumulator) consume(records []jsonl.Record) error {
 	return nil
 }
 
-func (a *extractionAccumulator) result() (history.Extraction, string, error) {
+func (a *extractionAccumulator) result() (history.Extraction, string, []ExclusionCount, error) {
 	var state any
 	if a.source.Provider == history.ProviderCodex {
 		state = a.codexState
@@ -657,7 +678,29 @@ func (a *extractionAccumulator) result() (history.Extraction, string, error) {
 		state = a.claudeState
 	}
 	encoded, err := json.Marshal(state)
-	return a.extraction, string(encoded), err
+	return a.extraction, string(encoded), exclusionCounts(a.diagnosticCounts), err
+}
+
+func exclusionCounts(counts map[diagnosticKey]int) []ExclusionCount {
+	values := make([]ExclusionCount, 0, len(counts))
+	for key, count := range counts {
+		values = append(values, ExclusionCount{Classification: key.classification, Reason: key.reason, Count: count})
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].Classification != values[j].Classification {
+			return values[i].Classification < values[j].Classification
+		}
+		return values[i].Reason < values[j].Reason
+	})
+	return values
+}
+
+func mergeExclusionCounts(current, added []ExclusionCount) []ExclusionCount {
+	counts := make(map[diagnosticKey]int, len(current)+len(added))
+	for _, value := range append(append([]ExclusionCount{}, current...), added...) {
+		counts[diagnosticKey{classification: value.Classification, reason: value.Reason}] += value.Count
+	}
+	return exclusionCounts(counts)
 }
 
 func locationKind(kind discover.SourceKind) history.LocationKind {

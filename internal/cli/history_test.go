@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,10 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	"github.com/janiorvalle/tokenomnom/internal/history/indexer"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
+	"github.com/spf13/cobra"
 )
 
 func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
@@ -336,6 +339,79 @@ func TestHistoryIndexReportsStableLegacyThreadReclassification(t *testing.T) {
 	}
 	if len(after.Sessions) != 1 || after.Sessions[0].SessionID != sessionID || after.Sessions[0].ThreadKind != history.ThreadRoot {
 		t.Fatalf("rebuilt legacy session = %+v, want stable id %s", after.Sessions, sessionID)
+	}
+}
+
+func TestHistoryIndexQuietDefaultAndVerboseDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "diagnostic.jsonl"), historyCodexFixture("diagnostic", "accepted")+"not-json\n")
+
+	run := func(verbose bool) jsonHistoryIndexData {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		command := NewRootCommand()
+		command.SilenceUsage = true
+		command.SetOut(&stdout)
+		command.SetErr(&stderr)
+		args := []string{"history", "index", "--source", "provider", "--full", "--format", "json", "--codex-dir", codexDir, "--claude-dir", claudeDir}
+		if verbose {
+			args = append(args, "--verbose")
+		}
+		command.SetArgs(args)
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		var indexed jsonHistoryIndexData
+		if err := json.Unmarshal(decodeEnvelope(t, stdout.String()).Data, &indexed); err != nil {
+			t.Fatal(err)
+		}
+		if indexed.ErrorCount != 0 || len(indexed.Errors) != 0 || len(indexed.ExclusionCounts) != 1 || indexed.ExclusionCounts[0].Reason != "malformed JSON" || indexed.ExclusionCounts[0].Count != 1 {
+			t.Fatalf("index diagnostics = %+v\nstderr=%s", indexed, stderr.String())
+		}
+		return indexed
+	}
+
+	if indexed := run(false); len(indexed.Warnings) != 0 {
+		t.Fatalf("default warnings = %+v", indexed.Warnings)
+	}
+	if indexed := run(true); len(indexed.Warnings) != 1 || !strings.Contains(indexed.Warnings[0].Error, "malformed JSON") {
+		t.Fatalf("verbose warnings = %+v", indexed.Warnings)
+	}
+
+	render := func(format string, verbose bool) string {
+		t.Helper()
+		var output bytes.Buffer
+		command := &cobra.Command{}
+		command.SetContext(context.Background())
+		command.Flags().String("format", format, "")
+		command.SetOut(&output)
+		summary := indexer.Summary{
+			Errors: []indexer.Issue{{Provider: "claude", Path: "source.jsonl", Error: "source failure"}}, ErrorCount: 1,
+			Warnings:         []indexer.Issue{{Provider: "codex", Path: "source.jsonl", Error: "line 2: malformed JSON"}},
+			ExclusionCounts:  []indexer.ExclusionCount{{Classification: history.ClassificationUnknown, Reason: "malformed JSON", Count: 1}},
+			PromptKindCounts: map[history.PromptKind]int{},
+		}
+		if err := writeHistoryIndex(command, "", "provider", summary, indexer.VaultSummary{}, historystore.ThreadKindCoverage{}, verbose); err != nil {
+			t.Fatal(err)
+		}
+		return output.String()
+	}
+	if output := render("pretty", false); !strings.Contains(output, "Error: claude:") || strings.Contains(output, "Warning:") {
+		t.Fatalf("default pretty output included details:\n%s", output)
+	}
+	if output := render("pretty", true); !strings.Contains(output, "Error: claude:") || !strings.Contains(output, "Warning: codex:") {
+		t.Fatalf("verbose pretty output omitted details:\n%s", output)
+	}
+	for _, verbose := range []bool{false, true} {
+		var indexed jsonHistoryIndexData
+		if err := json.Unmarshal(decodeEnvelope(t, render("json", verbose)).Data, &indexed); err != nil || len(indexed.Errors) != 1 || (len(indexed.Warnings) == 1) != verbose {
+			t.Fatalf("JSON verbose=%v err=%v data=%+v", verbose, err, indexed)
+		}
 	}
 }
 

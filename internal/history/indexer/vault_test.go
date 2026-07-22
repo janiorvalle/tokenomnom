@@ -22,7 +22,7 @@ import (
 
 func TestVaultBundleRollbackRetryAndIdempotence(t *testing.T) {
 	env := newVaultEnvironment(t)
-	first := []byte(codexMeta("bundle-one") + codexPrompt("p1", "first bundle prompt"))
+	first := []byte(codexMeta("bundle-one") + "not-json\n" + codexPrompt("p1", "first bundle prompt"))
 	second := []byte(codexMeta("bundle-two") + codexPrompt("p2", "second bundle prompt"))
 	manifests := []usagestore.VaultFile{
 		env.manifest("one.jsonl", "/gone/one.jsonl", first, 1),
@@ -33,7 +33,7 @@ func TestVaultBundleRollbackRetryAndIdempotence(t *testing.T) {
 
 	failed, err := IndexVault(env.options(false))
 	var partial PartialError
-	if !errors.As(err, &partial) || failed.ErrorCount != 1 {
+	if !errors.As(err, &partial) || failed.ErrorCount != 1 || len(failed.ExclusionCounts) != 0 {
 		t.Fatalf("failed backfill err=%v summary=%+v", err, failed)
 	}
 	stats, _ := env.history.Stats()
@@ -43,7 +43,7 @@ func TestVaultBundleRollbackRetryAndIdempotence(t *testing.T) {
 
 	env.writeBundle(t, []vaultTestMember{{"one.jsonl", first}, {"two.jsonl", second}})
 	retried, err := IndexVault(env.options(false))
-	if err != nil || retried.IndexedBundles != 1 || retried.IndexedVersions != 2 {
+	if err != nil || retried.IndexedBundles != 1 || retried.IndexedVersions != 2 || len(retried.ExclusionCounts) != 1 || retried.ExclusionCounts[0].Count != 1 {
 		t.Fatalf("retry err=%v summary=%+v", err, retried)
 	}
 	stats, _ = env.history.Stats()
@@ -55,7 +55,7 @@ func TestVaultBundleRollbackRetryAndIdempotence(t *testing.T) {
 		t.Fatalf("idempotent err=%v summary=%+v health=%+v", err, idempotent, env.health(t))
 	}
 	full, err := IndexVault(env.options(true))
-	if err != nil || full.SkippedBundles != 1 || env.health(t).IndexGeneration != 1 {
+	if err != nil || full.SkippedBundles != 1 || len(full.ExclusionCounts) != 1 || full.ExclusionCounts[0].Count != 1 || env.health(t).IndexGeneration != 1 {
 		t.Fatalf("unchanged full rebuild invalidated catalog generation: err=%v summary=%+v health=%+v", err, full, env.health(t))
 	}
 
@@ -135,7 +135,7 @@ func TestVaultExtractionSurfacesMemberDiagnosticsAndIndexesValidEOFPrompt(t *tes
 	env.record(t, manifest)
 	env.writeBundle(t, []vaultTestMember{{"diagnostic.jsonl", content}})
 	summary, err := IndexVault(env.options(false))
-	if err != nil || summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Path, "#diagnostic.jsonl") || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") {
+	if err != nil || summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Path, "#diagnostic.jsonl") || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") || len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Count != 1 {
 		t.Fatalf("vault diagnostics err=%v summary=%+v", err, summary)
 	}
 }
@@ -147,7 +147,7 @@ func TestVaultExtractionDiagnosesMalformedEOFWithoutFailingBundle(t *testing.T) 
 	env.record(t, manifest)
 	env.writeBundle(t, []vaultTestMember{{"malformed-eof.jsonl", content}})
 	summary, err := IndexVault(env.options(false))
-	if err != nil || summary.IndexedBundles != 1 || summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") {
+	if err != nil || summary.IndexedBundles != 1 || summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") || len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Count != 1 {
 		t.Fatalf("malformed EOF diagnostics err=%v summary=%+v", err, summary)
 	}
 }
