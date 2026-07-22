@@ -20,6 +20,9 @@ func TestExtractSyntheticRolloutSubagentOrigin(t *testing.T) {
 	if result.Session.Branch != "feature/history" || result.Session.CWD != "/workspace/demo" || result.Session.Originator != "codex_cli_rs" {
 		t.Fatalf("metadata = %#v", result.Session)
 	}
+	if result.Session.RepositoryIdentity != "example.invalid/acme/demo" || result.Session.RepositoryName != "demo" || result.Session.RepositoryRuleVersion != history.RepositoryRuleVersion {
+		t.Fatalf("repository metadata = %#v", result.Session)
+	}
 	if len(result.Relationships) != 1 || result.Relationships[0].Kind != history.RelationSubagent ||
 		result.Relationships[0].ParentNativeSessionID != "00000000-0000-4000-8000-000000000001" ||
 		result.Relationships[0].Evidence != "session_meta.source.subagent" {
@@ -299,7 +302,7 @@ func TestExtractSparseSessionMetadataDoesNotEraseValues(t *testing.T) {
 		{Raw: []byte("{\"timestamp\":\"2026-07-20T13:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-1\"}}\n"), LineNumber: 2, StartOffset: 240, EndOffset: 350},
 	}
 	result := Extract(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, records)
-	if result.Session.CWD != "/one" || result.Session.Originator != "codex" || result.Session.ForkedFromSessionID != "fork" || result.Session.Branch != "main" || result.Session.RepositoryIdentity != "repo" {
+	if result.Session.CWD != "/one" || result.Session.Originator != "codex" || result.Session.ForkedFromSessionID != "fork" || result.Session.Branch != "main" || result.Session.RepositoryIdentity != "repo" || result.Session.RepositoryName != "repo" || result.Session.RepositoryRuleVersion != history.RepositoryRuleVersion {
 		t.Fatalf("sparse metadata erased values: %#v", result.Session)
 	}
 }

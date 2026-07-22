@@ -51,6 +51,7 @@ type Health struct {
 	SourceHeads             int
 	Prompts                 int
 	UserPrompts             int
+	SearchableUserPrompts   int
 	AssistantPrompts        int
 	AssistantIndexed        bool
 	Occurrences             int
@@ -91,8 +92,8 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 		sh.complete_offset,sh.line_count,sh.current_sha256,sh.content_hash_state,sh.prefix_fingerprint,
 		sh.tail_fingerprint,sh.extractor_state,sh.extractor_version,sh.indexed_at,sh.last_attempt_unix,
 		sh.last_error,sh.available,s.identity_key,COALESCE(s.native_session_id,''),s.fallback_key,
-		COALESCE(s.cwd,''),COALESCE(s.repository_root,''),COALESCE(s.repository_name,''),
-		COALESCE(s.repository_identity,''),COALESCE(s.branch,''),s.thread_kind,
+			COALESCE(s.cwd,''),COALESCE(s.repository_root,''),COALESCE(s.repository_name,''),
+			COALESCE(s.repository_identity,''),s.repository_rule_version,COALESCE(s.branch,''),s.thread_kind,
 		COALESCE(s.thread_evidence,''),s.thread_confidence,s.thread_rule_version,
 		COALESCE(s.parent_native_session_id,''),COALESCE(s.forked_from_session_id,''),
 		COALESCE(s.forked_from_message_id,''),
@@ -113,7 +114,7 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 			&value.ExtractorVersion, &value.IndexedAtUnix, &value.LastAttemptUnix, &value.LastError, &available,
 			&value.Session.IdentityKey, &value.Session.NativeSessionID, &value.Session.FallbackKey, &value.Session.CWD,
 			&value.Session.RepositoryRoot, &value.Session.RepositoryName, &value.Session.RepositoryIdentity,
-			&value.Session.Branch, &value.Session.ThreadKind, &value.Session.ThreadEvidence,
+			&value.Session.RepositoryRuleVersion, &value.Session.Branch, &value.Session.ThreadKind, &value.Session.ThreadEvidence,
 			&value.Session.ThreadConfidence, &value.Session.ThreadRuleVersion, &value.Session.ParentNativeSessionID,
 			&value.Session.ForkedFromSessionID, &value.Session.ForkedFromMessageID, &value.Session.Originator, &value.Session.Evidence,
 			&value.Session.Confidence, &firstTS, &lastTS); err != nil {
@@ -340,7 +341,7 @@ func InspectHealth(path string) (Health, error) {
 
 var healthQuery = `SELECT
 		(SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM prompts),
-		(SELECT COUNT(*) FROM prompts WHERE role='user'),(SELECT COUNT(*) FROM prompts WHERE role='assistant'),
+			(SELECT COUNT(*) FROM prompts WHERE role='user'),(SELECT COUNT(*) FROM prompts WHERE role='user' AND searchable=1),(SELECT COUNT(*) FROM prompts WHERE role='assistant'),
 		(SELECT COUNT(*) FROM occurrences),(SELECT COUNT(*) FROM source_heads WHERE source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads WHERE source_kind='codex_archive'),
 		(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations WHERE kind='vault'),
@@ -387,7 +388,7 @@ type rowScanner interface {
 
 func scanHealth(row rowScanner, value *Health) error {
 	return row.Scan(
-		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.UserPrompts, &value.AssistantPrompts, &value.Occurrences, &value.LiveSources,
+		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.UserPrompts, &value.SearchableUserPrompts, &value.AssistantPrompts, &value.Occurrences, &value.LiveSources,
 		&value.ProviderArchiveSources, &value.PreservedSnapshots, &value.VaultLocations,
 		&value.ProviderLiveOnly, &value.ProviderArchiveOnly, &value.VaultOnly, &value.ExactLiveAndVaulted,
 		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,

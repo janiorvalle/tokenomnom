@@ -116,6 +116,7 @@ type Session struct {
 	RepositoryRoot        string
 	RepositoryName        string
 	RepositoryIdentity    string
+	RepositoryRuleVersion int
 	Branch                string
 	ThreadKind            ThreadKind
 	ThreadEvidence        string

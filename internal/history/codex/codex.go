@@ -170,7 +170,10 @@ recordsLoop:
 					result.Session.Branch = meta.Git.Branch
 				}
 				if meta.Git.RepositoryURL != "" {
-					result.Session.RepositoryIdentity = meta.Git.RepositoryURL
+					result.Session.RepositoryIdentity, result.Session.RepositoryName = history.DeriveRepository(meta.Git.RepositoryURL)
+					if result.Session.RepositoryIdentity != "" {
+						result.Session.RepositoryRuleVersion = history.RepositoryRuleVersion
+					}
 				}
 			}
 			updateRange(&result.Session, parseTime(firstNonEmpty(meta.Timestamp, item.Timestamp)))

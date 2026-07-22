@@ -1008,7 +1008,7 @@ type storedSessionMetadata struct {
 	branch, threadEvidence, parentNativeSessionID, forkedFromSessionID       sql.NullString
 	forkedFromMessageID, originator, evidence                                sql.NullString
 	fallbackKey, threadKind, threadConfidence, confidence, firstTS, lastTS   string
-	threadRuleVersion                                                        int
+	repositoryRuleVersion, threadRuleVersion                                 int
 }
 
 func (tx *Tx) mergeSessionMetadata(recipientID, donorID int64) error {
@@ -1025,22 +1025,22 @@ func (tx *Tx) mergeSessionMetadata(recipientID, donorID int64) error {
 
 func (tx *Tx) readSessionMetadata(id int64) (storedSessionMetadata, error) {
 	var value storedSessionMetadata
-	err := tx.tx.QueryRow(`SELECT native_session_id,fallback_key,cwd,repository_root,repository_name,repository_identity,branch,
+	err := tx.tx.QueryRow(`SELECT native_session_id,fallback_key,cwd,repository_root,repository_name,repository_identity,repository_rule_version,branch,
 		thread_kind,thread_evidence,thread_confidence,thread_rule_version,parent_native_session_id,forked_from_session_id,
 		forked_from_message_id,originator,evidence,confidence,COALESCE(first_ts,''),COALESCE(last_ts,'') FROM sessions WHERE id=?`, id).Scan(
 		&value.nativeSessionID, &value.fallbackKey, &value.cwd, &value.repositoryRoot, &value.repositoryName,
-		&value.repositoryIdentity, &value.branch, &value.threadKind, &value.threadEvidence, &value.threadConfidence,
+		&value.repositoryIdentity, &value.repositoryRuleVersion, &value.branch, &value.threadKind, &value.threadEvidence, &value.threadConfidence,
 		&value.threadRuleVersion, &value.parentNativeSessionID, &value.forkedFromSessionID, &value.forkedFromMessageID,
 		&value.originator, &value.evidence, &value.confidence, &value.firstTS, &value.lastTS)
 	return value, err
 }
 
 func (tx *Tx) writeSessionMetadata(id int64, value storedSessionMetadata) error {
-	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,branch=?,
+	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,repository_rule_version=?,branch=?,
 		thread_kind=?,thread_evidence=?,thread_confidence=?,thread_rule_version=?,parent_native_session_id=?,forked_from_session_id=?,forked_from_message_id=?,
 		originator=?,evidence=?,confidence=?,first_ts=?,last_ts=? WHERE id=?`,
 		nullStringValue(value.nativeSessionID), value.fallbackKey, nullStringValue(value.cwd), nullStringValue(value.repositoryRoot),
-		nullStringValue(value.repositoryName), nullStringValue(value.repositoryIdentity), nullStringValue(value.branch), value.threadKind,
+		nullStringValue(value.repositoryName), nullStringValue(value.repositoryIdentity), value.repositoryRuleVersion, nullStringValue(value.branch), value.threadKind,
 		value.threadEvidence.String, value.threadConfidence, value.threadRuleVersion, nullStringValue(value.parentNativeSessionID),
 		nullStringValue(value.forkedFromSessionID), nullStringValue(value.forkedFromMessageID), nullStringValue(value.originator), nullStringValue(value.evidence), value.confidence,
 		nullableTimestamp(value.firstTS), nullableTimestamp(value.lastTS), id)
@@ -1066,6 +1066,9 @@ func mergeStoredSessionMetadata(existing, candidate storedSessionMetadata) store
 	existing.repositoryRoot = choose(existing.repositoryRoot, candidate.repositoryRoot)
 	existing.repositoryName = choose(existing.repositoryName, candidate.repositoryName)
 	existing.repositoryIdentity = choose(existing.repositoryIdentity, candidate.repositoryIdentity)
+	if candidate.repositoryRuleVersion > existing.repositoryRuleVersion && candidate.repositoryIdentity.Valid && candidate.repositoryName.Valid {
+		existing.repositoryRuleVersion = candidate.repositoryRuleVersion
+	}
 	existing.branch = choose(existing.branch, candidate.branch)
 	existing.parentNativeSessionID = choose(existing.parentNativeSessionID, candidate.parentNativeSessionID)
 	existing.forkedFromSessionID = choose(existing.forkedFromSessionID, candidate.forkedFromSessionID)
@@ -1163,6 +1166,7 @@ func sessionMetadata(value history.Session) storedSessionMetadata {
 		repositoryRoot:        toNullString(value.RepositoryRoot),
 		repositoryName:        toNullString(value.RepositoryName),
 		repositoryIdentity:    toNullString(value.RepositoryIdentity),
+		repositoryRuleVersion: value.RepositoryRuleVersion,
 		branch:                toNullString(value.Branch),
 		threadKind:            string(normalizedThreadKind(value.ThreadKind)),
 		threadEvidence:        toNullString(value.ThreadEvidence),
@@ -1248,11 +1252,11 @@ func (tx *Tx) ensureSession(provider history.Provider, value history.Session, pr
 		}
 		result, err := tx.tx.Exec(`INSERT INTO sessions(
 			public_id, provider, identity_key, native_session_id, fallback_key, cwd,
-			repository_root, repository_name, repository_identity, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
+				repository_root, repository_name, repository_identity, repository_rule_version, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
 			parent_native_session_id, forked_from_session_id, forked_from_message_id, originator, evidence, confidence, first_ts, last_ts, sample_key)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
 			nullText(value.NativeSessionID), value.FallbackKey, nullText(value.CWD),
-			nullText(value.RepositoryRoot), nullText(value.RepositoryName), nullText(value.RepositoryIdentity),
+			nullText(value.RepositoryRoot), nullText(value.RepositoryName), nullText(value.RepositoryIdentity), value.RepositoryRuleVersion,
 			nullText(value.Branch), normalizedThreadKind(value.ThreadKind), value.ThreadEvidence, normalizedConfidence(value.ThreadConfidence), value.ThreadRuleVersion,
 			nullText(value.ParentNativeSessionID), nullText(value.ForkedFromSessionID), nullText(value.ForkedFromMessageID),
 			nullText(value.Originator), nullText(value.Evidence), normalizedConfidence(value.Confidence),

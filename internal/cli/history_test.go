@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
@@ -128,7 +129,7 @@ func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "ready" || status.LiveSources != 1 || status.ProviderArchiveSources != 1 || status.LogicalPrompts != 2 || status.IndexGeneration != 2 {
+	if status.Status != "ready" || status.LiveSources != 1 || status.ProviderArchiveSources != 1 || status.LogicalPrompts != 2 || status.UserLogicalPrompts != 2 || status.SearchableUserPrompts != 2 || status.IndexGeneration != 2 {
 		t.Fatalf("history status = %+v", status)
 	}
 
@@ -300,7 +301,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(searchEnvelope.Data, &search); err != nil {
 		t.Fatal(err)
 	}
-	if len(search.Hits) != 1 || search.Hits[0].Text != nil || len(search.Hits[0].Occurrences) != 1 || search.Hits[0].Rank == nil || len(searchEnvelope.Warnings) != 2 || searchEnvelope.Timezone != "UTC" {
+	if len(search.Hits) != 1 || search.Hits[0].Text != nil || len(search.Hits[0].Occurrences) != 1 || search.Hits[0].Rank == nil || len(searchEnvelope.Warnings) != 2 || searchEnvelope.Timezone != localTimezoneName() {
 		t.Fatalf("search envelope=%+v page=%+v", searchEnvelope, search)
 	}
 	promptID, sessionID := search.Hits[0].PromptID, search.Hits[0].SessionID
@@ -337,7 +338,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	}
 	var prompts historystore.PromptsPage
 	promptsEnvelope := decodeEnvelope(t, promptsOutput)
-	if err := json.Unmarshal(promptsEnvelope.Data, &prompts); err != nil || promptsEnvelope.Timezone != "UTC" || len(prompts.Prompts) != 1 || len(prompts.Prompts[0].Occurrences) != 1 || prompts.Prompts[0].Text == nil {
+	if err := json.Unmarshal(promptsEnvelope.Data, &prompts); err != nil || promptsEnvelope.Timezone != localTimezoneName() || len(prompts.Prompts) != 1 || len(prompts.Prompts[0].Occurrences) != 1 || prompts.Prompts[0].Text == nil {
 		t.Fatalf("prompts err=%v value=%+v", err, prompts)
 	}
 
@@ -347,7 +348,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	}
 	var sample historystore.SampleResult
 	sampleEnvelope := decodeEnvelope(t, sampleOutput)
-	if err := json.Unmarshal(sampleEnvelope.Data, &sample); err != nil || sampleEnvelope.Timezone != "UTC" || len(sample.Items) != 1 || sample.Strategy != "stratified" || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Text != nil || sample.Items[0].Groups["repo"] != "unknown" {
+	if err := json.Unmarshal(sampleEnvelope.Data, &sample); err != nil || sampleEnvelope.Timezone != localTimezoneName() || len(sample.Items) != 1 || sample.Strategy != "stratified" || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Text != nil || sample.Items[0].Groups["repo"] != "unknown" {
 		t.Fatalf("sample err=%v envelope=%+v value=%+v", err, sampleEnvelope, sample)
 	}
 	sampleTextOutput, err := executeReport([]string{"history", "sample", "--count", "1", "--include-text", "--format", "json"}, codexDir, claudeDir)
@@ -364,7 +365,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 	}
 	var statistics historystore.Statistics
 	statsEnvelope := decodeEnvelope(t, statsOutput)
-	if err := json.Unmarshal(statsEnvelope.Data, &statistics); err != nil || statsEnvelope.Timezone != "UTC" || statistics.LogicalSessions != 1 || statistics.LogicalPrompts != 1 || len(statistics.Groups) != 1 || statistics.Groups[0].Values["provider"] != "codex" {
+	if err := json.Unmarshal(statsEnvelope.Data, &statistics); err != nil || statsEnvelope.Timezone != localTimezoneName() || statistics.Scope != "searchable_prompt_corpus" || statistics.LogicalSessions != 1 || statistics.LogicalPrompts != 1 || len(statistics.Groups) != 1 || statistics.Groups[0].Values["provider"] != "codex" {
 		t.Fatalf("stats err=%v value=%+v", err, statistics)
 	}
 	prettyStats, err := executeReport([]string{"history", "stats", "--group-by", "provider, provider, repo,"}, codexDir, claudeDir)
@@ -512,6 +513,129 @@ func TestHistoryShowRejectsSessionPaginationWithoutPrompts(t *testing.T) {
 		if _, err := executeReport(args, filepath.Join(root, "codex"), filepath.Join(root, "claude")); err == nil || !strings.Contains(err.Error(), "require --prompts") {
 			t.Fatalf("show args %v error=%v", args, err)
 		}
+	}
+}
+
+func TestHistoryRepositoryFiltersCoverageAndGrouping(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	fixture := `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"repository-session","thread_source":"user","git":{"repository_url":"git@github.com:janiorvalle/tokenomnom.git"}}}` + "\n" +
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"repository filter prompt"}}` + "\n"
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "repository.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "search", "repository filter", "--repo", "tokenomnom", "--format", "json"}, codexDir, claudeDir)
+	var search historystore.SearchPage
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &search) != nil || len(search.Hits) != 1 || search.Hits[0].RepositoryName == nil || *search.Hits[0].RepositoryName != "tokenomnom" || search.Coverage.Repository.Known != 1 {
+		t.Fatalf("repository search err=%v page=%+v", err, search)
+	}
+
+	output, err = executeReport([]string{"history", "stats", "--group-by", "repo", "--format", "json"}, codexDir, claudeDir)
+	var stats historystore.Statistics
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &stats) != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, group := range stats.Groups {
+		found = found || group.Values["repo"] == "tokenomnom" && group.LogicalPrompts == 1
+	}
+	if !found || stats.Coverage.Repository.Known != 1 || stats.Coverage.Repository.Unknown != 0 {
+		t.Fatalf("repository statistics = %+v", stats)
+	}
+}
+
+func TestHistoryCommandsUseOneEffectiveTimezone(t *testing.T) {
+	tests := []struct {
+		name     string
+		tzEnv    string
+		flag     string
+		wantZone string
+	}{
+		{name: "explicit", tzEnv: "America/Los_Angeles", flag: "Asia/Tokyo", wantZone: "Asia/Tokyo"},
+		{name: "default", tzEnv: "America/Los_Angeles", wantZone: "America/Los_Angeles"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("TZ", test.tzEnv)
+			t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+			t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+			t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+			codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+			writeTextFixture(t, filepath.Join(codexDir, "sessions", "timezone.jsonl"), historyCodexFixture("timezone-session", "timezone prompt"))
+			if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+				t.Fatal(err)
+			}
+			args := func(values ...string) []string {
+				result := append([]string{}, values...)
+				result = append(result, "--format", "json")
+				if test.flag != "" {
+					result = append(result, "--tz", test.flag)
+				}
+				return result
+			}
+			zone, err := time.LoadLocation(test.wantZone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := func(value string) string {
+				parsed, err := time.Parse(time.RFC3339Nano, value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return parsed.In(zone).Format(time.RFC3339Nano)
+			}
+			decode := func(command []string, target any) {
+				t.Helper()
+				output, err := executeReport(command, codexDir, claudeDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				envelope := decodeEnvelope(t, output)
+				if envelope.Timezone != test.wantZone {
+					t.Fatalf("%s timezone = %q, want %q", envelope.Command, envelope.Timezone, test.wantZone)
+				}
+				if err := json.Unmarshal(envelope.Data, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var status jsonHistoryHealth
+			decode(args("history", "status"), &status)
+			if status.CoverageFirst == nil || *status.CoverageFirst != expected("2026-07-20T12:00:00Z") {
+				t.Fatalf("status coverage = %v", status.CoverageFirst)
+			}
+			var list historystore.CatalogPage
+			decode(args("history", "list"), &list)
+			if len(list.Sessions) != 1 || list.Sessions[0].FirstTimestamp == nil || *list.Sessions[0].FirstTimestamp != expected("2026-07-20T12:00:00Z") {
+				t.Fatalf("list = %+v", list)
+			}
+			var search historystore.SearchPage
+			decode(args("history", "search", "timezone prompt"), &search)
+			if len(search.Hits) != 1 || search.Hits[0].Timestamp == nil || *search.Hits[0].Timestamp != expected("2026-07-20T12:00:01Z") {
+				t.Fatalf("search = %+v", search)
+			}
+			var stats historystore.Statistics
+			decode(args("history", "stats"), &stats)
+			if stats.Coverage.FirstTimestamp == nil || *stats.Coverage.FirstTimestamp != expected("2026-07-20T12:00:01Z") {
+				t.Fatalf("stats coverage = %+v", stats.Coverage)
+			}
+			var sample historystore.SampleResult
+			decode(args("history", "sample", "--count", "1"), &sample)
+			if len(sample.Items) != 1 || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Timestamp == nil || *sample.Items[0].Prompt.Timestamp != expected("2026-07-20T12:00:01Z") {
+				t.Fatalf("sample = %+v", sample)
+			}
+			var shown historystore.CatalogSession
+			decode(args("history", "show", list.Sessions[0].SessionID), &shown)
+			if shown.FirstTimestamp == nil || *shown.FirstTimestamp != expected("2026-07-20T12:00:00Z") {
+				t.Fatalf("show = %+v", shown)
+			}
+		})
 	}
 }
 

@@ -135,7 +135,8 @@ optional provider root alone does not produce that warning.
 `data.history` reports the rebuildable transcript index without creating it.
 It contains `status`, `database_path`, `database_size_bytes`, schema and
 extractor versions, logical session/source-head/prompt/occurrence counts,
-user and assistant prompt counts and per-role coverage bounds,
+`user_logical_prompts`, `searchable_user_prompts`, assistant prompt counts,
+and per-role coverage bounds,
 live, provider-archive, preserved-snapshot, and vault-location counts;
 provider-live-only, provider-archive-only, vault-only, exact-live-and-vaulted,
 and unavailable-metadata coverage; indexed vault bundle/version counts;
@@ -150,6 +151,12 @@ without prompt text.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
 without aborting its other diagnostics.
+
+`user_logical_prompts` counts every user-role logical record, including
+classified provider metadata or agent-instruction records that are retained
+but not searchable. `searchable_user_prompts` counts the human user corpus used
+by default search, prompt enumeration, sampling, and stats. The fields are
+intentionally separate and existing count fields keep their original meaning.
 
 ## History Index
 
@@ -220,6 +227,11 @@ absence of an observed parent remains `unknown`. `--root-only` is shorthand
 for `--thread-kind root`, and combining it with an explicit `--thread-kind` is
 an error. The default and `all` include root, subagent, and unknown sessions.
 
+Codex repository identity is derived from its stored repository URL by a
+versioned rule that removes scheme, credentials, a trailing `.git`, and trailing
+slashes while preserving case. Repository name is the final path segment; it is
+never inferred from cwd.
+
 ## History Search
 
 `tokenomnom history search <query> [--provider codex|claude] [--since
@@ -285,7 +297,7 @@ warning, and optional-text contracts match search.
 ## History Sample
 
 `tokenomnom history sample [--unit prompt|session] [--strategy
-random|stratified] [--group-by month,repo,thread-kind] [--count N] [--seed
+random|stratified] [--group-by month,cwd,repo,thread-kind] [--count N] [--seed
 STRING] [shared filters] [--include-text] --format json`
 
 The default unit is `prompt`, the default count is 25, and the maximum is 100.
@@ -319,7 +331,8 @@ warnings without scanning excluded rows.
 ## History Stats
 
 `tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday|hour|role]
---format json` returns SQL-computed, text-free aggregates: logical session,
+--format json` returns SQL-computed, text-free aggregates labeled with
+`scope: "searchable_prompt_corpus"`: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
 days; total/median prompt byte lengths; provider-live, provider-archive, and
 vault availability; index bytes; and stale/error/oversized counts.
@@ -327,7 +340,8 @@ vault availability; index bytes; and stale/error/oversized counts.
 occurrence, and byte totals for the consented corpus.
 `data.groups` contains dimension `values` and session/prompt/occurrence/length
 aggregates. Repository/CWD groups always include an explicit `unknown` group.
-Weekday/hour groups and the stats envelope timezone are explicitly UTC.
+Weekday/hour grouping remains UTC-normalized; RFC 3339 coverage timestamps use
+the effective presentation timezone described below.
 Coverage and warnings use the same provider-uneven metadata rules as search.
 Filtered stats exclude index errors that cannot be associated with filterable
 session metadata, report their count as `unscoped_errors_excluded`, and add a
@@ -337,6 +351,11 @@ warning instead of mixing unrelated failures into `error_count`.
 health object used by doctor. An absent index returns `status: "not_indexed"`
 without creating a database. Status is `ready`, `degraded`, or `error` for an
 existing index according to its missing/stale/error counts.
+
+History command envelopes and emitted RFC 3339 timestamps use the same
+effective timezone precedence as reports: `--tz`, then `sync.timezone`, then
+the system timezone. Cursor payloads and internal sort keys remain normalized
+to UTC.
 
 `tokenomnom history purge --format json` acquires the history lock and removes
 only `history.db` plus its SQLite WAL/SHM files. It returns `path` and

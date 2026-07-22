@@ -22,6 +22,9 @@ func TestExtractSyntheticTranscriptFork(t *testing.T) {
 	if result.Session.NativeSessionID != "22222222-2222-4222-8222-222222222222" || result.Session.ParentNativeSessionID != "" || result.Session.ForkedFromSessionID == "" || result.Session.ThreadKind != history.ThreadUnknown {
 		t.Fatalf("session = %#v", result.Session)
 	}
+	if result.Session.RepositoryIdentity != "" || result.Session.RepositoryName != "" || result.Session.RepositoryRuleVersion != 0 {
+		t.Fatalf("Claude repository metadata = %#v", result.Session)
+	}
 	if len(result.Relationships) != 1 || result.Relationships[0].Kind != history.RelationFork ||
 		result.Relationships[0].ParentNativeSessionID != "11111111-1111-4111-8111-111111111111" ||
 		result.Relationships[0].ParentNativeMessageID != "11111111-1111-4111-8111-111111111101" {

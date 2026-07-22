@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	SchemaVersion = 8
+	SchemaVersion = 9
 	DatabaseName  = "history.db"
 )
 
@@ -138,6 +138,9 @@ func (s *Store) initialize() error {
 	}
 
 	if err := sqliteutil.Migrate(s.db, historyMigrationPlan()); err != nil {
+		return err
+	}
+	if err := s.backfillRepositoryMetadata(); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`INSERT INTO meta(key,value) VALUES('extractor_version',?)
@@ -358,6 +361,24 @@ CREATE TRIGGER prompts_au AFTER UPDATE OF clean_text,searchable,role ON prompts 
 END;
 INSERT INTO prompt_fts(prompt_fts) VALUES('rebuild');
 `,
+			9: `
+ALTER TABLE sessions ADD COLUMN repository_rule_version INTEGER NOT NULL DEFAULT 0;
+DROP TRIGGER sample_strata_group_insert;
+DROP TRIGGER sample_strata_group_delete;
+CREATE TRIGGER sample_strata_group_insert AFTER INSERT ON sample_strata
+	WHEN new.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	INSERT INTO sample_groups(unit_kind,dimensions,group_values,group_key,member_count)
+		VALUES(new.unit_kind,new.dimensions,new.group_values,new.group_key,1)
+		ON CONFLICT(unit_kind,dimensions,group_values) DO UPDATE SET member_count=member_count+1;
+END;
+CREATE TRIGGER sample_strata_group_delete AFTER DELETE ON sample_strata
+	WHEN old.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	DELETE FROM sample_groups WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count=1;
+	UPDATE sample_groups SET member_count=member_count-1
+		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
+END;
+UPDATE meta SET value='0' WHERE key='sampling_ready';
+`,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {
 			if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES
@@ -377,6 +398,51 @@ INSERT INTO prompt_fts(prompt_fts) VALUES('rebuild');
 			return nil
 		},
 	}
+}
+
+func (s *Store) backfillRepositoryMetadata() error {
+	return s.Transaction(func(tx *Tx) error {
+		rows, err := tx.tx.Query(`SELECT id,repository_identity FROM sessions
+			WHERE provider='codex' AND repository_identity IS NOT NULL AND repository_identity<>''
+				AND (repository_rule_version<>? OR repository_name IS NULL OR repository_name='')
+			ORDER BY id`, history.RepositoryRuleVersion)
+		if err != nil {
+			return fmt.Errorf("list history repository metadata for backfill: %w", err)
+		}
+		type update struct {
+			id             int64
+			identity, name string
+		}
+		updates := []update{}
+		for rows.Next() {
+			var id int64
+			var raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan history repository metadata for backfill: %w", err)
+			}
+			identity, name := history.DeriveRepository(raw)
+			if identity != "" && name != "" {
+				updates = append(updates, update{id: id, identity: identity, name: name})
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, value := range updates {
+			if _, err := tx.tx.Exec(`UPDATE sessions SET repository_identity=?,repository_name=?,repository_rule_version=? WHERE id=?`,
+				value.identity, value.name, history.RepositoryRuleVersion, value.id); err != nil {
+				return fmt.Errorf("backfill history repository metadata: %w", err)
+			}
+		}
+		if len(updates) == 0 {
+			return nil
+		}
+		if err := tx.SetMeta("sampling_ready", "0"); err != nil {
+			return err
+		}
+		return tx.advanceGenerationIf(true)
+	})
 }
 
 func sampleKey(value string) []byte {

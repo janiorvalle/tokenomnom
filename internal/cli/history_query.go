@@ -144,8 +144,10 @@ func newHistorySearchCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistorySearchPage(&page, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history search", "UTC", flags.jsonFilters(), page.Warnings, page)
+				return writeHistoryJSONEnvelope(cmd, "history search", flags.jsonFilters(), page.Warnings, page)
 			}
 			for _, hit := range page.Hits {
 				timestamp := "-"
@@ -196,8 +198,10 @@ func newHistoryPromptsCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistoryPromptPage(&page, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history prompts", "UTC", flags.jsonFilters(), page.Warnings, page)
+				return writeHistoryJSONEnvelope(cmd, "history prompts", flags.jsonFilters(), page.Warnings, page)
 			}
 			for _, prompt := range page.Prompts {
 				timestamp := "-"
@@ -271,8 +275,10 @@ func newHistorySampleCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistorySample(&result, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history sample", "UTC", flags.jsonFilters(), result.Warnings, result)
+				return writeHistoryJSONEnvelope(cmd, "history sample", flags.jsonFilters(), result.Warnings, result)
 			}
 			for _, item := range result.Items {
 				groupParts := make([]string, 0, len(result.GroupBy))
@@ -309,7 +315,7 @@ func newHistorySampleCommand() *cobra.Command {
 	_ = command.Flags().MarkHidden("cursor")
 	command.Flags().StringVar(&unit, "unit", "prompt", "sample logical prompts or sessions")
 	command.Flags().StringVar(&strategy, "strategy", "", "sampling strategy (random or stratified)")
-	command.Flags().StringVar(&groupBy, "group-by", "", "stratify by month, repo, and/or thread-kind")
+	command.Flags().StringVar(&groupBy, "group-by", "", "stratify by month, cwd, repo, and/or thread-kind")
 	command.Flags().IntVar(&count, "count", 25, "maximum sampled units (1-100)")
 	command.Flags().StringVar(&seed, "seed", "", "deterministic sample seed")
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
@@ -353,10 +359,12 @@ func newHistoryStatsCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistoryStatistics(&value, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history stats", "UTC", flags.jsonFilters(), value.Warnings, value)
+				return writeHistoryJSONEnvelope(cmd, "history stats", flags.jsonFilters(), value.Warnings, value)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Sessions: %d\nPrompts: %d\nOccurrences: %d\nActive days: %d\nPrompt bytes: %d (median %.1f)\nIndex bytes: %d\n",
+			fmt.Fprintf(cmd.OutOrStdout(), "Scope: searchable prompt corpus\nSessions: %d\nPrompts: %d\nOccurrences: %d\nActive days: %d\nPrompt bytes: %d (median %.1f)\nIndex bytes: %d\n",
 				value.LogicalSessions, value.LogicalPrompts, value.PromptOccurrences, value.ActiveDays,
 				value.PromptLengthTotalBytes, value.PromptLengthMedianBytes, value.IndexSizeBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Role prompts: user=%d assistant=%d\n", value.RoleCounts.User.LogicalPrompts, value.RoleCounts.Assistant.LogicalPrompts)
@@ -418,8 +426,10 @@ func newHistoryShowCommand(codexDir, claudeDir *string) *cobra.Command {
 				}); err != nil {
 					return err
 				}
+				location, _ := historyPresentationTimezone(cmd)
+				presentHistoryPrompt(&value, location)
 				if currentFormat(cmd) == "json" {
-					return writeJSONEnvelope(cmd, "history show", "", jsonFilters{}, nil, value)
+					return writeHistoryJSONEnvelope(cmd, "history show", jsonFilters{}, nil, value)
 				}
 				if value.Text != nil {
 					fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*value.Text))
@@ -445,8 +455,10 @@ func newHistoryShowCommand(codexDir, claudeDir *string) *cobra.Command {
 				}); err != nil {
 					return err
 				}
+				location, _ := historyPresentationTimezone(cmd)
+				presentHistoryPromptPage(&page, location)
 				if currentFormat(cmd) == "json" {
-					return writeJSONEnvelope(cmd, "history show", "", jsonFilters{}, page.Warnings, page)
+					return writeHistoryJSONEnvelope(cmd, "history show", jsonFilters{}, page.Warnings, page)
 				}
 				for _, value := range page.Prompts {
 					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", value.PromptID, safePrettyPreview(*value.Text))
@@ -462,8 +474,10 @@ func newHistoryShowCommand(codexDir, claudeDir *string) *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistorySession(&value, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history show", "", jsonFilters{}, nil, value)
+				return writeHistoryJSONEnvelope(cmd, "history show", jsonFilters{}, nil, value)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\tprompts=%d\toccurrences=%d\t%s\n", value.SessionID, value.Provider, value.LogicalPromptCount, value.OccurrenceCount, safePrettyPreview(value.Preview))
 			return nil
@@ -543,7 +557,7 @@ func showHistoryRaw(cmd *cobra.Command, sessionID, snapshotID, codexDir, claudeD
 	} else {
 		data.Encoding = "base64"
 	}
-	return writeJSONEnvelope(cmd, "history show", "", jsonFilters{}, warnings, data)
+	return writeHistoryJSONEnvelope(cmd, "history show", jsonFilters{}, warnings, data)
 }
 
 type stagedHistoryRaw struct {

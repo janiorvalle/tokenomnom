@@ -105,6 +105,7 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 		ALTER TABLE sessions DROP COLUMN thread_confidence;
 		ALTER TABLE sessions DROP COLUMN thread_rule_version;
 		ALTER TABLE sessions DROP COLUMN forked_from_message_id;
+		ALTER TABLE sessions DROP COLUMN repository_rule_version;
 		DELETE FROM meta WHERE key='sampling_ready';
 		UPDATE meta SET value='2' WHERE key='schema_version';
 		UPDATE meta SET value='1' WHERE key='extractor_version'`); err != nil {
@@ -151,6 +152,69 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	var strata int
 	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sample_strata`).Scan(&strata); err != nil || strata < 14 {
 		t.Fatalf("migrated sample strata=%d err=%v", strata, err)
+	}
+}
+
+func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/repository-migration.jsonl", history.LocationProviderLive)
+	value := extraction("native:repository-migration", "repository-migration", source, prompt("native:p", "p", "kept", 1))
+	value.Session.RepositoryIdentity = "https://build:secret@git.example/Unusual.Org/TokenOmNom.git/"
+	before, err := database.ApplySource(value, head(source, "hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`ALTER TABLE sessions DROP COLUMN repository_rule_version;
+		UPDATE meta SET value='8' WHERE key='schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var sessionID, promptID, repositoryName, repositoryIdentity string
+	var ruleVersion int
+	if err := database.db.QueryRow(`SELECT s.public_id,p.public_id,s.repository_name,s.repository_identity,s.repository_rule_version
+		FROM sessions s JOIN prompts p ON p.session_id=s.id`).Scan(&sessionID, &promptID, &repositoryName, &repositoryIdentity, &ruleVersion); err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != before.SessionID || promptID != before.PromptIDs["native:p"] {
+		t.Fatalf("repository backfill changed stable IDs: before=%+v session=%q prompt=%q", before, sessionID, promptID)
+	}
+	if repositoryName != "TokenOmNom" || repositoryIdentity != "git.example/Unusual.Org/TokenOmNom" || ruleVersion != history.RepositoryRuleVersion {
+		t.Fatalf("repository backfill = name %q identity %q rule %d", repositoryName, repositoryIdentity, ruleVersion)
+	}
+	if matchCount(t, database, "kept") != 1 {
+		t.Fatal("repository backfill changed searchable prompt content")
+	}
+}
+
+func TestHealthSeparatesUserAndSearchableUserPromptCounts(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/counts.jsonl", history.LocationProviderLive)
+	searchable := prompt("native:searchable", "searchable", "human prompt", 1)
+	classified := prompt("native:classified", "classified", "provider metadata", 2)
+	classified.Classification = history.ClassificationProviderMetadata
+	classified.Searchable = false
+	if _, err := database.ApplySource(extraction("native:counts", "counts", source, searchable, classified), head(source, "hash", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.UserPrompts != 2 || health.SearchableUserPrompts != 1 {
+		t.Fatalf("history user counts = all %d searchable %d", health.UserPrompts, health.SearchableUserPrompts)
 	}
 }
 

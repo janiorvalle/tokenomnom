@@ -28,6 +28,7 @@ type StatisticsGroup struct {
 
 // Statistics is a SQL-aggregated, prompt-text-free corpus summary.
 type Statistics struct {
+	Scope                    string               `json:"scope"`
 	LogicalSessions          int                  `json:"logical_sessions"`
 	MutableSourceHeads       int                  `json:"mutable_source_heads"`
 	PreservedSnapshots       int                  `json:"preserved_snapshots"`
@@ -162,7 +163,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	args = append(args, promptArgs...)
 	args = append(args, promptArgs...)
 	args = append(args, history.ExtractorVersion, history.ExtractorVersion)
-	value := Statistics{Coverage: coverage, Warnings: warnings, Generation: generation, Groups: []StatisticsGroup{}}
+	value := Statistics{Scope: "searchable_prompt_corpus", Coverage: coverage, Warnings: warnings, Generation: generation, Groups: []StatisticsGroup{}}
 	if err := s.db.QueryRow(statement, args...).Scan(
 		&value.LogicalSessions, &value.MutableSourceHeads, &value.PreservedSnapshots,
 		&value.LogicalPrompts, &value.PromptOccurrences, &value.ActiveDays,

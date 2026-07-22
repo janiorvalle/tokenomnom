@@ -74,6 +74,7 @@ func TestSampleStratifiedAllocationUnknownsAndSessionMonth(t *testing.T) {
 		nil,
 	}
 	repos := []string{"Alpha", "Alpha", "Beta", ""}
+	cwds := []string{"/workspace/one", "/workspace/one", "/workspace/two", ""}
 	threads := []history.ThreadKind{history.ThreadRoot, history.ThreadRoot, history.ThreadSubagent, history.ThreadUnknown}
 	for index := range times {
 		source := sourceRef(fmt.Sprintf("/provider/stratum-%d.jsonl", index), history.LocationProviderLive)
@@ -82,6 +83,7 @@ func TestSampleStratifiedAllocationUnknownsAndSessionMonth(t *testing.T) {
 		extract := extraction(fmt.Sprintf("native:stratum-%d", index), fmt.Sprintf("stratum-%d", index), source, value)
 		extract.Session.FirstTimestamp, extract.Session.LastTimestamp = times[index], times[index]
 		extract.Session.RepositoryName = repos[index]
+		extract.Session.CWD = cwds[index]
 		extract.Session.ThreadKind = threads[index]
 		if threads[index] == history.ThreadUnknown {
 			extract.Session.ThreadConfidence = history.ConfidenceUnknown
@@ -112,6 +114,17 @@ func TestSampleStratifiedAllocationUnknownsAndSessionMonth(t *testing.T) {
 	}
 	if groups["alpha"] != 2 || groups["beta"] != 1 || groups["unknown"] != 1 {
 		t.Fatalf("round-robin strata=%+v", groups)
+	}
+	cwdSample, err := database.Sample(SampleQuery{Count: 3, GroupBy: []string{"month", "cwd"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwdGroups := map[string]int{}
+	for _, item := range cwdSample.Items {
+		cwdGroups[item.Groups["cwd"]]++
+	}
+	if len(cwdSample.Items) != 3 || cwdGroups["/workspace/one"] != 1 || cwdGroups["/workspace/two"] != 1 || cwdGroups["unknown"] != 1 {
+		t.Fatalf("cwd strata items=%+v groups=%+v", cwdSample.Items, cwdGroups)
 	}
 	fewerGroups, err := database.Sample(SampleQuery{Count: 2, GroupBy: []string{"repo"}, Seed: "group-pivot"})
 	if err != nil {
