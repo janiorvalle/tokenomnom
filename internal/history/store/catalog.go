@@ -197,7 +197,7 @@ func (s *Store) ListCatalog(query CatalogQuery) (CatalogPage, error) {
 	args = append(args, query.Limit+1)
 	statement := catalogSelect + " WHERE " + strings.Join(where, " AND ") +
 		" ORDER BY (" + sortExpr + "='') ASC," + sortExpr + " DESC,s.public_id ASC LIMIT ?"
-	rows, err := s.db.Query(statement, args...)
+	rows, err := s.runner.Query(statement, args...)
 	if err != nil {
 		return CatalogPage{}, fmt.Errorf("list history catalog: %w", err)
 	}
@@ -331,7 +331,7 @@ func catalogWhere(query CatalogQuery, includeMetadataFilters bool) ([]string, []
 func (s *Store) catalogCoverage(query CatalogQuery) (CatalogCoverage, error) {
 	where, args := catalogWhere(query, false)
 	var value CatalogCoverage
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 			COALESCE(SUM(CASE WHEN repository_name IS NOT NULL AND repository_name<>'' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN repository_name IS NULL OR repository_name='' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN branch IS NOT NULL AND branch<>'' THEN 1 ELSE 0 END),0),
@@ -342,7 +342,7 @@ func (s *Store) catalogCoverage(query CatalogQuery) (CatalogCoverage, error) {
 	}
 	query.ThreadKind = "all"
 	where, args = catalogWhere(query, false)
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 			COALESCE(SUM(CASE WHEN thread_kind='root' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN thread_kind='subagent' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN thread_kind='unknown' THEN 1 ELSE 0 END),0)
@@ -355,7 +355,7 @@ func (s *Store) catalogCoverage(query CatalogQuery) (CatalogCoverage, error) {
 
 func (s *Store) indexGeneration() (int64, error) {
 	var value int64
-	if err := s.db.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='index_generation'),'0')`).Scan(&value); err != nil {
+	if err := s.runner.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='index_generation'),'0')`).Scan(&value); err != nil {
 		return 0, fmt.Errorf("read history index generation: %w", err)
 	}
 	return value, nil

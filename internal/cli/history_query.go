@@ -665,11 +665,6 @@ func withHistoryStore(cmd *cobra.Command, run func(*historystore.Store) error) e
 	if err != nil {
 		return err
 	}
-	release, err := historystore.Lock(path)
-	if err != nil {
-		return err
-	}
-	defer release()
 	info, err := historystore.Inspect(path)
 	if err != nil {
 		return err
@@ -677,7 +672,7 @@ func withHistoryStore(cmd *cobra.Command, run func(*historystore.Store) error) e
 	if !info.Exists {
 		return errors.New("history index does not exist; run tokenomnom history index first")
 	}
-	database, err := historystore.Open(path)
+	database, err := historystore.OpenReadOnly(path)
 	if err != nil {
 		return err
 	}

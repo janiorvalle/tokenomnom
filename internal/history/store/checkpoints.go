@@ -88,7 +88,7 @@ type Health struct {
 
 // Checkpoints returns provider source checkpoints keyed by provider and path.
 func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
-	rows, err := s.db.Query(`SELECT sh.public_id,sh.provider,sh.source_path,sh.source_kind,sh.size,sh.mtime_unix,
+	rows, err := s.runner.Query(`SELECT sh.public_id,sh.provider,sh.source_path,sh.source_kind,sh.size,sh.mtime_unix,
 		sh.complete_offset,sh.line_count,sh.current_sha256,sh.content_hash_state,sh.prefix_fingerprint,
 		sh.tail_fingerprint,sh.extractor_state,sh.extractor_version,sh.indexed_at,sh.last_attempt_unix,
 		sh.last_error,sh.available,s.identity_key,COALESCE(s.native_session_id,''),s.fallback_key,
@@ -239,7 +239,7 @@ func (s *Store) RecordSourceChecked(provider history.Provider, path string) erro
 
 // SourceErrors lists non-content diagnostics for unpublished source heads.
 func (s *Store) SourceErrors() ([]SourceError, error) {
-	rows, err := s.db.Query(`SELECT provider,source_path FROM source_errors ORDER BY provider,source_path`)
+	rows, err := s.runner.Query(`SELECT provider,source_path FROM source_errors ORDER BY provider,source_path`)
 	if err != nil {
 		return nil, fmt.Errorf("list unpublished history source errors: %w", err)
 	}
@@ -257,7 +257,7 @@ func (s *Store) SourceErrors() ([]SourceError, error) {
 
 // ClearSourceError removes a diagnostic after the source succeeds or vanishes.
 func (s *Store) ClearSourceError(provider history.Provider, path string) error {
-	_, err := s.db.Exec(`DELETE FROM source_errors WHERE provider=? AND source_path=?`, provider, path)
+	_, err := s.runner.Exec(`DELETE FROM source_errors WHERE provider=? AND source_path=?`, provider, path)
 	if err != nil {
 		return fmt.Errorf("clear unpublished history source error: %w", err)
 	}
@@ -303,7 +303,7 @@ func (s *Store) Health() (Health, error) {
 		return Health{}, err
 	}
 	value := Health{Exists: info.Exists, Path: info.Path, SizeBytes: info.Size, SchemaVersion: info.SchemaVersion, ExtractorVersion: info.ExtractorVersion}
-	err = scanHealth(s.db.QueryRow(healthQuery, history.ExtractorVersion, history.ExtractorVersion, history.ExtractorVersion), &value)
+	err = scanHealth(s.runner.QueryRow(healthQuery, history.ExtractorVersion, history.ExtractorVersion, history.ExtractorVersion), &value)
 	if err != nil {
 		return Health{}, fmt.Errorf("read history health: %w", err)
 	}

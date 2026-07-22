@@ -181,6 +181,15 @@ run succeeds across the selected providers and their provider/vault sources.
 Scheduled completion follows the configured `history.providers` scope; role
 coverage warnings disclose materially different or missing provider coverage.
 
+Only mutating history operations take `history.db.lock`. Search, list, show,
+prompts, stats, sample, status, and doctor use SQLite read-only URI connections
+with foreign keys enabled and a five-second busy timeout. They do not create or
+migrate the database, change its permissions, or create a process lock; WAL
+provides visibility while an index run is active. A writer lock records its PID
+and process start time. The advisory lock file is persistent for compatibility
+with older binaries; the next writer replaces an orphaned ownership record left
+by a dead or PID-reused owner.
+
 Vault traversal holds the vault lock, then the history lock, then one SQLite
 transaction per bundle. Each archive is decompressed once and every yielded
 member is matched by path, size, and SHA-256. A bad member rolls back that
