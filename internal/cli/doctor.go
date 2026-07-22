@@ -580,7 +580,7 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 			fmt.Fprintf(writer, "  %-17s 0\n", "Usage rows:")
 			fmt.Fprintf(writer, "  %-17s 0\n", "Distinct models:")
 			fmt.Fprintf(writer, "  %-17s -\n", "Date range:")
-			fmt.Fprintf(writer, "  %-17s 0\n", "Missing files:")
+			fmt.Fprintf(writer, "  %-45s 0\n", "Synced transcript files no longer present:")
 			return nil
 		}
 		return fmt.Errorf("stat usage store: %w", err)
@@ -602,7 +602,7 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	fmt.Fprintf(writer, "  %-17s %d\n", "Usage rows:", info.UsageRows)
 	fmt.Fprintf(writer, "  %-17s %d\n", "Distinct models:", info.DistinctModels)
 	fmt.Fprintf(writer, "  %-17s %s\n", "Date range:", dateRange(info.OldestDate, info.NewestDate))
-	fmt.Fprintf(writer, "  %-17s %d\n", "Missing files:", info.MissingFiles)
+	fmt.Fprintf(writer, "  %-45s %d\n", "Synced transcript files no longer present:", info.MissingFiles)
 	if warning := missingFilesWarning(info.MissingFiles); warning != "" {
 		writeWarningLine(cmd, "WARNING: "+warning)
 	}
@@ -613,7 +613,7 @@ func missingFilesWarning(count int) string {
 	if count == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d previously synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted.", count)
+	return fmt.Sprintf("%d synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted.", count)
 }
 
 func dashIfEmpty(value string) string {

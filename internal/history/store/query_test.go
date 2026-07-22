@@ -433,6 +433,78 @@ func TestPromptsShowRawCandidatesStatsAndCoverage(t *testing.T) {
 	}
 }
 
+func TestProjectDerivationFilteringGroupingCoverageAndCursorBinding(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+
+	add := func(provider history.Provider, identity, path, repository, cwd string) {
+		t.Helper()
+		source := history.SourceReference{Provider: provider, Kind: history.LocationProviderLive, Path: path}
+		extract := extraction("native:"+identity, identity, source, prompt("native:"+identity, identity, "project phrase "+identity, 1))
+		extract.Provider = provider
+		extract.Session.RepositoryName = repository
+		extract.Session.CWD = cwd
+		if _, err := database.ApplySource(extract, head(source, identity, 10, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(history.ProviderCodex, "git", "/provider/git.jsonl", "demo", "/workspace/fallback")
+	add(history.ProviderClaude, "cwd", "/provider/cwd.jsonl", "", "/workspace/demo")
+	add(history.ProviderClaude, "unknown", "/provider/unknown.jsonl", "", "")
+
+	list, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Project: "demo", Limit: 1})
+	if err != nil || len(list.Sessions) != 1 || !list.HasMore || list.Coverage.Project.Git != 1 || list.Coverage.Project.CWD != 1 || list.Coverage.Project.Unknown != 1 {
+		t.Fatalf("project list = %+v err=%v", list, err)
+	}
+	if _, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Project: "other", Cursor: list.NextCursor}); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("project list cursor mismatch = %v", err)
+	}
+	unknown, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Project: "unknown"})
+	if err != nil || len(unknown.Sessions) != 1 || unknown.Sessions[0].ProjectSource != history.ProjectSourceUnknown || unknown.Sessions[0].RepositoryName != nil {
+		t.Fatalf("unknown project list = %+v err=%v", unknown, err)
+	}
+
+	search, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Project: "demo", Limit: 1}, Query: "project phrase"})
+	if err != nil || len(search.Hits) != 1 || !search.Page.HasMore || search.Hits[0].Project != "demo" || search.Hits[0].ProjectSource == history.ProjectSourceUnknown {
+		t.Fatalf("project search = %+v err=%v", search, err)
+	}
+	if _, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Project: "other", Cursor: search.Page.NextCursor}, Query: "project phrase"}); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("project search cursor mismatch = %v", err)
+	}
+
+	prompts, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny, Project: "demo"})
+	if err != nil || len(prompts.Prompts) != 2 {
+		t.Fatalf("project prompts = %+v err=%v", prompts, err)
+	}
+
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Project: "demo"}, GroupBy: []string{"project"}})
+	if err != nil || stats.LogicalPrompts != 2 {
+		t.Fatalf("project stats = %+v err=%v", stats, err)
+	}
+	sources := map[string]bool{}
+	for _, group := range stats.Groups {
+		if group.Values["project"] == "demo" {
+			sources[group.Values["project_source"]] = true
+		}
+	}
+	if !sources["git"] || !sources["cwd"] {
+		t.Fatalf("project statistics groups = %+v", stats.Groups)
+	}
+
+	sample, err := database.Sample(SampleQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, Project: "demo"}, Count: 2, GroupBy: []string{"project"}})
+	if err != nil || len(sample.Items) != 2 || sample.Coverage.Project.Git != 1 || sample.Coverage.Project.CWD != 1 {
+		t.Fatalf("project sample = %+v err=%v", sample, err)
+	}
+	for _, item := range sample.Items {
+		if item.Groups["project"] != "demo" || (item.Groups["project_source"] != "git" && item.Groups["project_source"] != "cwd") {
+			t.Fatalf("project sample item = %+v", item)
+		}
+	}
+	if _, err := database.Sample(SampleQuery{Count: 2, GroupBy: []string{"project", "repo"}}); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported project strata error = %v", err)
+	}
+}
+
 func TestRoleQueriesCursorCoverageAndStatistics(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()

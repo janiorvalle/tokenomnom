@@ -211,7 +211,7 @@ func subtractThreadKindCounts(after, before historystore.ThreadKindCoverage) his
 }
 
 func newHistoryListCommand() *cobra.Command {
-	var provider, since, until, cwd, repo, branch, source, cursor, threadKind string
+	var provider, since, until, cwd, repo, project, branch, source, cursor, threadKind string
 	var limit int
 	var rootOnly bool
 	command := &cobra.Command{
@@ -274,7 +274,7 @@ func newHistoryListCommand() *cobra.Command {
 			if rootOnly {
 				effectiveThreadKind = "root"
 			}
-			query := historystore.CatalogQuery{Provider: history.Provider(provider), CWD: cwd, Repo: repo, Branch: branch, Source: historystore.CatalogSource(source), ThreadKind: effectiveThreadKind, Limit: requestedLimit, Cursor: cursor}
+			query := historystore.CatalogQuery{Provider: history.Provider(provider), CWD: cwd, Repo: repo, Project: project, Branch: branch, Source: historystore.CatalogSource(source), ThreadKind: effectiveThreadKind, Limit: requestedLimit, Cursor: cursor}
 			if since != "" {
 				value, _ := time.Parse("2006-01-02", since)
 				query.Since = &value
@@ -315,6 +315,7 @@ func newHistoryListCommand() *cobra.Command {
 	command.Flags().StringVar(&until, "until", "", "include sessions active on or before YYYY-MM-DD")
 	command.Flags().StringVar(&cwd, "cwd", "", "filter by exact working directory")
 	command.Flags().StringVar(&repo, "repo", "", "filter by known repository name")
+	command.Flags().StringVar(&project, "project", "", "filter by derived project name")
 	command.Flags().StringVar(&branch, "branch", "", "filter by known branch")
 	command.Flags().StringVar(&source, "source", "any", "filter by availability source")
 	command.Flags().IntVar(&limit, "limit", 100, "maximum page rows (1-500)")
@@ -598,8 +599,8 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health, drift hi
 	}
 	writeHeading(cmd, "History")
 	statusText := status
-	if status == "ready" && drift.ChangedSourcesSinceIndex > 0 {
-		statusText = fmt.Sprintf("ready (%d sources changed since last index)", drift.ChangedSourcesSinceIndex)
+	if status == "ready" && drift.SettledChangedSources > 0 {
+		statusText = fmt.Sprintf("ready (%d settled sources changed since last index)", drift.SettledChangedSources)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Status:", statusText)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Path:", health.Path)
@@ -620,8 +621,11 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health, drift hi
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Coverage:", coverage)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "User coverage:", stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageLast), location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "Assistant coverage:", stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageLast), location)))
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d / %d\n", "Stale/error/missing:", health.StaleSources, health.ErrorSources, health.MissingSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-32s %d / %d\n", "Stale/error source heads:", health.StaleSources, health.ErrorSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-32s %d\n", "Indexed source heads whose file is gone:", health.MissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Changed since index:", drift.ChangedSourcesSinceIndex, drift.NewSourcesSinceIndex)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Active drift:", drift.ActiveChangedSources, drift.ActiveNewSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Settled drift:", drift.SettledChangedSources, drift.SettledNewSources)
 	newestSourceChange := (*string)(nil)
 	if drift.NewestSourceChange != nil {
 		value := drift.NewestSourceChange.Format(time.RFC3339Nano)
@@ -709,6 +713,10 @@ type jsonHistoryHealth struct {
 	InspectionError          *string  `json:"inspection_error"`
 	ChangedSourcesSinceIndex int      `json:"changed_sources_since_index"`
 	NewSourcesSinceIndex     int      `json:"new_sources_since_index"`
+	ActiveChangedSources     int      `json:"active_changed_sources"`
+	ActiveNewSources         int      `json:"active_new_sources"`
+	SettledChangedSources    int      `json:"settled_changed_sources"`
+	SettledNewSources        int      `json:"settled_new_sources"`
 	NewestSourceChange       *string  `json:"newest_source_change"`
 	SourceDriftAsOf          string   `json:"source_drift_as_of"`
 }
@@ -741,6 +749,10 @@ func historyHealthJSON(health historystore.Health, drift historyfreshness.Result
 		InspectionError:          optionalString(health.InspectionError),
 		ChangedSourcesSinceIndex: drift.ChangedSourcesSinceIndex,
 		NewSourcesSinceIndex:     drift.NewSourcesSinceIndex,
+		ActiveChangedSources:     drift.ActiveChangedSources,
+		ActiveNewSources:         drift.ActiveNewSources,
+		SettledChangedSources:    drift.SettledChangedSources,
+		SettledNewSources:        drift.SettledNewSources,
 		NewestSourceChange:       newestSourceChange,
 		SourceDriftAsOf:          drift.AsOf.Format(time.RFC3339Nano),
 	}

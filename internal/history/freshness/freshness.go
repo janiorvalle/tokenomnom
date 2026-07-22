@@ -10,10 +10,18 @@ import (
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 )
 
+// SettleWindow separates expected churn from running sessions from drift that
+// is old enough to warrant another index. It is intentionally not configurable.
+const SettleWindow = 10 * time.Minute
+
 // Result is a bounded, content-free view of provider changes since indexing.
 type Result struct {
 	ChangedSourcesSinceIndex int
 	NewSourcesSinceIndex     int
+	ActiveChangedSources     int
+	ActiveNewSources         int
+	SettledChangedSources    int
+	SettledNewSources        int
 	NewestSourceChange       *time.Time
 	AsOf                     time.Time
 	Warnings                 []string
@@ -26,6 +34,21 @@ func Probe(databasePath string, roots []discover.Root, now func() time.Time) Res
 		now = time.Now
 	}
 	result := Result{AsOf: now(), Warnings: []string{}}
+	classify := func(changedAt time.Time, isNew bool) {
+		result.ChangedSourcesSinceIndex++
+		active := activeWithinSettleWindow(changedAt, result.AsOf)
+		if active {
+			result.ActiveChangedSources++
+			if isNew {
+				result.ActiveNewSources++
+			}
+		} else {
+			result.SettledChangedSources++
+			if isNew {
+				result.SettledNewSources++
+			}
+		}
+	}
 	info, err := historystore.Inspect(databasePath)
 	if err != nil || !info.Exists || info.SchemaVersion != historystore.SchemaVersion {
 		return result
@@ -63,11 +86,11 @@ func Probe(databasePath string, roots []discover.Root, now func() time.Time) Res
 			if found && checkpoint.Size == file.Size && checkpoint.ModTimeUnixNano == file.ModTime.UnixNano() && !checkpoint.Missing {
 				continue
 			}
-			result.ChangedSourcesSinceIndex++
 			if !found {
 				result.NewSourcesSinceIndex++
 			}
 			changedAt := file.ModTime
+			classify(changedAt, !found)
 			if result.NewestSourceChange == nil || changedAt.After(*result.NewestSourceChange) {
 				result.NewestSourceChange = &changedAt
 			}
@@ -75,8 +98,12 @@ func Probe(databasePath string, roots []discover.Root, now func() time.Time) Res
 	}
 	for key, checkpoint := range checkpoints {
 		if seenProviders[checkpoint.Provider] && !incompleteProviders[checkpoint.Provider] && !checkpoint.Missing && !present[key] {
-			result.ChangedSourcesSinceIndex++
+			classify(time.Unix(0, checkpoint.ModTimeUnixNano), false)
 		}
 	}
 	return result
+}
+
+func activeWithinSettleWindow(changedAt, asOf time.Time) bool {
+	return !changedAt.Before(asOf.Add(-SettleWindow)) && !changedAt.After(asOf.Add(SettleWindow))
 }

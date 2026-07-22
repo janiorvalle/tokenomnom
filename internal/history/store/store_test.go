@@ -188,7 +188,7 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 	}
 	if _, err := database.db.Exec(`DROP TRIGGER sample_strata_session_delete; DROP TRIGGER sample_strata_prompt_delete; DROP TRIGGER sample_strata_group_insert; DROP TRIGGER sample_strata_group_delete; DROP TABLE sample_strata; DROP TABLE sample_groups;
 		DROP INDEX prompts_role_kind_timestamp_idx;
-		DROP INDEX sessions_sample_key_idx; DROP INDEX sessions_sample_month_idx; DROP INDEX sessions_sample_repo_idx; DROP INDEX sessions_sample_thread_idx; DROP INDEX prompts_sample_key_idx; DROP INDEX prompts_session_sample_key_idx;
+			DROP INDEX sessions_sample_key_idx; DROP INDEX sessions_sample_month_idx; DROP INDEX sessions_sample_repo_idx; DROP INDEX sessions_project_idx; DROP INDEX sessions_sample_thread_idx; DROP INDEX prompts_sample_key_idx; DROP INDEX prompts_session_sample_key_idx;
 		ALTER TABLE sessions DROP COLUMN sample_key;
 		ALTER TABLE prompts DROP COLUMN sample_key;
 		ALTER TABLE prompts DROP COLUMN prompt_kind_version;
@@ -200,7 +200,9 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 		ALTER TABLE sessions DROP COLUMN thread_confidence;
 		ALTER TABLE sessions DROP COLUMN thread_rule_version;
 		ALTER TABLE sessions DROP COLUMN forked_from_message_id;
-		ALTER TABLE sessions DROP COLUMN repository_rule_version;
+			ALTER TABLE sessions DROP COLUMN repository_rule_version;
+			ALTER TABLE sessions DROP COLUMN project_source;
+			ALTER TABLE sessions DROP COLUMN project;
 		DELETE FROM meta WHERE key='sampling_ready';
 		UPDATE meta SET value='2' WHERE key='schema_version';
 		UPDATE meta SET value='1' WHERE key='extractor_version'`); err != nil {
@@ -264,11 +266,14 @@ func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := database.db.Exec(`DROP INDEX prompts_role_kind_timestamp_idx;
+			DROP INDEX sessions_project_idx;
 		ALTER TABLE prompts DROP COLUMN prompt_kind_version;
 		ALTER TABLE prompts DROP COLUMN prompt_kind;
 		ALTER TABLE occurrences DROP COLUMN prompt_kind_version;
 		ALTER TABLE occurrences DROP COLUMN prompt_kind;
-		ALTER TABLE sessions DROP COLUMN repository_rule_version;
+			ALTER TABLE sessions DROP COLUMN repository_rule_version;
+			ALTER TABLE sessions DROP COLUMN project_source;
+			ALTER TABLE sessions DROP COLUMN project;
 		UPDATE meta SET value='8' WHERE key='schema_version'`); err != nil {
 		t.Fatal(err)
 	}
@@ -281,10 +286,10 @@ func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer database.Close()
-	var sessionID, promptID, repositoryName, repositoryIdentity string
+	var sessionID, promptID, repositoryName, repositoryIdentity, project, projectSource string
 	var ruleVersion int
-	if err := database.db.QueryRow(`SELECT s.public_id,p.public_id,s.repository_name,s.repository_identity,s.repository_rule_version
-		FROM sessions s JOIN prompts p ON p.session_id=s.id`).Scan(&sessionID, &promptID, &repositoryName, &repositoryIdentity, &ruleVersion); err != nil {
+	if err := database.db.QueryRow(`SELECT s.public_id,p.public_id,s.repository_name,s.repository_identity,s.repository_rule_version,s.project,s.project_source
+		FROM sessions s JOIN prompts p ON p.session_id=s.id`).Scan(&sessionID, &promptID, &repositoryName, &repositoryIdentity, &ruleVersion, &project, &projectSource); err != nil {
 		t.Fatal(err)
 	}
 	if sessionID != before.SessionID || promptID != before.PromptIDs["native:p"] {
@@ -292,6 +297,9 @@ func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) 
 	}
 	if repositoryName != "TokenOmNom" || repositoryIdentity != "git.example/Unusual.Org/TokenOmNom" || ruleVersion != history.RepositoryRuleVersion {
 		t.Fatalf("repository backfill = name %q identity %q rule %d", repositoryName, repositoryIdentity, ruleVersion)
+	}
+	if project != "TokenOmNom" || projectSource != "git" {
+		t.Fatalf("project backfill = project %q source %q", project, projectSource)
 	}
 	if matchCount(t, database, "kept") != 1 {
 		t.Fatal("repository backfill changed searchable prompt content")

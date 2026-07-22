@@ -39,6 +39,7 @@ type SampleCoverage struct {
 	FirstTimestamp *string            `json:"first_timestamp"`
 	LastTimestamp  *string            `json:"last_timestamp"`
 	Repository     FieldCoverage      `json:"repository"`
+	Project        ProjectCoverage    `json:"project"`
 	Branch         FieldCoverage      `json:"branch"`
 	ThreadKind     ThreadKindCoverage `json:"thread_kind"`
 }
@@ -93,12 +94,12 @@ type seededSampleState struct {
 }
 
 type samplingMetadata struct {
-	unitKind                                      string
-	unitID                                        int64
-	sampleKey                                     []byte
-	month, repository, thread, provider, cwd      string
-	branch, firstDate, lastDate                   string
-	providerLive, providerArchive, vaultAvailable bool
+	unitKind                                                         string
+	unitID                                                           int64
+	sampleKey                                                        []byte
+	month, repository, project, projectSource, thread, provider, cwd string
+	branch, firstDate, lastDate                                      string
+	providerLive, providerArchive, vaultAvailable                    bool
 }
 
 type samplingExecer interface {
@@ -110,14 +111,14 @@ func populateSampleStrata(tx samplingExecer) error {
 	if _, err := tx.Exec(`DELETE FROM sample_strata`); err != nil {
 		return fmt.Errorf("clear history sample strata: %w", err)
 	}
-	rows, err := tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.thread_kind,
+	rows, err := tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
 		EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)
 		FROM sessions s
 		UNION ALL
-		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.thread_kind,
+		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -130,7 +131,7 @@ func populateSampleStrata(tx samplingExecer) error {
 	for rows.Next() {
 		var value samplingMetadata
 		var timestamp string
-		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.thread,
+		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
 			&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 			&value.providerLive, &value.providerArchive, &value.vaultAvailable); err != nil {
 			rows.Close()
@@ -162,14 +163,14 @@ func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
 		(unit_kind='prompt' AND unit_id IN (SELECT id FROM prompts WHERE session_id=?))`, sessionID, sessionID); err != nil {
 		return fmt.Errorf("clear session sample strata: %w", err)
 	}
-	rows, err := tx.tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.thread_kind,
+	rows, err := tx.tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
 		EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)
 		FROM sessions s WHERE s.id=?
 		UNION ALL
-		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.thread_kind,
+		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -182,7 +183,7 @@ func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
 	for rows.Next() {
 		var value samplingMetadata
 		var timestamp string
-		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.thread,
+		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
 			&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 			&value.providerLive, &value.providerArchive, &value.vaultAvailable); err != nil {
 			rows.Close()
@@ -213,7 +214,7 @@ func (tx *Tx) refreshSessionSampleStratum(sessionID int64) error {
 	if _, err := tx.tx.Exec(`DELETE FROM sample_strata WHERE unit_kind='session' AND unit_id=?`, sessionID); err != nil {
 		return fmt.Errorf("clear session sample strata: %w", err)
 	}
-	row := tx.tx.QueryRow(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.thread_kind,
+	row := tx.tx.QueryRow(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
@@ -234,7 +235,7 @@ func (tx *Tx) refreshPromptSampleStrata(promptIDs []int64) error {
 		if _, err := tx.tx.Exec(`DELETE FROM sample_strata WHERE unit_kind='prompt' AND unit_id=?`, promptID); err != nil {
 			return fmt.Errorf("clear prompt sample strata: %w", err)
 		}
-		row := tx.tx.QueryRow(`SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.thread_kind,
+		row := tx.tx.QueryRow(`SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
 			s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -257,7 +258,7 @@ func (tx *Tx) refreshPromptSampleStrata(promptIDs []int64) error {
 func scanSamplingMetadata(row interface{ Scan(...any) error }) (samplingMetadata, error) {
 	var value samplingMetadata
 	var timestamp string
-	err := row.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.thread,
+	err := row.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
 		&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 		&value.providerLive, &value.providerArchive, &value.vaultAvailable)
 	if err != nil {
@@ -278,20 +279,21 @@ func insertSampleStrata(tx interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }, value samplingMetadata) error {
 	dimensions := [][]string{
-		{"month"}, {"repo"}, {"thread-kind"},
+		{"month"}, {"repo"}, {"project"}, {"thread-kind"},
 		{"cwd", "month"},
-		{"month", "repo"}, {"month", "thread-kind"}, {"repo", "thread-kind"},
-		{"month", "repo", "thread-kind"},
+		{"month", "repo"}, {"month", "project"}, {"month", "thread-kind"}, {"project", "thread-kind"}, {"repo", "thread-kind"},
+		{"month", "project", "thread-kind"}, {"month", "repo", "thread-kind"},
 	}
 	groupCWD := value.cwd
 	if strings.TrimSpace(groupCWD) == "" {
 		groupCWD = "unknown"
 	}
-	allValues := map[string]string{"month": value.month, "cwd": groupCWD, "repo": value.repository, "thread-kind": value.thread}
+	allValues := map[string]string{"month": value.month, "cwd": groupCWD, "repo": value.repository, "project": value.project, "project_source": value.projectSource, "thread-kind": value.thread}
 	for _, current := range dimensions {
-		groups := make([]string, len(current))
-		parts := make([]string, len(current))
-		for i, dimension := range current {
+		expanded := expandedProjectDimensions(current)
+		groups := make([]string, len(expanded))
+		parts := make([]string, len(expanded))
+		for i, dimension := range expanded {
 			groups[i] = allValues[dimension]
 			parts[i] = dimension + "=" + groups[i]
 		}
@@ -302,7 +304,7 @@ func insertSampleStrata(tx interface {
 		}
 	}
 	filters := map[string][]string{
-		"provider": {value.provider}, "cwd": {value.cwd}, "repo-filter": {value.repository}, "branch": {value.branch},
+		"provider": {value.provider}, "cwd": {value.cwd}, "repo-filter": {value.repository}, "project-filter": {value.project}, "branch": {value.branch},
 	}
 	if value.unitKind == SampleUnitPrompt {
 		filters["date"] = []string{value.firstDate}
@@ -341,6 +343,17 @@ func insertSampleStratum(tx interface {
 	_, err := tx.Exec(`INSERT INTO sample_strata(unit_kind,unit_id,dimensions,group_values,group_key,sample_key) VALUES(?,?,?,?,?,?)`,
 		value.unitKind, value.unitID, dimension, encoded, sampleKey(groupKey), value.sampleKey)
 	return err
+}
+
+func expandedProjectDimensions(dimensions []string) []string {
+	result := make([]string, 0, len(dimensions)+1)
+	for _, dimension := range dimensions {
+		result = append(result, dimension)
+		if dimension == "project" {
+			result = append(result, "project_source")
+		}
+	}
+	return result
 }
 
 // PrepareSampling performs the corpus-sized v7 population only during an
@@ -620,14 +633,15 @@ func (s *Store) sampleGroupForID(query SampleQuery, publicID string) (sampleGrou
 		return sampleGroup{}, fmt.Errorf("read history sample group: %w", err)
 	}
 	var values []string
-	if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(query.GroupBy) {
+	expanded := expandedProjectDimensions(query.GroupBy)
+	if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(expanded) {
 		return sampleGroup{}, errors.New("invalid indexed history sample group")
 	}
 	mapping := make(map[string]string, len(values))
 	parts := make([]string, len(values))
 	for i, value := range values {
-		mapping[query.GroupBy[i]] = value
-		parts[i] = query.GroupBy[i] + "=" + value
+		mapping[expanded[i]] = value
+		parts[i] = expanded[i] + "=" + value
 	}
 	return sampleGroup{values: mapping, key: strings.Join(parts, "\x00"), hash: hash, encoded: encoded}, nil
 }
@@ -641,6 +655,9 @@ func promptSampleGroups(prompt PromptResult, groups []string) map[string]string 
 			values[group] = month
 		case "repo":
 			values[group] = normalizedSampleRepo(prompt.RepositoryName)
+		case "project":
+			values[group] = prompt.Project
+			values["project_source"] = string(prompt.ProjectSource)
 		case "cwd":
 			values[group] = normalizedSampleCWD(prompt.CWD)
 		case "thread-kind":
@@ -659,6 +676,9 @@ func sessionSampleGroups(session CatalogSession, groups []string) map[string]str
 			values[group] = month
 		case "repo":
 			values[group] = normalizedSampleRepo(session.RepositoryName)
+		case "project":
+			values[group] = session.Project
+			values["project_source"] = string(session.ProjectSource)
 		case "cwd":
 			values[group] = normalizedSampleCWD(session.CWD)
 		case "thread-kind":
@@ -717,7 +737,7 @@ func normalizeSampleGroups(values []string) ([]string, error) {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(strings.ToLower(value))
-		if value != "month" && value != "cwd" && value != "repo" && value != "thread-kind" {
+		if value != "month" && value != "cwd" && value != "repo" && value != "project" && value != "thread-kind" {
 			return nil, fmt.Errorf("invalid history sample group %q", value)
 		}
 		if !seen[value] {
@@ -726,7 +746,22 @@ func normalizeSampleGroups(values []string) ([]string, error) {
 		}
 	}
 	sort.Strings(result)
+	combination := strings.Join(result, ",")
+	if combination != "" && !supportedSampleGroupCombination(combination) {
+		return nil, fmt.Errorf("unsupported history sample group combination %q", combination)
+	}
 	return result, nil
+}
+
+func supportedSampleGroupCombination(value string) bool {
+	switch value {
+	case "month", "cwd", "repo", "project", "thread-kind",
+		"cwd,month", "month,repo", "month,project", "month,thread-kind", "project,thread-kind", "repo,thread-kind",
+		"month,project,thread-kind", "month,repo,thread-kind":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) sampleGroups(query SampleQuery) ([]sampleGroup, error) {
@@ -744,14 +779,15 @@ func (s *Store) sampleGroups(query SampleQuery) ([]sampleGroup, error) {
 			return nil, fmt.Errorf("scan history sample group: %w", err)
 		}
 		var values []string
-		if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(query.GroupBy) {
+		expanded := expandedProjectDimensions(query.GroupBy)
+		if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(expanded) {
 			return nil, errors.New("invalid indexed history sample group")
 		}
 		mapping := make(map[string]string, len(values))
 		parts := make([]string, len(values))
 		for i, value := range values {
-			mapping[query.GroupBy[i]] = value
-			parts[i] = query.GroupBy[i] + "=" + value
+			mapping[expanded[i]] = value
+			parts[i] = expanded[i] + "=" + value
 		}
 		key := strings.Join(parts, "\x00")
 		result = append(result, sampleGroup{values: mapping, key: key, hash: append([]byte(nil), hash...), encoded: encoded})
@@ -871,6 +907,9 @@ func indexedSampleFilters(query SampleQuery) []indexedSampleFilter {
 	if query.Repo != "" {
 		exact("repo-filter", normalizedSampleRepoText(query.Repo))
 	}
+	if query.Project != "" {
+		exact("project-filter", query.Project)
+	}
 	if query.CWD != "" {
 		exact("cwd", query.CWD)
 	}
@@ -919,7 +958,7 @@ func indexedSampleFilters(query SampleQuery) []indexedSampleFilter {
 func sampleBaseQuery(query SampleQuery) ([]string, []any, string) {
 	if query.Unit == SampleUnitSession {
 		catalog := CatalogQuery{Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
-			Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind}
+			Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind}
 		where, args := catalogWhere(catalog, true)
 		where = append(where, `EXISTS(SELECT 1 FROM prompts p JOIN occurrences o ON o.prompt_id=p.id JOIN locations l ON l.id=o.location_id
 			WHERE p.session_id=s.id AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND l.available=1)`)
@@ -948,6 +987,7 @@ func sampleCoverage(items []SampleItem) SampleCoverage {
 	for _, item := range items {
 		var sessionID string
 		var firstTimestamp, lastTimestamp, repository, branch *string
+		var projectSource history.ProjectSource
 		var threadKind history.ThreadKind
 		if item.Prompt != nil {
 			sessionID = item.Prompt.SessionID
@@ -955,6 +995,7 @@ func sampleCoverage(items []SampleItem) SampleCoverage {
 			lastTimestamp = item.Prompt.Timestamp
 			repository = item.Prompt.RepositoryName
 			branch = item.Prompt.Branch
+			projectSource = item.Prompt.ProjectSource
 			threadKind = item.Prompt.ThreadKind
 		} else if item.Session != nil {
 			sessionID = item.Session.SessionID
@@ -962,6 +1003,7 @@ func sampleCoverage(items []SampleItem) SampleCoverage {
 			lastTimestamp = item.Session.LastTimestamp
 			repository = item.Session.RepositoryName
 			branch = item.Session.Branch
+			projectSource = item.Session.ProjectSource
 			threadKind = item.Session.ThreadKind
 		}
 		if firstTimestamp != nil {
@@ -993,6 +1035,14 @@ func sampleCoverage(items []SampleItem) SampleCoverage {
 			coverage.Branch.Unknown++
 		} else {
 			coverage.Branch.Known++
+		}
+		switch projectSource {
+		case history.ProjectSourceGit:
+			coverage.Project.Git++
+		case history.ProjectSourceCWD:
+			coverage.Project.CWD++
+		default:
+			coverage.Project.Unknown++
 		}
 		switch threadKind {
 		case history.ThreadRoot:

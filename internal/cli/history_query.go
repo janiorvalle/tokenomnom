@@ -29,6 +29,7 @@ type historyQueryFlags struct {
 	until          string
 	cwd            string
 	repo           string
+	project        string
 	branch         string
 	source         string
 	limit          int
@@ -50,6 +51,7 @@ func (flags *historyQueryFlags) add(command *cobra.Command, defaultLimit int) {
 	command.Flags().StringVar(&flags.until, "until", "", "include prompts on or before YYYY-MM-DD")
 	command.Flags().StringVar(&flags.cwd, "cwd", "", "filter by exact working directory")
 	command.Flags().StringVar(&flags.repo, "repo", "", "filter by known repository name")
+	command.Flags().StringVar(&flags.project, "project", "", "filter by derived project name")
 	command.Flags().StringVar(&flags.branch, "branch", "", "filter by known branch")
 	command.Flags().StringVar(&flags.source, "source", "any", "filter by availability source")
 	command.Flags().IntVar(&flags.limit, "limit", defaultLimit, "maximum page rows (1-500)")
@@ -100,7 +102,7 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 		limit = 0
 	}
 	query := historystore.PromptQuery{
-		Provider: history.Provider(flags.provider), CWD: flags.cwd, Repo: flags.repo, Branch: flags.branch,
+		Provider: history.Provider(flags.provider), CWD: flags.cwd, Repo: flags.repo, Project: flags.project, Branch: flags.branch,
 		Source: historystore.CatalogSource(flags.source), ThreadKind: flags.effectiveThreadKind(), Role: flags.role,
 		AssistantConsent: appconfig.FromContext(command.Context()).Config.History.IndexAssistant, Limit: limit, Cursor: flags.cursor,
 		ExcludeControl: flags.excludeControl,
@@ -323,6 +325,9 @@ func newHistorySampleCommand() *cobra.Command {
 				for _, group := range result.GroupBy {
 					if value, ok := item.Groups[group]; ok {
 						groupParts = append(groupParts, group+"="+safePrettyPreview(value))
+						if group == "project" {
+							groupParts = append(groupParts, "project_source="+safePrettyPreview(item.Groups["project_source"]))
+						}
 					}
 				}
 				groupText := strings.Join(groupParts, ",")
@@ -353,7 +358,7 @@ func newHistorySampleCommand() *cobra.Command {
 	_ = command.Flags().MarkHidden("cursor")
 	command.Flags().StringVar(&unit, "unit", "prompt", "sample logical prompts or sessions")
 	command.Flags().StringVar(&strategy, "strategy", "", "sampling strategy (random or stratified)")
-	command.Flags().StringVar(&groupBy, "group-by", "", "stratify by month, cwd, repo, and/or thread-kind")
+	command.Flags().StringVar(&groupBy, "group-by", "", "stratify by month, project, cwd, repo, and/or thread-kind")
 	command.Flags().IntVar(&count, "count", 25, "maximum sampled units (1-100)")
 	command.Flags().StringVar(&seed, "seed", "", "deterministic sample seed")
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
@@ -420,6 +425,9 @@ func newHistoryStatsCommand() *cobra.Command {
 				parts := make([]string, 0, len(groups))
 				for _, dimension := range groups {
 					parts = append(parts, dimension+"="+safePrettyPreview(group.Values[dimension]))
+					if dimension == "project" {
+						parts = append(parts, "project_source="+safePrettyPreview(group.Values["project_source"]))
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\tsessions=%d\tprompts=%d\toccurrences=%d\n", strings.Join(parts, ","), group.LogicalSessions, group.LogicalPrompts, group.PromptOccurrences)
 			}
@@ -433,7 +441,7 @@ func newHistoryStatsCommand() *cobra.Command {
 	flags.add(command, 100)
 	_ = command.Flags().MarkHidden("limit")
 	_ = command.Flags().MarkHidden("cursor")
-	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, thread-kind, weekday, hour, and/or role")
+	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, project, repo, cwd, thread-kind, weekday, hour, and/or role")
 	command.Flags().IntVar(&top, "top", 20, "maximum groups to return (1-100)")
 	return command
 }

@@ -36,6 +36,7 @@ type CatalogQuery struct {
 	Until      *time.Time
 	CWD        string
 	Repo       string
+	Project    string
 	Branch     string
 	Source     CatalogSource
 	ThreadKind string
@@ -44,15 +45,23 @@ type CatalogQuery struct {
 }
 
 // FieldCoverage discloses known versus unknown metadata in the selected
-// provider/date/source/cwd population before repo or branch filtering.
+// provider/date/source/cwd population before project, repo, or branch filtering.
 type FieldCoverage struct {
 	Known   int `json:"known"`
+	Unknown int `json:"unknown"`
+}
+
+// ProjectCoverage discloses how cross-provider project labels were derived.
+type ProjectCoverage struct {
+	Git     int `json:"git"`
+	CWD     int `json:"cwd"`
 	Unknown int `json:"unknown"`
 }
 
 // CatalogCoverage reports provider-uneven repository metadata coverage.
 type CatalogCoverage struct {
 	Repository FieldCoverage      `json:"repository"`
+	Project    ProjectCoverage    `json:"project"`
 	Branch     FieldCoverage      `json:"branch"`
 	ThreadKind ThreadKindCoverage `json:"thread_kind"`
 }
@@ -98,6 +107,8 @@ type CatalogSession struct {
 	LastTimestamp            *string               `json:"last_timestamp"`
 	CWD                      string                `json:"cwd,omitempty"`
 	RepositoryName           *string               `json:"repository_name"`
+	Project                  string                `json:"project"`
+	ProjectSource            history.ProjectSource `json:"project_source"`
 	Branch                   *string               `json:"branch"`
 	ThreadKind               history.ThreadKind    `json:"thread_kind"`
 	ThreadEvidence           string                `json:"thread_evidence"`
@@ -136,6 +147,7 @@ type catalogCursor struct {
 	Until      string        `json:"until"`
 	CWD        string        `json:"cwd"`
 	Repo       string        `json:"repo"`
+	Project    string        `json:"project"`
 	Branch     string        `json:"branch"`
 	Source     CatalogSource `json:"source"`
 	ThreadKind string        `json:"thread_kind"`
@@ -255,7 +267,7 @@ func scanCatalogSession(row rowScanner) (CatalogSession, error) {
 	var value CatalogSession
 	var native, first, last, cwd, repo, branch, threadEvidence, originator, sourceIDs, snapshotIDs, preview sql.NullString
 	if err := row.Scan(
-		&value.databaseID, &value.SessionID, &value.Provider, &native, &first, &last, &cwd, &repo, &branch,
+		&value.databaseID, &value.SessionID, &value.Provider, &native, &first, &last, &cwd, &repo, &value.Project, &value.ProjectSource, &branch,
 		&value.ThreadKind, &threadEvidence, &value.ThreadConfidence, &value.ThreadRuleVersion, &originator,
 		&sourceIDs, &value.SourceHeadCount, &snapshotIDs, &value.PreservedSnapshotCount,
 		&value.LogicalPromptCount, &value.OccurrenceCount, &value.Availability.ProviderLive,
@@ -275,7 +287,7 @@ func scanCatalogSession(row rowScanner) (CatalogSession, error) {
 	return value, nil
 }
 
-var catalogSelect = `SELECT s.id,s.public_id,s.provider,s.native_session_id,s.first_ts,s.last_ts,s.cwd,s.repository_name,s.branch,
+var catalogSelect = `SELECT s.id,s.public_id,s.provider,s.native_session_id,s.first_ts,s.last_ts,s.cwd,s.repository_name,s.project,s.project_source,s.branch,
 	s.thread_kind,s.thread_evidence,s.thread_confidence,s.thread_rule_version,s.originator,
 	(SELECT group_concat(public_id) FROM (SELECT public_id FROM source_heads WHERE session_id=s.id ORDER BY public_id LIMIT 100)),
 	(SELECT COUNT(*) FROM source_heads WHERE session_id=s.id),
@@ -320,6 +332,10 @@ func catalogWhere(query CatalogQuery, includeMetadataFilters bool) ([]string, []
 		where = append(where, "s.repository_name=?")
 		args = append(args, query.Repo)
 	}
+	if includeMetadataFilters && query.Project != "" {
+		where = append(where, "s.project=?")
+		args = append(args, query.Project)
+	}
 	if includeMetadataFilters && query.Branch != "" {
 		where = append(where, "s.branch=?")
 		args = append(args, query.Branch)
@@ -347,10 +363,14 @@ func (s *Store) catalogCoverage(query CatalogQuery) (CatalogCoverage, error) {
 	if err := s.runner.QueryRow(`SELECT
 			COALESCE(SUM(CASE WHEN repository_name IS NOT NULL AND repository_name<>'' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN repository_name IS NULL OR repository_name='' THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN project_source='git' THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN project_source='cwd' THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN project_source='unknown' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN branch IS NOT NULL AND branch<>'' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN branch IS NULL OR branch='' THEN 1 ELSE 0 END),0)
 			FROM sessions s WHERE `+strings.Join(where, " AND "), args...).Scan(
-		&value.Repository.Known, &value.Repository.Unknown, &value.Branch.Known, &value.Branch.Unknown); err != nil {
+		&value.Repository.Known, &value.Repository.Unknown, &value.Project.Git, &value.Project.CWD, &value.Project.Unknown,
+		&value.Branch.Known, &value.Branch.Unknown); err != nil {
 		return CatalogCoverage{}, fmt.Errorf("read history metadata coverage: %w", err)
 	}
 	query.ThreadKind = "all"
@@ -411,7 +431,7 @@ func boundPreview(value string) string {
 func newCatalogCursor(query CatalogQuery, generation int64, timestamp, sessionID string) catalogCursor {
 	return catalogCursor{
 		Version: 1, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until),
-		CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, Limit: query.Limit,
+		CWD: query.CWD, Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, Limit: query.Limit,
 		ThreadKind: normalizedThreadKindFilter(query.ThreadKind),
 		Unknown:    timestamp == "", Timestamp: timestamp, SessionID: sessionID,
 	}
@@ -425,7 +445,7 @@ func (cursor catalogCursor) matches(query CatalogQuery, generation int64) error 
 		return errors.New("history cursor is stale because the index generation changed")
 	}
 	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) ||
-		cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source ||
+		cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Project != query.Project || cursor.Branch != query.Branch || cursor.Source != query.Source ||
 		cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) {
 		return errors.New("history cursor does not match the requested filters")
 	}

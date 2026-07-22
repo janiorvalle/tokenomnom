@@ -22,6 +22,12 @@ func TestProbeDetectsChangedAndNewSourcesWithoutContentReadsOrWrites(t *testing.
 	writeSource(t, first, codexFixture("first"))
 	removed := filepath.Join(sessions, "removed.jsonl")
 	writeSource(t, removed, codexFixture("removed"))
+	indexedModTime := time.Unix(50, 0)
+	for _, path := range []string{first, removed} {
+		if err := os.Chtimes(path, indexedModTime, indexedModTime); err != nil {
+			t.Fatal(err)
+		}
+	}
 	databasePath := filepath.Join(root, "state", historystore.DatabaseName)
 	database, err := historystore.Open(databasePath)
 	if err != nil {
@@ -61,11 +67,18 @@ func TestProbeDetectsChangedAndNewSourcesWithoutContentReadsOrWrites(t *testing.
 	writeSource(t, first, codexFixture("first")+"\n")
 	second := filepath.Join(sessions, "second.jsonl")
 	writeSource(t, second, codexFixture("second"))
+	changedModTime := time.Unix(100, 0)
+	for _, path := range []string{first, second} {
+		if err := os.Chtimes(path, changedModTime, changedModTime); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.Remove(removed); err != nil {
 		t.Fatal(err)
 	}
-	changed := freshness.Probe(databasePath, roots, func() time.Time { return time.Unix(200, 0) })
-	if changed.ChangedSourcesSinceIndex != 3 || changed.NewSourcesSinceIndex != 1 || changed.NewestSourceChange == nil || !changed.AsOf.Equal(time.Unix(200, 0)) || len(changed.Warnings) != 0 {
+	changed := freshness.Probe(databasePath, roots, func() time.Time { return time.Unix(1_000, 0) })
+	if changed.ChangedSourcesSinceIndex != 3 || changed.NewSourcesSinceIndex != 1 || changed.SettledChangedSources != 3 || changed.SettledNewSources != 1 ||
+		changed.ActiveChangedSources != 0 || changed.ActiveNewSources != 0 || changed.NewestSourceChange == nil || !changed.AsOf.Equal(time.Unix(1_000, 0)) || len(changed.Warnings) != 0 {
 		t.Fatalf("changed probe = %+v", changed)
 	}
 	after, err := os.Stat(databasePath)
@@ -74,6 +87,51 @@ func TestProbeDetectsChangedAndNewSourcesWithoutContentReadsOrWrites(t *testing.
 	}
 	if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
 		t.Fatalf("probe changed history database: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestProbeSeparatesActiveAndSettledDrift(t *testing.T) {
+	root := t.TempDir()
+	providerRoot := filepath.Join(root, "codex")
+	sessions := filepath.Join(providerRoot, "sessions")
+	active := filepath.Join(sessions, "active.jsonl")
+	recent := filepath.Join(sessions, "recent.jsonl")
+	settled := filepath.Join(sessions, "settled.jsonl")
+	for _, path := range []string{active, recent, settled} {
+		writeSource(t, path, codexFixture(filepath.Base(path)))
+	}
+	databasePath := filepath.Join(root, "state", historystore.DatabaseName)
+	database, err := historystore.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := []discover.Root{{Provider: discover.ProviderCodex, Path: providerRoot, Exists: true}}
+	if _, err := indexer.Index(indexer.Options{Store: database, Roots: roots, LockHeld: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	for _, item := range []struct {
+		path    string
+		modTime time.Time
+	}{
+		{active, now.Add(-time.Minute)},
+		{recent, now.Add(-freshness.SettleWindow + time.Minute)},
+		{settled, now.Add(-freshness.SettleWindow - time.Minute)},
+	} {
+		writeSource(t, item.path, codexFixture(filepath.Base(item.path))+"\n")
+		if err := os.Chtimes(item.path, item.modTime, item.modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := freshness.Probe(databasePath, roots, func() time.Time { return now })
+	if result.ChangedSourcesSinceIndex != 3 || result.NewSourcesSinceIndex != 0 || result.ActiveChangedSources != 2 ||
+		result.ActiveNewSources != 0 || result.SettledChangedSources != 1 || result.SettledNewSources != 0 {
+		t.Fatalf("settle-aware probe = %+v", result)
 	}
 }
 

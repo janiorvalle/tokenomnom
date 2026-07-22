@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
 	"github.com/janiorvalle/tokenomnom/internal/history/indexer"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
@@ -108,7 +109,8 @@ func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "ready" || status.ChangedSourcesSinceIndex != 2 || status.NewSourcesSinceIndex != 1 || status.NewestSourceChange == nil || status.SourceDriftAsOf == "" {
+	if status.Status != "ready" || status.ChangedSourcesSinceIndex != 2 || status.NewSourcesSinceIndex != 1 || status.ActiveChangedSources != 2 ||
+		status.ActiveNewSources != 1 || status.SettledChangedSources != 0 || status.SettledNewSources != 0 || status.NewestSourceChange == nil || status.SourceDriftAsOf == "" {
 		t.Fatalf("history drift status = %+v", status)
 	}
 	doctorOutput, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
@@ -121,15 +123,25 @@ func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, doctorOutput).Data, &doctor); err != nil {
 		t.Fatal(err)
 	}
-	if doctor.History.ChangedSourcesSinceIndex != 2 || doctor.History.NewSourcesSinceIndex != 1 {
+	if doctor.History.ChangedSourcesSinceIndex != 2 || doctor.History.NewSourcesSinceIndex != 1 || doctor.History.ActiveChangedSources != 2 || doctor.History.SettledChangedSources != 0 {
 		t.Fatalf("doctor drift status = %+v", doctor.History)
 	}
 	pretty, err := executeReport([]string{"history", "status", "--no-color"}, codexDir, claudeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(pretty, "ready (2 sources changed since last index)") {
+	if !strings.Contains(pretty, "Status:              ready") || strings.Contains(pretty, "ready (2") || !strings.Contains(pretty, "Indexed source heads whose file is gone:") {
 		t.Fatalf("pretty drift status:\n%s", pretty)
+	}
+	settledModTime := time.Now().Add(-historyfreshness.SettleWindow - time.Minute)
+	for _, path := range []string{first, filepath.Join(codexDir, "sessions", "new.jsonl")} {
+		if err := os.Chtimes(path, settledModTime, settledModTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pretty, err = executeReport([]string{"history", "status", "--no-color"}, codexDir, claudeDir)
+	if err != nil || !strings.Contains(pretty, "ready (2 settled sources changed since last index)") {
+		t.Fatalf("pretty settled drift status err=%v:\n%s", err, pretty)
 	}
 }
 
@@ -818,7 +830,7 @@ func TestHistoryShowRejectsSessionPaginationWithoutPrompts(t *testing.T) {
 	}
 }
 
-func TestHistoryRepositoryFiltersCoverageAndGrouping(t *testing.T) {
+func TestHistoryRepositoryAndProjectFiltersCoverageAndGrouping(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
@@ -827,6 +839,8 @@ func TestHistoryRepositoryFiltersCoverageAndGrouping(t *testing.T) {
 	fixture := `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"repository-session","thread_source":"user","git":{"repository_url":"git@github.com:janiorvalle/tokenomnom.git"}}}` + "\n" +
 		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"repository filter prompt"}}` + "\n"
 	writeTextFixture(t, filepath.Join(codexDir, "sessions", "repository.jsonl"), fixture)
+	claudeFixture := `{"type":"user","uuid":"22222222-2222-4222-8222-222222222201","sessionId":"22222222-2222-4222-8222-222222222222","cwd":"/workspace/claude-demo","timestamp":"2026-07-20T13:00:00Z","message":{"role":"user","content":"claude project filter prompt"}}` + "\n"
+	writeTextFixture(t, filepath.Join(claudeDir, "projects", "demo", "session.jsonl"), claudeFixture)
 	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
 		t.Fatal(err)
 	}
@@ -846,8 +860,44 @@ func TestHistoryRepositoryFiltersCoverageAndGrouping(t *testing.T) {
 	for _, group := range stats.Groups {
 		found = found || group.Values["repo"] == "tokenomnom" && group.LogicalPrompts == 1
 	}
-	if !found || stats.Coverage.Repository.Known != 1 || stats.Coverage.Repository.Unknown != 0 {
+	if !found || stats.Coverage.Repository.Known != 1 || stats.Coverage.Repository.Unknown != 1 {
 		t.Fatalf("repository statistics = %+v", stats)
+	}
+
+	output, err = executeReport([]string{"history", "list", "--project", "claude-demo", "--format", "json"}, codexDir, claudeDir)
+	var list historystore.CatalogPage
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &list) != nil || len(list.Sessions) != 1 || list.Sessions[0].Project != "claude-demo" ||
+		list.Sessions[0].ProjectSource != history.ProjectSourceCWD || list.Sessions[0].RepositoryName != nil || list.Coverage.Project.Git != 1 || list.Coverage.Project.CWD != 1 {
+		t.Fatalf("project list err=%v page=%+v", err, list)
+	}
+
+	output, err = executeReport([]string{"history", "search", "project filter", "--project", "claude-demo", "--format", "json"}, codexDir, claudeDir)
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &search) != nil || len(search.Hits) != 1 || search.Hits[0].ProjectSource != history.ProjectSourceCWD {
+		t.Fatalf("project search err=%v page=%+v", err, search)
+	}
+
+	output, err = executeReport([]string{"history", "prompts", "--project", "claude-demo", "--format", "json"}, codexDir, claudeDir)
+	var prompts historystore.PromptsPage
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &prompts) != nil || len(prompts.Prompts) != 1 || prompts.Prompts[0].Project != "claude-demo" || prompts.Prompts[0].ProjectSource != history.ProjectSourceCWD {
+		t.Fatalf("project prompts err=%v page=%+v", err, prompts)
+	}
+
+	output, err = executeReport([]string{"history", "stats", "--group-by", "project", "--format", "json"}, codexDir, claudeDir)
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &stats) != nil {
+		t.Fatal(err)
+	}
+	projectSources := map[string]bool{}
+	for _, group := range stats.Groups {
+		projectSources[group.Values["project_source"]] = true
+	}
+	if !projectSources["git"] || !projectSources["cwd"] {
+		t.Fatalf("project stats = %+v", stats)
+	}
+
+	output, err = executeReport([]string{"history", "sample", "--project", "claude-demo", "--group-by", "project", "--count", "1", "--format", "json"}, codexDir, claudeDir)
+	var sample historystore.SampleResult
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &sample) != nil || len(sample.Items) != 1 || sample.Items[0].Groups["project"] != "claude-demo" || sample.Items[0].Groups["project_source"] != "cwd" {
+		t.Fatalf("project sample err=%v value=%+v", err, sample)
 	}
 }
 
