@@ -49,6 +49,8 @@ Provider, model, and explicit date filters are available on report commands.
   settled-file rules and the archive schedule can make it lag recent activity.
 - History-index freshness says which clean user and explicitly consented assistant prompts are currently covered
   by `history search`, `history list`, `history prompts`, and `history stats`.
+  Read `changed_sources_since_index`, `new_sources_since_index`,
+  `newest_source_change`, and `source_drift_as_of` from status or doctor.
 
 ## Mining
 
@@ -56,9 +58,11 @@ For "what did I work on" or "how did I prompt X":
 
 1. Run `tokenomnom doctor --format json` and `tokenomnom history status
    --format json`; surface readiness, coverage, and warnings.
-2. If the index is missing,
-   stale, degraded, or does not cover the needed dates, run
-   `tokenomnom history index --format json` and surface partial-index errors.
+2. If the index is missing, stale, degraded, or does not cover the needed
+   dates, run `tokenomnom history index --format json`. When
+   `changed_sources_since_index` is nonzero, index when the question needs
+   current provider data; an older bounded question may not need the pending
+   files. Surface partial-index errors.
 3. Apply bounded provider, date, cwd, repo, branch, source, and thread filters
    before retrieving text.
 4. Use `tokenomnom history search <query> --limit 50 --format json` for known

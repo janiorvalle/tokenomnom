@@ -143,7 +143,16 @@ for Codex but partial for Claude Code — use `--cwd` when you need
 cross-provider completeness, and read the JSON coverage warnings. Root versus
 subagent classification comes from direct provider evidence or versioned
 deterministic rules; when the evidence is missing, sessions stay explicitly
-`unknown` instead of being guessed.
+`unknown` instead of being guessed. For Codex 0.93.0 and newer, the legacy
+`session_meta.source` values `cli`, `vscode`, `exec`, and `mcp` are also
+versioned root evidence because those producers serialize delegated sessions
+with a distinct subagent source shape.
+
+`history status` and doctor perform a metadata-only freshness check. They
+compare current provider file sizes and modification times with the stored
+checkpoints and report changed and new source counts, the newest change, and
+the probe time. A ready index can therefore say `ready (N sources changed
+since last index)` without reading transcript content or updating the index.
 
 `history sample` pulls a representative, deterministic sample — same seed,
 same corpus, same sample. It walks indexed SHA-256 keys instead of sorting

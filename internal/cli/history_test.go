@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +35,7 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "not_indexed" || status.AutoIndexEnabled || status.AutoInterval != "24h" || strings.Join(status.Providers, ",") != "codex,claude" || status.NextDue != nil {
+	if status.Status != "not_indexed" || status.AutoIndexEnabled || status.AutoInterval != "24h" || strings.Join(status.Providers, ",") != "codex,claude" || status.NextDue != nil || status.SourceDriftAsOf == "" {
 		t.Fatalf("history status = %+v", status)
 	}
 	historyPath := filepath.Join(stateDir, historystore.DatabaseName)
@@ -56,6 +58,75 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(historyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("doctor created history index: %v", err)
+	}
+}
+
+func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	first := filepath.Join(codexDir, "sessions", "first.jsonl")
+	writeTextFixture(t, first, historyCodexFixture("first", "first prompt"))
+	if _, err := executeReport([]string{"history", "index", "--source", "provider"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	unchangedOutput, err := executeReport([]string{"history", "status", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unchanged jsonHistoryHealth
+	if err := json.Unmarshal(decodeEnvelope(t, unchangedOutput).Data, &unchanged); err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.ChangedSourcesSinceIndex != 0 || unchanged.NewSourcesSinceIndex != 0 || unchanged.NewestSourceChange != nil || unchanged.SourceDriftAsOf == "" {
+		t.Fatalf("unchanged freshness = %+v", unchanged)
+	}
+	file, err := os.OpenFile(first, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"timestamp":"2026-07-20T12:02:00Z","type":"event_msg","payload":{"type":"user_message","message":"pending append"}}` + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "new.jsonl"), historyCodexFixture("new", "new prompt"))
+
+	statusOutput, err := executeReport([]string{"history", "status", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status jsonHistoryHealth
+	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "ready" || status.ChangedSourcesSinceIndex != 2 || status.NewSourcesSinceIndex != 1 || status.NewestSourceChange == nil || status.SourceDriftAsOf == "" {
+		t.Fatalf("history drift status = %+v", status)
+	}
+	doctorOutput, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doctor struct {
+		History jsonHistoryHealth `json:"history"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, doctorOutput).Data, &doctor); err != nil {
+		t.Fatal(err)
+	}
+	if doctor.History.ChangedSourcesSinceIndex != 2 || doctor.History.NewSourcesSinceIndex != 1 {
+		t.Fatalf("doctor drift status = %+v", doctor.History)
+	}
+	pretty, err := executeReport([]string{"history", "status", "--no-color"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pretty, "ready (2 sources changed since last index)") {
+		t.Fatalf("pretty drift status:\n%s", pretty)
 	}
 }
 
@@ -189,6 +260,82 @@ func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {
 	}
 	if indexed.SkippedSources != 2 || indexed.IndexedSources != 0 {
 		t.Fatalf("unchanged data = %+v", indexed)
+	}
+}
+
+func TestHistoryIndexReportsStableLegacyThreadReclassification(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	fixture := `{"timestamp":"2026-02-01T12:00:00Z","type":"session_meta","payload":{"id":"legacy-session","timestamp":"2026-02-01T12:00:00Z","cwd":"/workspace/legacy","originator":"codex_cli_rs","cli_version":"0.93.0","source":"exec"}}` + "\n" +
+		`{"timestamp":"2026-02-01T12:01:00Z","type":"event_msg","payload":{"type":"user_message","message":"legacy root prompt"}}` + "\n"
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "legacy.jsonl"), fixture)
+	initialOutput, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initial jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, initialOutput).Data, &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial.ThreadKindDeltas.Root != 1 || initial.ThreadKindDeltas.Subagent != 0 || initial.ThreadKindDeltas.Unknown != 0 {
+		t.Fatalf("initial thread-kind summary = %+v", initial.ThreadKindDeltas)
+	}
+	beforeOutput, err := executeReport([]string{"history", "list", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before historystore.CatalogPage
+	if err := json.Unmarshal(decodeEnvelope(t, beforeOutput).Data, &before); err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Sessions) != 1 || before.Sessions[0].ThreadKind != history.ThreadRoot {
+		t.Fatalf("initial legacy session = %+v", before.Sessions)
+	}
+	sessionID := before.Sessions[0].SessionID
+
+	db, err := sql.Open("sqlite", filepath.Join(stateDir, historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`UPDATE sessions SET thread_kind='unknown',thread_evidence='',thread_confidence='unknown',thread_rule_version=0`,
+		`UPDATE session_thread_supports SET thread_kind='unknown',evidence='',confidence='unknown',rule_version=0`,
+		fmt.Sprintf(`UPDATE source_heads SET extractor_version=%d`, history.ExtractorVersion-1),
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexed jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed.RewrittenSources != 1 || indexed.ThreadKindDeltas.Root != 1 || indexed.ThreadKindDeltas.Subagent != 0 || indexed.ThreadKindDeltas.Unknown != -1 {
+		t.Fatalf("legacy reclassification summary = %+v", indexed)
+	}
+	afterOutput, err := executeReport([]string{"history", "list", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after historystore.CatalogPage
+	if err := json.Unmarshal(decodeEnvelope(t, afterOutput).Data, &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Sessions) != 1 || after.Sessions[0].SessionID != sessionID || after.Sessions[0].ThreadKind != history.ThreadRoot {
+		t.Fatalf("rebuilt legacy session = %+v, want stable id %s", after.Sessions, sessionID)
 	}
 }
 

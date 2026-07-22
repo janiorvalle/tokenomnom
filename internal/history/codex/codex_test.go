@@ -139,6 +139,44 @@ func TestExtractRootFromProviderThreadSource(t *testing.T) {
 	}
 }
 
+func TestExtractRootFromVersionedLegacySessionSource(t *testing.T) {
+	result := Extract(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, readRecords(t, filepath.Join("testdata", "legacy_root.jsonl")))
+	if result.Session.ThreadKind != history.ThreadRoot || result.Session.ThreadEvidence != "session_meta.source.root" ||
+		result.Session.ThreadConfidence != history.ConfidenceDerived || result.Session.ThreadRuleVersion != history.RelationshipRuleVersion || len(result.Prompts) != 1 {
+		t.Fatalf("legacy root classification = %#v prompts=%#v", result.Session, result.Prompts)
+	}
+}
+
+func TestLegacySessionSourceRuleIsVersionAndShapeBounded(t *testing.T) {
+	tests := []struct {
+		name         string
+		version      string
+		source       string
+		threadSource string
+		want         history.ThreadKind
+	}{
+		{name: "first proven cli", version: "0.93.0", source: `"cli"`, want: history.ThreadRoot},
+		{name: "current alpha vscode", version: "0.145.0-alpha.18", source: `"vscode"`, want: history.ThreadRoot},
+		{name: "exec", version: "0.106.0", source: `"exec"`, want: history.ThreadRoot},
+		{name: "mcp", version: "0.130.0", source: `"mcp"`, want: history.ThreadRoot},
+		{name: "older version", version: "0.92.0", source: `"cli"`, want: history.ThreadUnknown},
+		{name: "boundary prerelease", version: "0.93.0-alpha.1", source: `"cli"`, want: history.ThreadUnknown},
+		{name: "missing version", source: `"cli"`, want: history.ThreadUnknown},
+		{name: "unknown source", version: "0.130.0", source: `"custom"`, want: history.ThreadUnknown},
+		{name: "structured subagent", version: "0.130.0", source: `{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1}}}`, want: history.ThreadSubagent},
+		{name: "automation remains explicit unknown", version: "0.142.5", source: `"vscode"`, threadSource: "automation", want: history.ThreadUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"timestamp":"2026-02-01T12:00:00Z","type":"session_meta","payload":{"id":"session","cli_version":%q,"source":%s,"thread_source":%q}}`, test.version, test.source, test.threadSource)
+			result := Extract(history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}, []jsonl.Record{{Raw: []byte(raw), LineNumber: 1, EndOffset: int64(len(raw))}})
+			if result.Session.ThreadKind != test.want {
+				t.Fatalf("thread kind = %q, want %q; session=%#v", result.Session.ThreadKind, test.want, result.Session)
+			}
+		})
+	}
+}
+
 func TestExtractPairKeepsNativeResponseIdentityAcrossSuffixes(t *testing.T) {
 	source := history.SourceReference{Provider: history.ProviderCodex, Path: "rollout.jsonl"}
 	response := jsonl.Record{Raw: []byte("{\"timestamp\":\"2026-07-20T12:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"response-1\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"same text\"}]}}\n"), LineNumber: 1, EndOffset: 190}

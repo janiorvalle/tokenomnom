@@ -3,6 +3,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type sessionMeta struct {
 	ParentThreadID string          `json:"parent_thread_id"`
 	CWD            string          `json:"cwd"`
 	Originator     string          `json:"originator"`
+	CLIVersion     string          `json:"cli_version"`
 	ThreadSource   string          `json:"thread_source"`
 	Timestamp      string          `json:"timestamp"`
 	Source         json.RawMessage `json:"source"`
@@ -153,6 +155,12 @@ recordsLoop:
 				result.Session.ThreadKind = history.ThreadRoot
 				result.Session.ThreadEvidence = "session_meta.thread_source=user"
 				result.Session.ThreadConfidence = history.ConfidenceExact
+				result.Session.ThreadRuleVersion = history.RelationshipRuleVersion
+			}
+			if meta.ThreadSource == "" && isVersionedRootSource(meta.Source, meta.CLIVersion) {
+				result.Session.ThreadKind = history.ThreadRoot
+				result.Session.ThreadEvidence = "session_meta.source.root"
+				result.Session.ThreadConfidence = history.ConfidenceDerived
 				result.Session.ThreadRuleVersion = history.RelationshipRuleVersion
 			}
 			if meta.ThreadSource == "subagent" || isSubagentSource(meta.Source) {
@@ -294,6 +302,50 @@ func isSubagentSource(raw json.RawMessage) bool {
 	}
 	_, ok := source["subagent"]
 	return ok
+}
+
+func isVersionedRootSource(raw json.RawMessage, cliVersion string) bool {
+	if !codexVersionAtLeast(cliVersion, 0, 93, 0) {
+		return false
+	}
+	var source string
+	if json.Unmarshal(raw, &source) != nil {
+		return false
+	}
+	switch source {
+	case "cli", "vscode", "exec", "mcp":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexVersionAtLeast(value string, wantMajor, wantMinor, wantPatch int) bool {
+	core := value
+	prerelease := false
+	if suffix := strings.IndexByte(core, '-'); suffix >= 0 {
+		prerelease = true
+		core = core[:suffix]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	parsed := [3]int{}
+	for index, part := range parts {
+		current, err := strconv.Atoi(part)
+		if err != nil || current < 0 {
+			return false
+		}
+		parsed[index] = current
+	}
+	wanted := [3]int{wantMajor, wantMinor, wantPatch}
+	for index := range parsed {
+		if parsed[index] != wanted[index] {
+			return parsed[index] > wanted[index]
+		}
+	}
+	return !prerelease
 }
 
 func addPrompt(result *history.Extraction, seen map[string]int, record jsonl.Record, logicalKey, nativeID string, role history.Role, value, timestamp, evidence string, confirmedHuman bool) (history.Prompt, bool) {

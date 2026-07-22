@@ -64,6 +64,19 @@ type ThreadKindCoverage struct {
 	Unknown  int `json:"unknown"`
 }
 
+// ThreadKindCounts returns corpus-wide logical session relationship counts.
+func (s *Store) ThreadKindCounts() (ThreadKindCoverage, error) {
+	var value ThreadKindCoverage
+	if err := s.runner.QueryRow(`SELECT
+		COALESCE(SUM(CASE WHEN thread_kind='root' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN thread_kind='subagent' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN thread_kind='unknown' THEN 1 ELSE 0 END),0)
+		FROM sessions`).Scan(&value.Root, &value.Subagent, &value.Unknown); err != nil {
+		return ThreadKindCoverage{}, fmt.Errorf("read history thread counts: %w", err)
+	}
+	return value, nil
+}
+
 // Availability summarizes exact indexed location evidence.
 type Availability struct {
 	ProviderLive        int  `json:"provider_live"`
