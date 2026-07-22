@@ -136,6 +136,7 @@ func populateSampleStrata(tx samplingExecer) error {
 		value.firstDate = sampleDateText(value.firstDate)
 		value.lastDate = sampleDateText(value.lastDate)
 		value.repository = normalizedSampleRepoText(value.repository)
+		value.cwd = normalizedSampleCWD(value.cwd)
 		if value.thread == "" {
 			value.thread = "unknown"
 		}
@@ -187,6 +188,7 @@ func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
 		value.firstDate = sampleDateText(value.firstDate)
 		value.lastDate = sampleDateText(value.lastDate)
 		value.repository = normalizedSampleRepoText(value.repository)
+		value.cwd = normalizedSampleCWD(value.cwd)
 		if value.thread == "" {
 			value.thread = "unknown"
 		}
@@ -261,6 +263,7 @@ func scanSamplingMetadata(row interface{ Scan(...any) error }) (samplingMetadata
 	value.firstDate = sampleDateText(value.firstDate)
 	value.lastDate = sampleDateText(value.lastDate)
 	value.repository = normalizedSampleRepoText(value.repository)
+	value.cwd = normalizedSampleCWD(value.cwd)
 	if value.thread == "" {
 		value.thread = "unknown"
 	}
@@ -272,10 +275,15 @@ func insertSampleStrata(tx interface {
 }, value samplingMetadata) error {
 	dimensions := [][]string{
 		{"month"}, {"repo"}, {"thread-kind"},
+		{"cwd", "month"},
 		{"month", "repo"}, {"month", "thread-kind"}, {"repo", "thread-kind"},
 		{"month", "repo", "thread-kind"},
 	}
-	allValues := map[string]string{"month": value.month, "repo": value.repository, "thread-kind": value.thread}
+	groupCWD := value.cwd
+	if strings.TrimSpace(groupCWD) == "" {
+		groupCWD = "unknown"
+	}
+	allValues := map[string]string{"month": value.month, "cwd": groupCWD, "repo": value.repository, "thread-kind": value.thread}
 	for _, current := range dimensions {
 		groups := make([]string, len(current))
 		parts := make([]string, len(current))
@@ -579,6 +587,8 @@ func promptSampleGroups(prompt PromptResult, groups []string) map[string]string 
 			values[group] = month
 		case "repo":
 			values[group] = normalizedSampleRepo(prompt.RepositoryName)
+		case "cwd":
+			values[group] = normalizedSampleCWD(prompt.CWD)
 		case "thread-kind":
 			values[group] = string(prompt.ThreadKind)
 		}
@@ -595,6 +605,8 @@ func sessionSampleGroups(session CatalogSession, groups []string) map[string]str
 			values[group] = month
 		case "repo":
 			values[group] = normalizedSampleRepo(session.RepositoryName)
+		case "cwd":
+			values[group] = normalizedSampleCWD(session.CWD)
 		case "thread-kind":
 			values[group] = string(session.ThreadKind)
 		}
@@ -639,12 +651,19 @@ func normalizedSampleRepoText(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+func normalizedSampleCWD(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
+}
+
 func normalizeSampleGroups(values []string) ([]string, error) {
 	seen := map[string]bool{}
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(strings.ToLower(value))
-		if value != "month" && value != "repo" && value != "thread-kind" {
+		if value != "month" && value != "cwd" && value != "repo" && value != "thread-kind" {
 			return nil, fmt.Errorf("invalid history sample group %q", value)
 		}
 		if !seen[value] {

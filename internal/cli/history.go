@@ -245,8 +245,10 @@ func newHistoryListCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			location, _ := historyPresentationTimezone(cmd)
+			presentHistoryCatalogPage(&page, location)
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history list", "", jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until), ThreadKind: optionalString(effectiveThreadKind)}, page.Warnings, page)
+				return writeHistoryJSONEnvelope(cmd, "history list", jsonFilters{Provider: optionalString(provider), Since: optionalString(since), Until: optionalString(until), ThreadKind: optionalString(effectiveThreadKind)}, page.Warnings, page)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%-38s %-7s %-20s %-8s %-8s %s\n", "SESSION", "SOURCE", "LAST", "PROMPTS", "VERSIONS", "PREVIEW")
 			for _, session := range page.Sessions {
@@ -363,7 +365,7 @@ func newHistoryPurgeCommand() *cobra.Command {
 				}
 			}
 			if currentFormat(cmd) == "json" {
-				return writeJSONEnvelope(cmd, "history purge", "", jsonFilters{}, nil, struct {
+				return writeHistoryJSONEnvelope(cmd, "history purge", jsonFilters{}, nil, struct {
 					Path         string `json:"path"`
 					FilesRemoved int    `json:"files_removed"`
 				}{Path: path, FilesRemoved: removed})
@@ -430,7 +432,7 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 		duration = vaultSummary.Duration
 	}
 	if currentFormat(cmd) == "json" {
-		return writeJSONEnvelope(cmd, "history index", "", jsonFilters{Provider: optionalString(provider)}, nil, jsonHistoryIndexData{
+		return writeHistoryJSONEnvelope(cmd, "history index", jsonFilters{Provider: optionalString(provider)}, nil, jsonHistoryIndexData{
 			ScannedSources: summary.ScannedSources, IndexedSources: summary.IndexedSources, NewSources: summary.NewSources,
 			SkippedSources: summary.SkippedSources, AppendedSources: summary.AppendedSources, RewrittenSources: summary.RewrittenSources,
 			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts + vaultSummary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts + vaultSummary.OversizedPrompts,
@@ -465,8 +467,9 @@ func historyStatusValue(health historystore.Health) string {
 
 func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	status := historyStatusValue(health)
+	location, _ := historyPresentationTimezone(cmd)
 	if currentFormat(cmd) == "json" {
-		return writeJSONEnvelope(cmd, "history status", "", jsonFilters{}, nil, configuredHistoryHealth(cmd, health))
+		return writeHistoryJSONEnvelope(cmd, "history status", jsonFilters{}, nil, configuredHistoryHealth(cmd, health))
 	}
 	writeHeading(cmd, "History")
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Status:", status)
@@ -476,26 +479,27 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Source heads:", health.SourceHeads)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Prompts:", health.Prompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "User/assistant:", health.UserPrompts, health.AssistantPrompts)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Searchable users:", health.SearchableUserPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Occurrences:", health.Occurrences)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Vault snapshots:", health.PreservedSnapshots)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "Vault bundles/versions:", health.IndexedVaultBundles, health.IndexedVaultVersions)
 	coverage := "-"
 	if health.CoverageFirst != "" || health.CoverageLast != "" {
-		coverage = dashIfEmpty(health.CoverageFirst) + " to " + dashIfEmpty(health.CoverageLast)
+		coverage = dashIfEmpty(stringValue(presentHistoryTimestamp(optionalString(health.CoverageFirst), location))) + " to " + dashIfEmpty(stringValue(presentHistoryTimestamp(optionalString(health.CoverageLast), location)))
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Coverage:", coverage)
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "User coverage:", dashIfEmpty(health.UserCoverageFirst), dashIfEmpty(health.UserCoverageLast))
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "Assistant coverage:", dashIfEmpty(health.AssistantCoverageFirst), dashIfEmpty(health.AssistantCoverageLast))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "User coverage:", stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageLast), location)))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "Assistant coverage:", stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageLast), location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d / %d\n", "Stale/error/missing:", health.StaleSources, health.ErrorSources, health.MissingSources)
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last index:", stringValue(optionalUnix(health.LastIndexUnix)))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last index:", stringValue(presentHistoryUnix(health.LastIndexUnix, location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Index generation:", health.IndexGeneration)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Sampling ready:", yesNo(health.SamplingReady))
 	cfg := appconfig.FromContext(cmd.Context()).Config.History
 	nextDue := (*string)(nil)
 	if cfg.AutoIndex {
-		nextDue = historyNextDue(health.LastAttemptUnix, cfg.AutoInterval)
+		nextDue = historyNextDue(health.LastAttemptUnix, cfg.AutoInterval, location)
 		if nextDue == nil {
-			value := time.Now().UTC().Format(time.RFC3339)
+			value := time.Now().In(location).Format(time.RFC3339)
 			nextDue = &value
 		}
 	}
@@ -503,8 +507,8 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Index assistant:", yesNo(cfg.IndexAssistant))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Assistant indexed:", yesNo(health.AssistantIndexed))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Auto interval:", cfg.AutoInterval)
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last attempt:", stringValue(optionalUnix(health.LastAttemptUnix)))
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last success:", stringValue(optionalUnix(health.LastCompleteSuccessUnix)))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last attempt:", stringValue(presentHistoryUnix(health.LastAttemptUnix, location)))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last success:", stringValue(presentHistoryUnix(health.LastCompleteSuccessUnix, location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Next due:", stringValue(nextDue))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Last error:", dashIfEmpty(health.LastErrorSummary))
 	if health.InspectionError != "" {
@@ -523,6 +527,7 @@ type jsonHistoryHealth struct {
 	SourceHeads             int      `json:"source_heads"`
 	LogicalPrompts          int      `json:"logical_prompts"`
 	UserLogicalPrompts      int      `json:"user_logical_prompts"`
+	SearchableUserPrompts   int      `json:"searchable_user_prompts"`
 	AssistantLogicalPrompts int      `json:"assistant_logical_prompts"`
 	Occurrences             int      `json:"occurrences"`
 	LiveSources             int      `json:"live_sources"`
@@ -567,7 +572,7 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 		Status: historyStatusValue(health), DatabasePath: health.Path, DatabaseSizeBytes: health.SizeBytes,
 		SchemaVersion: health.SchemaVersion, ExtractorVersion: health.ExtractorVersion, LogicalSessions: health.Sessions,
 		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, UserLogicalPrompts: health.UserPrompts,
-		AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,
+		SearchableUserPrompts: health.SearchableUserPrompts, AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,
 		LiveSources: health.LiveSources, ProviderArchiveSources: health.ProviderArchiveSources,
 		PreservedSnapshots: health.PreservedSnapshots, VaultLocations: health.VaultLocations,
 		ProviderLiveOnly: health.ProviderLiveOnly, ProviderArchiveOnly: health.ProviderArchiveOnly,
@@ -588,22 +593,32 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 
 func configuredHistoryHealth(cmd *cobra.Command, health historystore.Health) jsonHistoryHealth {
 	value := historyHealthJSON(health)
+	location, _ := historyPresentationTimezone(cmd)
+	value.CoverageFirst = presentHistoryTimestamp(value.CoverageFirst, location)
+	value.CoverageLast = presentHistoryTimestamp(value.CoverageLast, location)
+	value.UserCoverageFirst = presentHistoryTimestamp(value.UserCoverageFirst, location)
+	value.UserCoverageLast = presentHistoryTimestamp(value.UserCoverageLast, location)
+	value.AssistantCoverageFirst = presentHistoryTimestamp(value.AssistantCoverageFirst, location)
+	value.AssistantCoverageLast = presentHistoryTimestamp(value.AssistantCoverageLast, location)
+	value.LastIndex = presentHistoryUnix(health.LastIndexUnix, location)
+	value.LastAttempt = presentHistoryUnix(health.LastAttemptUnix, location)
+	value.LastCompleteSuccess = presentHistoryUnix(health.LastCompleteSuccessUnix, location)
 	cfg := appconfig.FromContext(cmd.Context()).Config.History
 	value.AutoIndexEnabled = cfg.AutoIndex
 	value.IndexAssistantEnabled = cfg.IndexAssistant
 	value.AutoInterval = cfg.AutoInterval
 	value.Providers = append([]string(nil), cfg.Providers...)
 	if cfg.AutoIndex {
-		value.NextDue = historyNextDue(health.LastAttemptUnix, cfg.AutoInterval)
+		value.NextDue = historyNextDue(health.LastAttemptUnix, cfg.AutoInterval, location)
 		if value.NextDue == nil {
-			now := time.Now().UTC().Format(time.RFC3339)
+			now := time.Now().In(location).Format(time.RFC3339)
 			value.NextDue = &now
 		}
 	}
 	return value
 }
 
-func historyNextDue(lastAttempt int64, intervalText string) *string {
+func historyNextDue(lastAttempt int64, intervalText string, location *time.Location) *string {
 	if lastAttempt == 0 {
 		return nil
 	}
@@ -611,6 +626,6 @@ func historyNextDue(lastAttempt int64, intervalText string) *string {
 	if err != nil {
 		return nil
 	}
-	value := time.Unix(lastAttempt, 0).Add(interval).Format(time.RFC3339)
+	value := time.Unix(lastAttempt, 0).Add(interval).In(location).Format(time.RFC3339)
 	return &value
 }

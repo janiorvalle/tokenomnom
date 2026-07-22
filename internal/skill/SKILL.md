@@ -34,11 +34,11 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 - Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets, then retrieve selected evidence with `history show`.
 - Agent proposal/claim search: first check `doctor.data.history.index_assistant_enabled` and `assistant_indexed`, then use `history search "literal phrase" --role assistant --format json`; report the not-indexed warning honestly.
-- User-initiated transcript search: add `--root-only` only when the question is specifically about sessions the user started.
+- User-initiated transcript search: check `coverage.thread_kind.unknown` first. Use `--root-only` only when the unknown share is acceptably small for the question; otherwise search all thread kinds and inspect thread evidence and relationships.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
 - Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; use `--include-text` only when complete clean prompts are necessary.
 - Corpus statistics: `tokenomnom history stats --group-by provider --format json`; never infer conclusions from counts without checking coverage and warnings.
-- Broad corpus analysis: `tokenomnom history sample --strategy stratified --group-by month,repo --count 25 --format json`; use a different `--seed` only when another deterministic sample is needed.
+- Broad corpus analysis: `tokenomnom history sample --strategy stratified --group-by month,repo --count 25 --format json`; use `--cwd` or `--group-by month,cwd` when cross-provider completeness matters, and use a different `--seed` only when another deterministic sample is needed.
 
 Provider, model, and explicit date filters are available on report commands.
 
@@ -74,9 +74,10 @@ For "what did I work on" or "how did I prompt X":
    topic model. Use status or stats for full-index coverage.
 6. Use `tokenomnom history list --limit 100 --format json` to discover
    sessions when session metadata is the evidence needed.
-   Add `--root-only` for the user's own initiated sessions, `--thread-kind
-   subagent` for delegated work only, and no relationship filter when both
-   matter.
+   Check `coverage.thread_kind.unknown` before adding `--root-only`; use it only
+   when the unknown share is acceptably small for the question. Otherwise keep
+   all thread kinds and inspect thread evidence and relationships. Use
+   `--thread-kind subagent` for delegated work only.
 7. Retrieve only selected evidence with `tokenomnom history show <prompt-id>
    --format json`, `history show <session-id> --prompts --limit 100 --format
    json`, or explicit `history show <session-id> --raw --format json`.

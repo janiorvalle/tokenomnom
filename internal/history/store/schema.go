@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     repository_root TEXT,
     repository_name TEXT,
     repository_identity TEXT,
+	repository_rule_version INTEGER NOT NULL DEFAULT 0,
     branch TEXT,
 	thread_kind TEXT NOT NULL DEFAULT 'unknown',
 	thread_evidence TEXT NOT NULL DEFAULT '',
@@ -223,14 +224,14 @@ CREATE INDEX IF NOT EXISTS sample_strata_group_key_idx ON sample_strata(unit_kin
 CREATE INDEX IF NOT EXISTS sample_strata_member_idx ON sample_strata(unit_kind,dimensions,group_values,sample_key,unit_id);
 
 CREATE TRIGGER IF NOT EXISTS sample_strata_group_insert AFTER INSERT ON sample_strata
-	WHEN new.dimensions IN ('month','repo','thread-kind','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	WHEN new.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
 	INSERT INTO sample_groups(unit_kind,dimensions,group_values,group_key,member_count)
 		VALUES(new.unit_kind,new.dimensions,new.group_values,new.group_key,1)
 		ON CONFLICT(unit_kind,dimensions,group_values) DO UPDATE SET member_count=member_count+1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS sample_strata_group_delete AFTER DELETE ON sample_strata
-	WHEN old.dimensions IN ('month','repo','thread-kind','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	WHEN old.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
 	DELETE FROM sample_groups WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count=1;
 	UPDATE sample_groups SET member_count=member_count-1
 		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
