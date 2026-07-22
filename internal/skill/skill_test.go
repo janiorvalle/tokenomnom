@@ -28,6 +28,8 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		"Usage sync freshness",
 		"Vault archive freshness",
 		"History-index freshness",
+		"changed_sources_since_index",
+		"current provider data",
 		"Codex-complete but Claude-partial",
 		"prefer `--cwd`",
 		"Do not traverse provider directories",

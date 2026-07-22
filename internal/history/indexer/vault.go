@@ -28,6 +28,7 @@ type VaultOptions struct {
 	Now            func() time.Time
 	LockHeld       bool
 	SkipRunRecord  bool
+	Before         func(*historystore.Store) error
 	After          func(*historystore.Store, VaultSummary) error
 	IndexAssistant bool
 }
@@ -78,6 +79,11 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			if err := database.ConfigureAssistantIndexing(options.IndexAssistant); err != nil {
 				return nil, err
 			}
+			if options.Before != nil {
+				if err := options.Before(database); err != nil {
+					return nil, err
+				}
+			}
 			return func() {}, nil
 		}
 		path := options.StorePath
@@ -110,6 +116,15 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			}
 			release()
 			return nil, fmt.Errorf("prepare history sampling index: %w", err)
+		}
+		if options.Before != nil {
+			if err := options.Before(database); err != nil {
+				if opened {
+					_ = database.Close()
+				}
+				release()
+				return nil, err
+			}
 		}
 		return func() {
 			if opened {

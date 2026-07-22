@@ -379,7 +379,21 @@ warning instead of mixing unrelated failures into `error_count`.
 `tokenomnom history status --format json` returns the same bounded history
 health object used by doctor. An absent index returns `status: "not_indexed"`
 without creating a database. Status is `ready`, `degraded`, or `error` for an
-existing index according to its missing/stale/error counts.
+existing index according to its missing/stale/error counts. Status and doctor
+also stat the configured live provider trees and add
+`changed_sources_since_index`, `new_sources_since_index`, nullable
+`newest_source_change`, and `source_drift_as_of`. The changed count includes
+modified, new, and no-longer-present files under provider roots that still
+exist. The probe reads no transcript content, takes no history writer
+lock, and never creates or migrates `history.db`; roots that are not present
+do not create false drift for vault-only history. Query commands do not run
+this probe. In pretty output, an otherwise ready index with drift is shown as
+`ready (N sources changed since last index)`.
+
+`history index` additively returns `thread_kind_deltas` with signed `root`,
+`subagent`, and `unknown` logical-session count changes. This makes versioned
+relationship reclassification visible while stable public session and prompt
+IDs survive extractor rebuilds.
 
 History command envelopes and emitted RFC 3339 timestamps use the same
 effective timezone precedence as reports: `--tz`, then `sync.timezone`, then

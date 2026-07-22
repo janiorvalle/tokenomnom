@@ -13,6 +13,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/backup"
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/schedule"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
@@ -76,7 +77,7 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
-	if err := writeDoctorHistoryReport(cmd, databasePath); err != nil {
+	if err := writeDoctorHistoryReport(cmd, roots, databasePath); err != nil {
 		return err
 	}
 
@@ -278,28 +279,33 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		return err
 	}
 	data.Vault = vaultData
-	historyHealth, err := doctorHistory(databasePath)
+	historyHealth, drift, err := doctorHistory(cmd, roots, databasePath)
 	if err != nil {
 		return err
 	}
-	data.History = configuredHistoryHealth(cmd, historyHealth)
+	data.History = configuredHistoryHealth(cmd, historyHealth, drift)
 	if historyHealth.LastErrorSummary != "" {
 		warnings = append(warnings, historyHealth.LastErrorSummary)
 	}
+	warnings = append(warnings, drift.Warnings...)
 	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
 }
 
-func doctorHistory(usageDatabasePath string) (historystore.Health, error) {
+func doctorHistory(cmd *cobra.Command, roots []discover.Root, usageDatabasePath string) (historystore.Health, historyfreshness.Result, error) {
 	path := filepath.Join(filepath.Dir(usageDatabasePath), historystore.DatabaseName)
-	return inspectHistoryHealth(path)
+	health, err := inspectHistoryHealth(path)
+	if err != nil {
+		return historystore.Health{}, historyfreshness.Result{}, err
+	}
+	return health, historyfreshness.Probe(path, configuredHistoryRoots(cmd, roots), nil), nil
 }
 
-func writeDoctorHistoryReport(cmd *cobra.Command, usageDatabasePath string) error {
-	health, err := doctorHistory(usageDatabasePath)
+func writeDoctorHistoryReport(cmd *cobra.Command, roots []discover.Root, usageDatabasePath string) error {
+	health, drift, err := doctorHistory(cmd, roots, usageDatabasePath)
 	if err != nil {
 		return err
 	}
-	return writeHistoryStatus(cmd, health)
+	return writeHistoryStatus(cmd, health, drift)
 }
 
 func doctorSchedule(cmd *cobra.Command) (jsonScheduleData, error) {

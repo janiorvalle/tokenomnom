@@ -5,13 +5,13 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 4
+	ExtractorVersion = 5
 	// PromptKindVersion identifies the exact wrapper allowlist used to refine
 	// provider user records without guessing from their prose.
 	PromptKindVersion = 1
 	// RelationshipRuleVersion identifies the deterministic provider rules used
 	// to classify threads and extract conversational relationships.
-	RelationshipRuleVersion = 1
+	RelationshipRuleVersion = 2
 	// MaxPromptBytes is the largest prompt indexed as complete text.
 	MaxPromptBytes = 1 << 20
 )
