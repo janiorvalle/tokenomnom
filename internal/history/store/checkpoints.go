@@ -371,7 +371,7 @@ var healthQuery = `SELECT
 		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND prompt_kind='human' AND timestamp IS NOT NULL AND timestamp<>''),''),
 		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
 		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
-		((SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?)+
+		((SELECT COUNT(*) FROM source_heads WHERE available=1 AND extractor_version<>?)+
 		 (SELECT COUNT(*) FROM vault_bundle_state WHERE last_success_unix>0 AND extractor_version<>?)+
 		 (SELECT COUNT(*) FROM preserved_snapshots WHERE extractor_version<>?)),
 		((SELECT COUNT(*) FROM source_heads WHERE last_error<>'')+(SELECT COUNT(*) FROM source_errors)+(SELECT COUNT(*) FROM vault_bundle_state WHERE last_error<>'')),(SELECT COUNT(*) FROM source_heads WHERE available=0),

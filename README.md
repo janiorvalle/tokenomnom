@@ -145,8 +145,13 @@ sample JSON use compact provenance by default: exact occurrence counts plus a
 preferred location. `--all-occurrences` opts into bounded occurrence arrays.
 
 A few honesty rules are built in. `project` is the git-proven repository name
-when available, otherwise the final segment of a known cwd, otherwise
-`unknown`; every value is labeled with `project_source: git|cwd|unknown`.
+when available, otherwise the final segment of a known non-temporary cwd,
+otherwise `unknown`; every value is labeled with
+`project_source: git|cwd|unknown`. Cwds under the runtime OS temp directory,
+`/private/tmp`, `/tmp`, `/var/folders`, or standard Windows temp roots stay
+unknown. Grouped statistics and sampling fold project labels seen in fewer
+than two sessions into a visible `other` group without changing stored session
+metadata.
 Use `--project` or `--group-by project` for cross-provider grouping. The
 stricter repository and branch filters remain complete for Codex but partial
 for Claude Code, and repository fields are never inferred from cwd. Root versus
@@ -162,9 +167,10 @@ compare current provider file sizes and modification times with the stored
 checkpoints and report changed and new source counts, the newest change, and
 the probe time. Drift is split by a fixed 10-minute settle window: active
 sources are expected running-session churn, while settled sources are old
-enough to act on. Only settled drift changes pretty status to `ready (N settled
-sources changed since last index)`; the probe never reads transcript content
-or updates the index.
+enough to act on. `status_reasons` lists every reason a status is not ready;
+settled drift reports `degraded`, while active-only drift and missing-but-
+preserved source heads leave status `ready`. The probe never reads transcript
+content or updates the index.
 
 `history sample` pulls a representative, deterministic sample — same seed,
 same corpus, same sample. It walks indexed SHA-256 keys instead of sorting
@@ -172,6 +178,10 @@ the corpus randomly, defaults to 25 logical prompts, caps at 100, and
 stratifies when you pass `--group-by month,project,thread-kind`.
 `--min-length` filters by cleaned Unicode characters and `--one-per-session`
 prevents one long conversation from dominating a prompt sample.
+Default prompt samples omit relationship and occurrence arrays while retaining
+exact occurrence counts, nonzero availability counts, and an opaque preferred
+location. Default snippets are capped at 64 UTF-8 bytes.
+`--all-occurrences` restores the bounded full prompt metadata.
 
 On privacy: indexing never runs implicitly from usage reports or normal
 syncs, and user prompts are the only corpus by default. Setting

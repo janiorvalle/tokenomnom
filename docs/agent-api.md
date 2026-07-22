@@ -256,7 +256,9 @@ versioned rule that removes scheme, credentials, a trailing `.git`, and trailing
 slashes while preserving case. Repository name is the final path segment; it is
 never inferred from cwd.
 `project` is separate: it uses the repository name when proven, otherwise the
-final path segment of known cwd, otherwise `unknown`. `--project` is the
+final path segment of a known non-temporary cwd, otherwise `unknown`. Cwds
+under the runtime OS temp directory, `/private/tmp`, `/tmp`, `/var/folders`,
+or standard Windows user/system temp roots remain unknown. `--project` is the
 cross-provider name filter; `--repo` remains strictly git-proven.
 
 ## History Search
@@ -351,6 +353,12 @@ grouping it is stratified. The omitted seed is the constant `tokenomnom`.
 Logical prompts and sessions are sampled once regardless of how many live or
 vault occurrences they have. Default items contain metadata and bounded
 snippets; complete clean text requires `--include-text`.
+Default prompt items compact provenance to exact occurrence and availability
+counts plus `preferred_location`. Compact availability omits zero-valued source
+kinds; the preferred location contains its kind, opaque source/snapshot ID,
+and vault version when relevant. Default snippets are capped at 64 UTF-8 bytes.
+Relationship evidence, paths, offsets, and occurrence arrays are omitted.
+`--all-occurrences` restores the bounded full prompt object.
 Sampling deliberately remains user-only in this campaign: it has no `--role`
 filter, so larger assistant messages cannot silently change existing sampling
 behavior. Use assistant search/prompts plus bounded pagination instead.
@@ -362,11 +370,14 @@ Stratification sorts nonempty normalized groups, gives each group one unit
 while capacity remains, then distributes the remainder round-robin without
 duplicates. If groups outnumber the count, the seed pivot deterministically
 selects groups. Project strata include `project_source` so matching git- and
-cwd-derived names remain labeled. Missing month, project, repository, or thread metadata is the explicit
-`unknown` group; session month uses its first known timestamp.
+cwd-derived names remain labeled. Project labels represented by fewer than two
+logical sessions in the index fold into `project: "other"` with
+`project_source: "unknown"`; this changes only presentation strata, not stored
+session project values. Missing month, project, repository, or thread metadata
+is the explicit `unknown` group; session month uses its first known timestamp.
 
-`data.items` is always an array. Each item has `unit`, grouping `groups`, and
-either a `prompt` or `session` object. Session samples may add `text` only with
+`data.items` is always an array. Each item has `unit` and either a `prompt` or
+`session` object; `groups` is present when grouping was requested. Session samples may add `text` only with
 `--include-text`. The response also includes the effective `strategy`, sorted
 `group_by`, returned `count`, effective `seed`, `index_generation`, and
 `coverage`. Sample coverage describes the returned logical sessions, not a
@@ -385,7 +396,9 @@ vault availability; index bytes; and stale/error/oversized counts.
 `data.role_counts` discloses text-free user and assistant logical-prompt,
 occurrence, and byte totals for the consented corpus.
 `data.groups` contains dimension `values` and session/prompt/occurrence/length
-aggregates. Project groups also carry `project_source`. Groups sort by logical prompt count and default to the top 20
+aggregates. Project groups also carry `project_source`; labels represented by
+fewer than two sessions fold into the visible `other` project group before
+top-N truncation. Groups sort by logical prompt count and default to the top 20
 (maximum 100). `groups_truncated` and the aggregate `other` object explicitly
 disclose any remainder. Before top-N truncation, repository/CWD group sets
 include an explicit `unknown` group; a zero-count synthetic unknown can be
@@ -399,8 +412,11 @@ warning instead of mixing unrelated failures into `error_count`.
 
 `tokenomnom history status --format json` returns the same bounded history
 health object used by doctor. An absent index returns `status: "not_indexed"`
-without creating a database. Status is `ready`, `degraded`, or `error` for an
-existing index according to its missing/stale/error counts. Status and doctor
+without creating a database. Additive `status_reasons` is always an array and
+lists every reason status is not ready: `not_indexed`, `error_sources`,
+`last_run_errors`, `stale_sources`, `settled_drift`, and/or
+`sampling_not_ready`. Missing sources are reported separately and do not count
+as stale or degrade an otherwise clean index. Status and doctor
 also stat the configured live provider trees and add
 `changed_sources_since_index`, `new_sources_since_index`, additive
 `active_changed_sources`, `active_new_sources`, `settled_changed_sources`, and
@@ -412,8 +428,8 @@ lock, and never creates or migrates `history.db`; roots that are not present
 do not create false drift for vault-only history. Active means the source mtime
 is within the fixed, inclusive 10-minute settle window at probe time; settled
 means older and actionable. Query commands do not run this probe. Active-only
-drift is informational and leaves pretty status `ready`; settled drift is shown
-as `ready (N settled sources changed since last index)`.
+drift is informational and leaves status `ready`; settled drift reports
+`degraded` with `status_reasons: ["settled_drift"]`.
 
 `history index` additively returns `thread_kind_deltas` with signed `root`,
 `subagent`, and `unknown` logical-session count changes. This makes versioned

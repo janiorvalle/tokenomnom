@@ -63,8 +63,40 @@ func TestCompactOutputBudgetForTwentyFiveItems(t *testing.T) {
 	}
 	result, err := database.Sample(SampleQuery{Count: 25})
 	encoded, marshalErr := json.Marshal(result)
-	if err != nil || marshalErr != nil || len(result.Items) != 25 || len(encoded) > 64<<10 {
+	if err != nil || marshalErr != nil || len(result.Items) != 25 || len(encoded) > 16<<10 {
 		t.Fatalf("compact sample items=%d bytes=%d query_err=%v marshal_err=%v", len(result.Items), len(encoded), err, marshalErr)
+	}
+}
+
+func TestSampleCompactAndExpandedProvenance(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/sample-provenance.jsonl", history.LocationProviderLive)
+	value := prompt("native:sample-provenance", "sample-provenance", "sample provenance prompt", 1)
+	if _, err := database.ApplySource(extraction("native:sample-provenance", "sample-provenance", source, value), head(source, "sample-provenance", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	compact, err := database.Sample(SampleQuery{Count: 1})
+	compactJSON, marshalErr := json.Marshal(compact)
+	if err != nil || marshalErr != nil || len(compact.Items) != 1 {
+		t.Fatalf("compact sample err=%v marshal=%v result=%+v", err, marshalErr, compact)
+	}
+	for _, omitted := range []string{`"occurrences"`, `"source_head_ids"`, `"relationships"`, `"thread_evidence"`, `"source_path"`, `"line_number"`, `"provider_archive":0`, `"unavailable":false`} {
+		if strings.Contains(string(compactJSON), omitted) {
+			t.Fatalf("compact sample retained %s: %s", omitted, compactJSON)
+		}
+	}
+	for _, required := range []string{`"occurrence_count":1`, `"preferred_location":`, `"availability":`} {
+		if !strings.Contains(string(compactJSON), required) {
+			t.Fatalf("compact sample missing %s: %s", required, compactJSON)
+		}
+	}
+
+	expanded, err := database.Sample(SampleQuery{PromptQuery: PromptQuery{AllOccurrences: true}, Count: 1})
+	expandedJSON, marshalErr := json.Marshal(expanded)
+	if err != nil || marshalErr != nil || !strings.Contains(string(expandedJSON), `"occurrences":[`) || !strings.Contains(string(expandedJSON), `"source_head_ids":[`) || !strings.Contains(string(expandedJSON), `"relationships":`) || !strings.Contains(string(expandedJSON), `"source_path":`) || !strings.Contains(string(expandedJSON), `"line_number":`) {
+		t.Fatalf("expanded sample err=%v marshal=%v json=%s", err, marshalErr, expandedJSON)
 	}
 }
 
@@ -502,6 +534,44 @@ func TestProjectDerivationFilteringGroupingCoverageAndCursorBinding(t *testing.T
 	}
 	if _, err := database.Sample(SampleQuery{Count: 2, GroupBy: []string{"project", "repo"}}); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported project strata error = %v", err)
+	}
+}
+
+func TestRareProjectsFoldIntoVisibleOtherGroups(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index, project := range []string{"one-off-a", "one-off-b"} {
+		source := sourceRef(fmt.Sprintf("/provider/rare-%d.jsonl", index), history.LocationProviderLive)
+		extract := extraction(fmt.Sprintf("native:rare-%d", index), fmt.Sprintf("rare-%d", index), source,
+			prompt(fmt.Sprintf("native:rare-p-%d", index), fmt.Sprintf("rare-p-%d", index), "rare project prompt", 1))
+		extract.Session.CWD = "/workspace/" + project
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("rare-%d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, GroupBy: []string{"project"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other *StatisticsGroup
+	for index := range stats.Groups {
+		if stats.Groups[index].Values["project"] == "other" {
+			other = &stats.Groups[index]
+		}
+	}
+	if other == nil || other.Values["project_source"] != "unknown" || other.LogicalSessions != 2 || other.LogicalPrompts != 2 || stats.LogicalPrompts != 2 {
+		t.Fatalf("rare project statistics=%+v", stats)
+	}
+
+	sample, err := database.Sample(SampleQuery{Count: 2, GroupBy: []string{"project"}})
+	if err != nil || len(sample.Items) != 2 {
+		t.Fatalf("rare project sample=%+v err=%v", sample, err)
+	}
+	for _, item := range sample.Items {
+		if item.Groups["project"] != "other" || item.Groups["project_source"] != "unknown" {
+			t.Fatalf("rare project sample item=%+v", item)
+		}
 	}
 }
 

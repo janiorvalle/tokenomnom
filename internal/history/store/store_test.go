@@ -346,6 +346,22 @@ func TestHealthCountsStaleVaultSnapshotsAndBundleCheckpoints(t *testing.T) {
 	}
 }
 
+func TestHealthDoesNotCountMissingSourceAsStale(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/missing-stale.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:missing-stale", "missing-stale", source, prompt("native:p", "p", "retained prompt", 1)), head(source, "missing-stale", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE source_heads SET available=0,extractor_version=?`, history.ExtractorVersion-1); err != nil {
+		t.Fatal(err)
+	}
+	health, err := database.Health()
+	if err != nil || health.MissingSources != 1 || health.StaleSources != 0 {
+		t.Fatalf("missing source health=%+v err=%v", health, err)
+	}
+}
+
 func TestExtractorVersionRehomesStaleSnapshotSessionIdentity(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()
