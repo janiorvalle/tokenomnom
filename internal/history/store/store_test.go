@@ -668,13 +668,10 @@ func TestLockSelfHealsDeadAndReusedPIDOwners(t *testing.T) {
 			if err != nil {
 				t.Fatalf("heal stale lock: %v", err)
 			}
+			release()
 			owner, err := readLockOwner(lockPath)
 			if err != nil || owner.PID != os.Getpid() || owner.Token == "stale" {
 				t.Fatalf("replacement owner=%+v err=%v", owner, err)
-			}
-			release()
-			if _, err := readLockOwner(lockPath); err != nil {
-				t.Fatalf("released ownership record unreadable: %v", err)
 			}
 		})
 	}
