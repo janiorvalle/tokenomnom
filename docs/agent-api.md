@@ -108,6 +108,9 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 `schema_version`, nullable `timezone`, nullable `last_sync`, `usage_rows`,
 `distinct_models`, `date_range`, and `missing_files`.
 
+`data.store.missing_files` counts synced transcript files whose source file is
+no longer present. It is a usage-store denominator, not a history-index count.
+
 `data.skills` contains one item per provider with `provider`, skill `path`,
 `status`, nullable installed `version`, `current_version`, and
 `update_available`. An outdated owned skill adds a warning that points to
@@ -148,6 +151,8 @@ database open remains bounded. It also reports `auto_index_enabled`,
 `index_assistant_enabled`, whether the stored corpus is `assistant_indexed`,
 `auto_interval`, configured `providers`, and nullable `last_error_summary`
 without prompt text.
+`data.history.missing_sources` counts indexed source heads whose file is gone;
+it is intentionally different from `data.store.missing_files`.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
 without aborting its other diagnostics.
@@ -206,6 +211,8 @@ reason in `exclusion_counts`; each entry contains `classification`, `reason`,
 and `count`, without prompt text. `warnings` is `[]` by default. `--verbose`
 restores bounded per-record path-and-line details there, while source and
 integrity failures remain individually visible in `errors` in either mode.
+Here `missing_sources` is the number of indexed source heads whose file was
+found gone during the index run.
 Vault fields include selected,
 traversed, indexed, skipped, and failed bundle/version counts. Independent source failures do not roll
 back successful sources, but the command exits nonzero and does not update the
@@ -214,7 +221,7 @@ complete-success timestamp.
 ## History List
 
 `tokenomnom history list [--provider codex|claude] [--since YYYY-MM-DD]
-[--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
+[--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--project NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
 [--cursor OPAQUE] [--root-only | --thread-kind root|subagent|unknown|all]
 --format json`
@@ -222,7 +229,8 @@ complete-success timestamp.
 The default page contains at most 100 current logical sessions; the maximum is
 500. Results use descending activity time and stable session-ID tie-breaking.
 `data.sessions` contains stable `ses_` IDs, provider/native IDs, first/last
-timestamps, cwd/repository/branch metadata, `src_` and `snap_` IDs and counts,
+timestamps, cwd/repository/branch metadata, derived `project` and its
+`project_source` (`git`, `cwd`, or `unknown`), `src_` and `snap_` IDs and counts,
 logical prompt and occurrence counts, availability components, preferred exact
 retrieval source, explicit thread classification and evidence, relationship
 details, and a byte/line-bounded first-human-prompt preview. Relationship
@@ -232,7 +240,8 @@ state. Relationship arrays are capped and disclose `relationships_truncated`.
 Exact
 provider and vault copies remain one logical prompt with multiple occurrences.
 
-`data.coverage` reports known and unknown repository and branch counts. Claude
+`data.coverage` reports known and unknown repository and branch counts plus a
+project breakdown by `git`, `cwd`, and `unknown` source. Claude
 Code repository and branch values remain unknown; `--repo` or `--branch`
 excludes those sessions and adds an envelope warning with the excluded count.
 Use `--cwd` when cross-provider completeness matters. Page cursors are opaque,
@@ -246,11 +255,14 @@ Codex repository identity is derived from its stored repository URL by a
 versioned rule that removes scheme, credentials, a trailing `.git`, and trailing
 slashes while preserving case. Repository name is the final path segment; it is
 never inferred from cwd.
+`project` is separate: it uses the repository name when proven, otherwise the
+final path segment of known cwd, otherwise `unknown`. `--project` is the
+cross-provider name filter; `--repo` remains strictly git-proven.
 
 ## History Search
 
 `tokenomnom history search <query> [--provider codex|claude] [--since
-YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
+YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--project NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
 [--cursor OPAQUE] [--include-text] [--fts-query] [--role user|assistant|any]
 [--prompt-kind human|delegation|agent_message|command|control|unknown[,KIND...]]
@@ -274,12 +286,14 @@ highlighted `snippet`, exact occurrence counts, availability, preferred
 retrieval source, and `preferred_location`. Stable source/snapshot ID and
 bounded `occurrences` arrays are included only with `--all-occurrences`. `text` is present
 only with `--include-text`. Rank is not a normalized confidence score.
+Every hit also includes derived `project` and its `project_source` label.
 `data.page` contains `limit`, `has_more`, and `next_cursor`. Search cursors bind
 the exact query, literal/raw mode, filters, rank bits, stable tie-breakers, and
 index generation.
 
 `data.coverage` contains nullable first/last indexed prompt timestamps plus
-known/unknown repository and branch session counts plus root, subagent, and
+known/unknown repository and branch session counts, project counts by source,
+plus root, subagent, and
 unknown relationship counts. `coverage.roles` reports independent user and
 assistant prompt counts/date bounds plus `assistant_indexed` and the completed
 `assistant_providers` scope; materially
@@ -321,7 +335,7 @@ into cursors.
 ## History Sample
 
 `tokenomnom history sample [--unit prompt|session] [--strategy
-random|stratified] [--group-by month,cwd,repo,thread-kind] [--count N] [--seed
+random|stratified] [--group-by month,project,cwd,repo,thread-kind] [--count N] [--seed
 STRING] [shared filters] [--include-text] --format json`
 
 Prompt samples also accept `--min-length N`, `--one-per-session`, and
@@ -347,7 +361,8 @@ once. There is no `ORDER BY random()` or whole-FTS-corpus random sort.
 Stratification sorts nonempty normalized groups, gives each group one unit
 while capacity remains, then distributes the remainder round-robin without
 duplicates. If groups outnumber the count, the seed pivot deterministically
-selects groups. Missing month, repository, or thread metadata is the explicit
+selects groups. Project strata include `project_source` so matching git- and
+cwd-derived names remain labeled. Missing month, project, repository, or thread metadata is the explicit
 `unknown` group; session month uses its first known timestamp.
 
 `data.items` is always an array. Each item has `unit`, grouping `groups`, and
@@ -361,7 +376,7 @@ warnings without scanning excluded rows.
 
 ## History Stats
 
-`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday|hour|role] [--top N]
+`tokenomnom history stats [shared filters] [--group-by provider|project|repo|cwd|thread-kind|weekday|hour|role] [--top N]
 --format json` returns SQL-computed, text-free aggregates labeled with
 `scope: "searchable_prompt_corpus"`: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
@@ -370,7 +385,7 @@ vault availability; index bytes; and stale/error/oversized counts.
 `data.role_counts` discloses text-free user and assistant logical-prompt,
 occurrence, and byte totals for the consented corpus.
 `data.groups` contains dimension `values` and session/prompt/occurrence/length
-aggregates. Groups sort by logical prompt count and default to the top 20
+aggregates. Project groups also carry `project_source`. Groups sort by logical prompt count and default to the top 20
 (maximum 100). `groups_truncated` and the aggregate `other` object explicitly
 disclose any remainder. Before top-N truncation, repository/CWD group sets
 include an explicit `unknown` group; a zero-count synthetic unknown can be
@@ -387,14 +402,18 @@ health object used by doctor. An absent index returns `status: "not_indexed"`
 without creating a database. Status is `ready`, `degraded`, or `error` for an
 existing index according to its missing/stale/error counts. Status and doctor
 also stat the configured live provider trees and add
-`changed_sources_since_index`, `new_sources_since_index`, nullable
+`changed_sources_since_index`, `new_sources_since_index`, additive
+`active_changed_sources`, `active_new_sources`, `settled_changed_sources`, and
+`settled_new_sources`, nullable
 `newest_source_change`, and `source_drift_as_of`. The changed count includes
 modified, new, and no-longer-present files under provider roots that still
 exist. The probe reads no transcript content, takes no history writer
 lock, and never creates or migrates `history.db`; roots that are not present
-do not create false drift for vault-only history. Query commands do not run
-this probe. In pretty output, an otherwise ready index with drift is shown as
-`ready (N sources changed since last index)`.
+do not create false drift for vault-only history. Active means the source mtime
+is within the fixed, inclusive 10-minute settle window at probe time; settled
+means older and actionable. Query commands do not run this probe. Active-only
+drift is informational and leaves pretty status `ready`; settled drift is shown
+as `ready (N settled sources changed since last index)`.
 
 `history index` additively returns `thread_kind_deltas` with signed `root`,
 `subagent`, and `unknown` logical-session count changes. This makes versioned

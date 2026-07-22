@@ -1036,11 +1036,12 @@ func (tx *Tx) readSessionMetadata(id int64) (storedSessionMetadata, error) {
 }
 
 func (tx *Tx) writeSessionMetadata(id int64, value storedSessionMetadata) error {
-	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,repository_rule_version=?,branch=?,
+	project, projectSource := history.DeriveProject(value.repositoryName.String, value.cwd.String)
+	_, err := tx.tx.Exec(`UPDATE sessions SET native_session_id=?,fallback_key=?,cwd=?,repository_root=?,repository_name=?,repository_identity=?,repository_rule_version=?,project=?,project_source=?,branch=?,
 		thread_kind=?,thread_evidence=?,thread_confidence=?,thread_rule_version=?,parent_native_session_id=?,forked_from_session_id=?,forked_from_message_id=?,
 		originator=?,evidence=?,confidence=?,first_ts=?,last_ts=? WHERE id=?`,
 		nullStringValue(value.nativeSessionID), value.fallbackKey, nullStringValue(value.cwd), nullStringValue(value.repositoryRoot),
-		nullStringValue(value.repositoryName), nullStringValue(value.repositoryIdentity), value.repositoryRuleVersion, nullStringValue(value.branch), value.threadKind,
+		nullStringValue(value.repositoryName), nullStringValue(value.repositoryIdentity), value.repositoryRuleVersion, project, projectSource, nullStringValue(value.branch), value.threadKind,
 		value.threadEvidence.String, value.threadConfidence, value.threadRuleVersion, nullStringValue(value.parentNativeSessionID),
 		nullStringValue(value.forkedFromSessionID), nullStringValue(value.forkedFromMessageID), nullStringValue(value.originator), nullStringValue(value.evidence), value.confidence,
 		nullableTimestamp(value.firstTS), nullableTimestamp(value.lastTS), id)
@@ -1250,14 +1251,15 @@ func (tx *Tx) ensureSession(provider history.Provider, value history.Session, pr
 		if err != nil {
 			return 0, "", err
 		}
+		project, projectSource := history.DeriveProject(value.RepositoryName, value.CWD)
 		result, err := tx.tx.Exec(`INSERT INTO sessions(
 			public_id, provider, identity_key, native_session_id, fallback_key, cwd,
-				repository_root, repository_name, repository_identity, repository_rule_version, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
+				repository_root, repository_name, repository_identity, repository_rule_version, project, project_source, branch, thread_kind, thread_evidence, thread_confidence, thread_rule_version,
 			parent_native_session_id, forked_from_session_id, forked_from_message_id, originator, evidence, confidence, first_ts, last_ts, sample_key)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, value.IdentityKey,
 			nullText(value.NativeSessionID), value.FallbackKey, nullText(value.CWD),
 			nullText(value.RepositoryRoot), nullText(value.RepositoryName), nullText(value.RepositoryIdentity), value.RepositoryRuleVersion,
-			nullText(value.Branch), normalizedThreadKind(value.ThreadKind), value.ThreadEvidence, normalizedConfidence(value.ThreadConfidence), value.ThreadRuleVersion,
+			project, projectSource, nullText(value.Branch), normalizedThreadKind(value.ThreadKind), value.ThreadEvidence, normalizedConfidence(value.ThreadConfidence), value.ThreadRuleVersion,
 			nullText(value.ParentNativeSessionID), nullText(value.ForkedFromSessionID), nullText(value.ForkedFromMessageID),
 			nullText(value.Originator), nullText(value.Evidence), normalizedConfidence(value.Confidence),
 			timeText(value.FirstTimestamp), timeText(value.LastTimestamp), sampleKey(publicID))

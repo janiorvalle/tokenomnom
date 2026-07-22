@@ -171,10 +171,10 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("doctor deletion: %v", err)
 	}
-	if !strings.Contains(output.String(), "Missing files:    1") || !strings.Contains(output.String(), "Usage rows:       1") {
+	if !strings.Contains(output.String(), "Synced transcript files no longer present:    1") || !strings.Contains(output.String(), "Usage rows:       1") {
 		t.Fatalf("doctor did not report retained missing file:\n%s", output.String())
 	}
-	warning := "1 previously synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted."
+	warning := "1 synced transcript files are no longer present. Their usage remains retained. Raw transcript availability depends on whether those files were vaulted."
 	if !strings.Contains(output.String(), warning) {
 		t.Fatalf("doctor missing actionable retained-file warning:\n%s", output.String())
 	}

@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SchemaVersion = 10
+	SchemaVersion = 11
 	DatabaseName  = "history.db"
 )
 
@@ -207,6 +207,9 @@ func (s *Store) initialize() error {
 		return err
 	}
 	if err := s.backfillRepositoryMetadata(); err != nil {
+		return err
+	}
+	if err := s.backfillProjectMetadata(); err != nil {
 		return err
 	}
 	if _, err := s.runner.Exec(`INSERT INTO meta(key,value) VALUES('extractor_version',?)
@@ -454,6 +457,26 @@ UPDATE prompts SET prompt_kind='human' WHERE role='user' AND classification='hum
 UPDATE occurrences SET prompt_kind='human' WHERE role='user' AND classification='human';
 CREATE INDEX prompts_role_kind_timestamp_idx ON prompts(role,prompt_kind,timestamp,public_id);
 `,
+			11: `
+ALTER TABLE sessions ADD COLUMN project TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE sessions ADD COLUMN project_source TEXT NOT NULL DEFAULT 'unknown' CHECK (project_source IN ('git','cwd','unknown'));
+CREATE INDEX sessions_project_idx ON sessions(project,project_source,public_id);
+DROP TRIGGER sample_strata_group_insert;
+DROP TRIGGER sample_strata_group_delete;
+CREATE TRIGGER sample_strata_group_insert AFTER INSERT ON sample_strata
+	WHEN new.dimensions IN ('month','cwd','repo','project','thread-kind','cwd,month','month,repo','month,project','month,thread-kind','project,thread-kind','repo,thread-kind','month,project,thread-kind','month,repo,thread-kind') BEGIN
+	INSERT INTO sample_groups(unit_kind,dimensions,group_values,group_key,member_count)
+		VALUES(new.unit_kind,new.dimensions,new.group_values,new.group_key,1)
+		ON CONFLICT(unit_kind,dimensions,group_values) DO UPDATE SET member_count=member_count+1;
+END;
+CREATE TRIGGER sample_strata_group_delete AFTER DELETE ON sample_strata
+	WHEN old.dimensions IN ('month','cwd','repo','project','thread-kind','cwd,month','month,repo','month,project','month,thread-kind','project,thread-kind','repo,thread-kind','month,project,thread-kind','month,repo,thread-kind') BEGIN
+	DELETE FROM sample_groups WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count=1;
+	UPDATE sample_groups SET member_count=member_count-1
+		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
+END;
+UPDATE meta SET value='0' WHERE key='sampling_ready';
+`,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {
 			if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES
@@ -508,6 +531,48 @@ func (s *Store) backfillRepositoryMetadata() error {
 			if _, err := tx.tx.Exec(`UPDATE sessions SET repository_identity=?,repository_name=?,repository_rule_version=? WHERE id=?`,
 				value.identity, value.name, history.RepositoryRuleVersion, value.id); err != nil {
 				return fmt.Errorf("backfill history repository metadata: %w", err)
+			}
+		}
+		if len(updates) == 0 {
+			return nil
+		}
+		if err := tx.SetMeta("sampling_ready", "0"); err != nil {
+			return err
+		}
+		return tx.advanceGenerationIf(true)
+	})
+}
+
+func (s *Store) backfillProjectMetadata() error {
+	return s.Transaction(func(tx *Tx) error {
+		rows, err := tx.tx.Query(`SELECT id,COALESCE(repository_name,''),COALESCE(cwd,''),project,project_source FROM sessions ORDER BY id`)
+		if err != nil {
+			return fmt.Errorf("list history project metadata for backfill: %w", err)
+		}
+		type update struct {
+			id      int64
+			project string
+			source  history.ProjectSource
+		}
+		updates := []update{}
+		for rows.Next() {
+			var id int64
+			var repository, cwd, storedProject, storedSource string
+			if err := rows.Scan(&id, &repository, &cwd, &storedProject, &storedSource); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan history project metadata for backfill: %w", err)
+			}
+			project, source := history.DeriveProject(repository, cwd)
+			if project != storedProject || string(source) != storedSource {
+				updates = append(updates, update{id: id, project: project, source: source})
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, value := range updates {
+			if _, err := tx.tx.Exec(`UPDATE sessions SET project=?,project_source=? WHERE id=?`, value.project, value.source, value.id); err != nil {
+				return fmt.Errorf("backfill history project metadata: %w", err)
 			}
 		}
 		if len(updates) == 0 {

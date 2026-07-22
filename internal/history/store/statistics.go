@@ -129,7 +129,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	}
 	sessionWhere, sessionArgs := catalogWhere(CatalogQuery{
 		Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
-		Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind,
+		Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind,
 	}, true)
 	promptFilters, promptArgs := promptWhere(query.PromptQuery, true, "p", "s")
 	oversizedFilters := append([]string{"p.oversized=1"}, promptFilters[1:]...)
@@ -267,7 +267,7 @@ func limitStatisticsGroups(groups []StatisticsGroup, dimensions []string, top in
 	}
 	protectedSlots := map[int]bool{}
 	for _, dimension := range dimensions {
-		if dimension != "repo" && dimension != "cwd" || containsUnknownDimension(selected, dimension) {
+		if dimension != "repo" && dimension != "cwd" && dimension != "project" || containsUnknownDimension(selected, dimension) {
 			continue
 		}
 		candidate := -1
@@ -358,7 +358,7 @@ func containsUnknownDimension(groups []StatisticsGroup, dimension string) bool {
 }
 
 func statisticsQueryIsUnfiltered(query PromptQuery) bool {
-	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Branch == "" &&
+	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Project == "" && query.Branch == "" &&
 		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all") && len(query.PromptKinds) == 0 && !query.ExcludeControl
 }
 
@@ -366,6 +366,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 	expressionByDimension := map[string]string{
 		"provider":    "s.provider",
 		"repo":        "COALESCE(NULLIF(s.repository_name,''),'unknown')",
+		"project":     "s.project",
 		"cwd":         "COALESCE(NULLIF(s.cwd,''),'unknown')",
 		"thread-kind": "s.thread_kind",
 		"weekday":     "CASE strftime('%w',p.timestamp) WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' WHEN '6' THEN 'Saturday' ELSE 'unknown' END",
@@ -381,11 +382,16 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 		}
 		expression, ok := expressionByDimension[value]
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, repo, cwd, thread-kind, weekday, hour, or role)", value)
+			return nil, nil, fmt.Errorf("invalid history stats group %q (expected provider, project, repo, cwd, thread-kind, weekday, hour, or role)", value)
 		}
 		seen[value] = true
 		dimensions = append(dimensions, value)
 		expressions = append(expressions, expression)
+		if value == "project" {
+			seen["project_source"] = true
+			dimensions = append(dimensions, "project_source")
+			expressions = append(expressions, "s.project_source")
+		}
 	}
 	return dimensions, expressions, nil
 }
@@ -437,7 +443,7 @@ func (s *Store) statisticsGroups(cte string, args []any, dimensions, expressions
 func ensureUnknownStatisticsGroups(groups []StatisticsGroup, dimensions []string) []StatisticsGroup {
 	missing := map[string]bool{}
 	for _, dimension := range dimensions {
-		if dimension == "repo" || dimension == "cwd" {
+		if dimension == "repo" || dimension == "cwd" || dimension == "project" || dimension == "project_source" {
 			missing[dimension] = true
 		}
 	}

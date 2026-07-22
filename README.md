@@ -115,7 +115,7 @@ tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
 tokenomnom history stats --group-by provider --top 20
-tokenomnom history sample --group-by month,repo --count 25 --min-length 40 --one-per-session
+tokenomnom history sample --group-by month,project --count 25 --min-length 40 --one-per-session
 tokenomnom history status
 tokenomnom history purge
 ```
@@ -144,9 +144,12 @@ selection or `--exclude-control` when combining kinds. Search, prompt, and
 sample JSON use compact provenance by default: exact occurrence counts plus a
 preferred location. `--all-occurrences` opts into bounded occurrence arrays.
 
-A few honesty rules are built in. Repository and branch filters are complete
-for Codex but partial for Claude Code — use `--cwd` when you need
-cross-provider completeness, and read the JSON coverage warnings. Root versus
+A few honesty rules are built in. `project` is the git-proven repository name
+when available, otherwise the final segment of a known cwd, otherwise
+`unknown`; every value is labeled with `project_source: git|cwd|unknown`.
+Use `--project` or `--group-by project` for cross-provider grouping. The
+stricter repository and branch filters remain complete for Codex but partial
+for Claude Code, and repository fields are never inferred from cwd. Root versus
 subagent classification comes from direct provider evidence or versioned
 deterministic rules; when the evidence is missing, sessions stay explicitly
 `unknown` instead of being guessed. For Codex 0.93.0 and newer, the legacy
@@ -157,13 +160,16 @@ with a distinct subagent source shape.
 `history status` and doctor perform a metadata-only freshness check. They
 compare current provider file sizes and modification times with the stored
 checkpoints and report changed and new source counts, the newest change, and
-the probe time. A ready index can therefore say `ready (N sources changed
-since last index)` without reading transcript content or updating the index.
+the probe time. Drift is split by a fixed 10-minute settle window: active
+sources are expected running-session churn, while settled sources are old
+enough to act on. Only settled drift changes pretty status to `ready (N settled
+sources changed since last index)`; the probe never reads transcript content
+or updates the index.
 
 `history sample` pulls a representative, deterministic sample — same seed,
 same corpus, same sample. It walks indexed SHA-256 keys instead of sorting
 the corpus randomly, defaults to 25 logical prompts, caps at 100, and
-stratifies when you pass `--group-by month,repo,thread-kind`.
+stratifies when you pass `--group-by month,project,thread-kind`.
 `--min-length` filters by cleaned Unicode characters and `--one-per-session`
 prevents one long conversation from dominating a prompt sample.
 

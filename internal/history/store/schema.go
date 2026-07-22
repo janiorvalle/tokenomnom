@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     repository_name TEXT,
     repository_identity TEXT,
 	repository_rule_version INTEGER NOT NULL DEFAULT 0,
+	project TEXT NOT NULL DEFAULT 'unknown',
+	project_source TEXT NOT NULL DEFAULT 'unknown' CHECK (project_source IN ('git','cwd','unknown')),
     branch TEXT,
 	thread_kind TEXT NOT NULL DEFAULT 'unknown',
 	thread_evidence TEXT NOT NULL DEFAULT '',
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_sample_key_idx ON sessions(sample_key, public_id);
 CREATE INDEX IF NOT EXISTS sessions_sample_month_idx ON sessions(COALESCE(strftime('%Y-%m', first_ts), 'unknown'), sample_key, public_id);
 CREATE INDEX IF NOT EXISTS sessions_sample_repo_idx ON sessions(COALESCE(NULLIF(lower(repository_name), ''), 'unknown'), sample_key, public_id);
+CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project, project_source, public_id);
 CREATE INDEX IF NOT EXISTS sessions_sample_thread_idx ON sessions(thread_kind, sample_key, public_id);
 
 CREATE TABLE IF NOT EXISTS session_relations (
@@ -227,14 +230,14 @@ CREATE INDEX IF NOT EXISTS sample_strata_group_key_idx ON sample_strata(unit_kin
 CREATE INDEX IF NOT EXISTS sample_strata_member_idx ON sample_strata(unit_kind,dimensions,group_values,sample_key,unit_id);
 
 CREATE TRIGGER IF NOT EXISTS sample_strata_group_insert AFTER INSERT ON sample_strata
-	WHEN new.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	WHEN new.dimensions IN ('month','cwd','repo','project','thread-kind','cwd,month','month,repo','month,project','month,thread-kind','project,thread-kind','repo,thread-kind','month,project,thread-kind','month,repo,thread-kind') BEGIN
 	INSERT INTO sample_groups(unit_kind,dimensions,group_values,group_key,member_count)
 		VALUES(new.unit_kind,new.dimensions,new.group_values,new.group_key,1)
 		ON CONFLICT(unit_kind,dimensions,group_values) DO UPDATE SET member_count=member_count+1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS sample_strata_group_delete AFTER DELETE ON sample_strata
-	WHEN old.dimensions IN ('month','cwd','repo','thread-kind','cwd,month','month,repo','month,thread-kind','repo,thread-kind','month,repo,thread-kind') BEGIN
+	WHEN old.dimensions IN ('month','cwd','repo','project','thread-kind','cwd,month','month,repo','month,project','month,thread-kind','project,thread-kind','repo,thread-kind','month,project,thread-kind','month,repo,thread-kind') BEGIN
 	DELETE FROM sample_groups WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count=1;
 	UPDATE sample_groups SET member_count=member_count-1
 		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;

@@ -185,6 +185,17 @@ func TestSampleStratifiedAllocationUnknownsAndSessionMonth(t *testing.T) {
 	if len(cwdSample.Items) != 3 || cwdGroups["/workspace/one"] != 1 || cwdGroups["/workspace/two"] != 1 || cwdGroups["unknown"] != 1 {
 		t.Fatalf("cwd strata items=%+v groups=%+v", cwdSample.Items, cwdGroups)
 	}
+	cwdOnly, err := database.Sample(SampleQuery{Count: 3, GroupBy: []string{"cwd"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwdGroups = map[string]int{}
+	for _, item := range cwdOnly.Items {
+		cwdGroups[item.Groups["cwd"]]++
+	}
+	if cwdGroups["/workspace/one"] != 1 || cwdGroups["/workspace/two"] != 1 || cwdGroups["unknown"] != 1 {
+		t.Fatalf("standalone cwd strata=%+v", cwdGroups)
+	}
 	fewerGroups, err := database.Sample(SampleQuery{Count: 2, GroupBy: []string{"repo"}, Seed: "group-pivot"})
 	if err != nil {
 		t.Fatal(err)

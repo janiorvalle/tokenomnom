@@ -27,6 +27,7 @@ type PromptQuery struct {
 	Until                    *time.Time
 	CWD                      string
 	Repo                     string
+	Project                  string
 	Branch                   string
 	Source                   CatalogSource
 	ThreadKind               string
@@ -60,6 +61,7 @@ type QueryCoverage struct {
 	FirstTimestamp *string            `json:"first_timestamp"`
 	LastTimestamp  *string            `json:"last_timestamp"`
 	Repository     FieldCoverage      `json:"repository"`
+	Project        ProjectCoverage    `json:"project"`
 	Branch         FieldCoverage      `json:"branch"`
 	ThreadKind     ThreadKindCoverage `json:"thread_kind"`
 	Roles          RoleQueryCoverage  `json:"roles"`
@@ -105,6 +107,8 @@ type PromptResult struct {
 	PromptKind                  history.PromptKind    `json:"prompt_kind"`
 	Timestamp                   *string               `json:"timestamp"`
 	RepositoryName              *string               `json:"repository_name"`
+	Project                     string                `json:"project"`
+	ProjectSource               history.ProjectSource `json:"project_source"`
 	CWD                         string                `json:"cwd,omitempty"`
 	Branch                      *string               `json:"branch"`
 	ThreadKind                  history.ThreadKind    `json:"thread_kind"`
@@ -181,6 +185,7 @@ type promptCursor struct {
 	Until            string        `json:"until"`
 	CWD              string        `json:"cwd"`
 	Repo             string        `json:"repo"`
+	Project          string        `json:"project"`
 	Branch           string        `json:"branch"`
 	Source           CatalogSource `json:"source"`
 	ThreadKind       string        `json:"thread_kind"`
@@ -234,13 +239,13 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	args = append([]any{match, query.IncludeText}, args...)
 	statement := `WITH matched AS (
 		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
-			s.repository_name,s.cwd,s.branch,bm25(prompt_fts) AS rank,
+			s.repository_name,s.project,s.project_source,s.cwd,s.branch,bm25(prompt_fts) AS rank,
 			` + sqliteTimestampKey("p.timestamp") + ` AS sort_ts,
 			snippet(prompt_fts,0,'[',']',' ... ',24) AS snippet,
 			CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
 		FROM prompt_fts JOIN prompts p ON p.id=prompt_fts.rowid JOIN sessions s ON s.id=p.session_id
 		WHERE prompt_fts MATCH ? AND ` + strings.Join(where, " AND ") + `)
-		SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,repository_name,cwd,branch,rank,sort_ts,snippet,full_text
+		SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,repository_name,project,project_source,cwd,branch,rank,sort_ts,snippet,full_text
 		FROM matched`
 	// IncludeText precedes MATCH in SQL, so repair the argument order.
 	args[0], args[1] = args[1], args[0]
@@ -324,7 +329,7 @@ func (s *Store) ListPrompts(query PromptQuery) (PromptsPage, error) {
 	queryArgs := []any{query.IncludeText}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.prompt_kind,p.timestamp,s.repository_name,s.cwd,s.branch,
+	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.prompt_kind,p.timestamp,s.repository_name,s.project,s.project_source,s.cwd,s.branch,
 		NULL,` + sortExpr + `,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY (` + sortExpr + `='') ASC,` + sortExpr + ` DESC,p.public_id ASC LIMIT ?`
@@ -488,6 +493,10 @@ func promptWhere(query PromptQuery, includeMetadataFilters bool, promptAlias, se
 		where = append(where, s+"repository_name=?")
 		args = append(args, query.Repo)
 	}
+	if includeMetadataFilters && query.Project != "" {
+		where = append(where, s+"project=?")
+		args = append(args, query.Project)
+	}
 	if includeMetadataFilters && query.Branch != "" {
 		where = append(where, s+"branch=?")
 		args = append(args, query.Branch)
@@ -532,7 +541,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 		var timestamp, repo, cwd, branch, snippet, text sql.NullString
 		var rank sql.NullFloat64
 		var sortTimestamp string
-		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &value.Role, &value.PromptKind, &timestamp, &repo, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
+		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &value.Role, &value.PromptKind, &timestamp, &repo, &value.Project, &value.ProjectSource, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				_ = rows.Close()
 				return []PromptResult{}, nil
@@ -722,7 +731,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 		return QueryCoverage{}, nil, fmt.Errorf("read history date coverage: %w", err)
 	}
 	coverageQuery := query
-	coverageQuery.Repo, coverageQuery.Branch = "", ""
+	coverageQuery.Repo, coverageQuery.Project, coverageQuery.Branch = "", "", ""
 	coverageWhere, coverageArgs := promptWhere(coverageQuery, false, "p", "s")
 	var coverage QueryCoverage
 	coverage.FirstTimestamp, coverage.LastTimestamp = optionalCatalogString(first), optionalCatalogString(last)
@@ -748,11 +757,15 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	coverage.Roles.Assistant.FirstTimestamp, coverage.Roles.Assistant.LastTimestamp = optionalCatalogString(assistantFirst), optionalCatalogString(assistantLast)
 	if err := s.runner.QueryRow(`SELECT
 		COUNT(DISTINCT CASE WHEN s.repository_name IS NOT NULL AND s.repository_name<>'' THEN s.id END),
-		COUNT(DISTINCT CASE WHEN s.repository_name IS NULL OR s.repository_name='' THEN s.id END),
-		COUNT(DISTINCT CASE WHEN s.branch IS NOT NULL AND s.branch<>'' THEN s.id END),
+			COUNT(DISTINCT CASE WHEN s.repository_name IS NULL OR s.repository_name='' THEN s.id END),
+			COUNT(DISTINCT CASE WHEN s.project_source='git' THEN s.id END),
+			COUNT(DISTINCT CASE WHEN s.project_source='cwd' THEN s.id END),
+			COUNT(DISTINCT CASE WHEN s.project_source='unknown' THEN s.id END),
+			COUNT(DISTINCT CASE WHEN s.branch IS NOT NULL AND s.branch<>'' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.branch IS NULL OR s.branch='' THEN s.id END)
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(coverageWhere, " AND "), coverageArgs...).Scan(
-		&coverage.Repository.Known, &coverage.Repository.Unknown, &coverage.Branch.Known, &coverage.Branch.Unknown); err != nil {
+		&coverage.Repository.Known, &coverage.Repository.Unknown, &coverage.Project.Git, &coverage.Project.CWD, &coverage.Project.Unknown,
+		&coverage.Branch.Known, &coverage.Branch.Unknown); err != nil {
 		return QueryCoverage{}, nil, fmt.Errorf("read history query metadata coverage: %w", err)
 	}
 	coverageQuery.ThreadKind = "all"
@@ -857,7 +870,7 @@ func assistantIndexWarnings(query PromptQuery) []string {
 }
 
 func newPromptCursor(kind string, query PromptQuery, generation int64, search string, fts bool, result PromptResult) promptCursor {
-	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Role: query.Role, AssistantConsent: cursorAssistantConsent(query), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), PromptKinds: promptKindsCursorValue(query.PromptKinds), ExcludeControl: query.ExcludeControl, Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
+	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Role: query.Role, AssistantConsent: cursorAssistantConsent(query), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), PromptKinds: promptKindsCursorValue(query.PromptKinds), ExcludeControl: query.ExcludeControl, Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
 	if result.Timestamp == nil {
 		cursor.Unknown = true
 	} else {
@@ -883,7 +896,7 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 	if cursor.Generation != generation {
 		return promptCursor{}, errors.New("history cursor is stale because the index generation changed")
 	}
-	if cursor.Provider != string(query.Provider) || cursor.Role != query.Role || cursor.AssistantConsent != cursorAssistantConsent(query) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.PromptKinds != promptKindsCursorValue(query.PromptKinds) || cursor.ExcludeControl != query.ExcludeControl || cursor.Query != search || cursor.FTSQuery != fts {
+	if cursor.Provider != string(query.Provider) || cursor.Role != query.Role || cursor.AssistantConsent != cursorAssistantConsent(query) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Project != query.Project || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.PromptKinds != promptKindsCursorValue(query.PromptKinds) || cursor.ExcludeControl != query.ExcludeControl || cursor.Query != search || cursor.FTSQuery != fts {
 		return promptCursor{}, errors.New("history cursor does not match the requested filters or query mode")
 	}
 	if cursor.Limit < 1 || cursor.Limit > 500 || cursor.PromptID == "" || (cursor.Unknown && cursor.Timestamp != "") || (!cursor.Unknown && !validCatalogTimestamp(cursor.Timestamp)) {
