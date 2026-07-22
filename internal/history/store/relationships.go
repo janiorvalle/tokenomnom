@@ -351,7 +351,7 @@ func (tx *Tx) rehomeSessionRelationships(recipientID, donorID int64) error {
 }
 
 func (s *Store) sessionRelationships(sessionID int64) ([]SessionRelationship, bool, error) {
-	rows, err := s.db.Query(`SELECT r.relation_kind,parent.public_id,child.public_id,r.parent_native_session_id,
+	rows, err := s.runner.Query(`SELECT r.relation_kind,parent.public_id,child.public_id,r.parent_native_session_id,
 		r.parent_native_message_id,r.provider_native_value,r.evidence,r.confidence,r.rule_version,r.resolution_state
 		FROM session_relations r JOIN sessions child ON child.id=r.child_session_id
 			LEFT JOIN sessions parent ON parent.id=r.parent_session_id WHERE r.child_session_id=?

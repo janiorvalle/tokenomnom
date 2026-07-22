@@ -164,7 +164,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	args = append(args, promptArgs...)
 	args = append(args, history.ExtractorVersion, history.ExtractorVersion)
 	value := Statistics{Scope: "searchable_prompt_corpus", Coverage: coverage, Warnings: warnings, Generation: generation, Groups: []StatisticsGroup{}}
-	if err := s.db.QueryRow(statement, args...).Scan(
+	if err := s.runner.QueryRow(statement, args...).Scan(
 		&value.LogicalSessions, &value.MutableSourceHeads, &value.PreservedSnapshots,
 		&value.LogicalPrompts, &value.PromptOccurrences, &value.ActiveDays,
 		&value.PromptLengthTotalBytes, &value.PromptLengthMedianBytes,
@@ -186,13 +186,13 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		FROM available_prompts`
 	roleQueryArgs := append([]any{}, sessionArgs...)
 	roleQueryArgs = append(roleQueryArgs, roleArgs...)
-	if err := s.db.QueryRow(roleStatement, roleQueryArgs...).Scan(
+	if err := s.runner.QueryRow(roleStatement, roleQueryArgs...).Scan(
 		&value.RoleCounts.User.LogicalPrompts, &value.RoleCounts.User.PromptOccurrences, &value.RoleCounts.User.PromptLengthBytes,
 		&value.RoleCounts.Assistant.LogicalPrompts, &value.RoleCounts.Assistant.PromptOccurrences, &value.RoleCounts.Assistant.PromptLengthBytes); err != nil {
 		return Statistics{}, fmt.Errorf("read history role statistics: %w", err)
 	}
 	var unscopedErrors int
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM source_errors se WHERE NOT EXISTS(SELECT 1 FROM source_heads sh WHERE sh.provider=se.provider AND sh.source_path=se.source_path))+
 		(SELECT COUNT(*) FROM vault_bundle_state vb WHERE vb.last_error<>'' AND NOT EXISTS(
 			SELECT 1 FROM locations l JOIN preserved_snapshots ps ON ps.id=l.snapshot_id WHERE l.archive=vb.archive))`).Scan(&unscopedErrors); err != nil {
@@ -282,7 +282,7 @@ func (s *Store) statisticsGroups(cte string, args []any, dimensions, expressions
 		statement += ` HAVING COUNT(p.id)>0`
 	}
 	statement += ` ORDER BY ` + selectExpressions
-	rows, err := s.db.Query(statement, args...)
+	rows, err := s.runner.Query(statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("group history statistics: %w", err)
 	}

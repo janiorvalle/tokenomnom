@@ -227,7 +227,7 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	}
 	statement += ` ORDER BY rank ASC,(sort_ts='') ASC,sort_ts DESC,prompt_id ASC LIMIT ?`
 	args = append(args, query.Limit+1)
-	rows, err := s.db.Query(statement, args...)
+	rows, err := s.runner.Query(statement, args...)
 	if err != nil {
 		return SearchPage{}, fmt.Errorf("search history prompts: %w", err)
 	}
@@ -296,7 +296,7 @@ func (s *Store) ListPrompts(query PromptQuery) (PromptsPage, error) {
 		NULL,` + sortExpr + `,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY (` + sortExpr + `='') ASC,` + sortExpr + ` DESC,p.public_id ASC LIMIT ?`
-	rows, err := s.db.Query(statement, queryArgs...)
+	rows, err := s.runner.Query(statement, queryArgs...)
 	if err != nil {
 		return PromptsPage{}, fmt.Errorf("list history prompts: %w", err)
 	}
@@ -513,7 +513,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, includeOccurrences bool) error {
 	var sessionID int64
 	var threadEvidence sql.NullString
-	if err := s.db.QueryRow(`SELECT s.id,s.thread_kind,s.thread_evidence,s.thread_confidence,s.thread_rule_version
+	if err := s.runner.QueryRow(`SELECT s.id,s.thread_kind,s.thread_evidence,s.thread_confidence,s.thread_rule_version
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.id=?`, promptID).Scan(
 		&sessionID, &value.ThreadKind, &threadEvidence, &value.ThreadConfidence, &value.ThreadRuleVersion); err != nil {
 		return fmt.Errorf("read prompt thread metadata: %w", err)
@@ -524,7 +524,7 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 	if err != nil {
 		return err
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*),
+	if err := s.runner.QueryRow(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN l.kind='provider_live' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN l.kind='provider_archive' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN l.kind='vault' THEN 1 ELSE 0 END),0)
@@ -532,7 +532,7 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 		&value.OccurrenceCount, &value.Availability.ProviderLive, &value.Availability.ProviderArchive, &value.Availability.Vault); err != nil {
 		return fmt.Errorf("count prompt occurrences: %w", err)
 	}
-	if err := s.db.QueryRow(`SELECT EXISTS(
+	if err := s.runner.QueryRow(`SELECT EXISTS(
 		SELECT 1 FROM occurrences live_o JOIN locations live_l ON live_l.id=live_o.location_id
 		JOIN source_heads sh ON sh.id=live_o.source_head_id
 		JOIN occurrences vault_o ON vault_o.prompt_id=live_o.prompt_id
@@ -543,7 +543,7 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 		AND sh.current_sha256<>'' AND sh.current_sha256=ps.content_sha256)`, promptID).Scan(&value.Availability.ExactLiveAndVaulted); err != nil {
 		return fmt.Errorf("read prompt exact availability: %w", err)
 	}
-	rows, err := s.db.Query(`SELECT l.kind,sh.public_id,ps.public_id,l.source_path,l.archive,l.relative_path,l.vault_version,
+	rows, err := s.runner.Query(`SELECT l.kind,sh.public_id,ps.public_id,l.source_path,l.archive,l.relative_path,l.vault_version,
 		o.line_number,o.start_offset,o.end_offset
 		FROM occurrences o JOIN locations l ON l.id=o.location_id
 		LEFT JOIN source_heads sh ON sh.id=o.source_head_id LEFT JOIN preserved_snapshots ps ON ps.id=o.snapshot_id
@@ -597,7 +597,7 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 	}
 	value.Availability.Unavailable = value.OccurrenceCount == 0
 	var exactProviderLive, exactProviderArchive bool
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
 			WHERE o.prompt_id=? AND l.available=1 AND l.kind='provider_live' AND sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>''),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
@@ -621,7 +621,7 @@ func (s *Store) promptProvenanceIDs(promptID int64, table, occurrenceColumn stri
 	statement := `SELECT DISTINCT entity.public_id FROM occurrences o
 		JOIN locations l ON l.id=o.location_id JOIN ` + table + ` entity ON entity.id=o.` + occurrenceColumn + `
 		WHERE o.prompt_id=? AND l.available=1 ORDER BY entity.public_id LIMIT ?`
-	rows, err := s.db.Query(statement, promptID, maxPromptProvenanceIDs+1)
+	rows, err := s.runner.Query(statement, promptID, maxPromptProvenanceIDs+1)
 	if err != nil {
 		return nil, fmt.Errorf("list prompt provenance IDs: %w", err)
 	}
@@ -642,7 +642,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	base.Since, base.Until = nil, nil
 	where, args := promptWhere(base, true, "p", "s")
 	var first, last sql.NullString
-	if err := s.db.QueryRow(`SELECT MIN(`+sqliteTimestampKey("p.timestamp")+`),MAX(`+sqliteTimestampKey("p.timestamp")+`)
+	if err := s.runner.QueryRow(`SELECT MIN(`+sqliteTimestampKey("p.timestamp")+`),MAX(`+sqliteTimestampKey("p.timestamp")+`)
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.timestamp IS NOT NULL AND p.timestamp<>'' AND `+strings.Join(where, " AND "), args...).Scan(&first, &last); err != nil {
 		return QueryCoverage{}, nil, fmt.Errorf("read history date coverage: %w", err)
 	}
@@ -657,7 +657,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	roleQuery.Role = "any"
 	roleWhere, roleArgs := promptWhere(roleQuery, true, "p", "s")
 	var userFirst, userLast, assistantFirst, assistantLast sql.NullString
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 		COUNT(CASE WHEN p.role='user' THEN 1 END),
 		MIN(CASE WHEN p.role='user' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END),
 		MAX(CASE WHEN p.role='user' AND p.timestamp IS NOT NULL AND p.timestamp<>'' THEN `+sqliteTimestampKey("p.timestamp")+` END),
@@ -671,7 +671,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	}
 	coverage.Roles.User.FirstTimestamp, coverage.Roles.User.LastTimestamp = optionalCatalogString(userFirst), optionalCatalogString(userLast)
 	coverage.Roles.Assistant.FirstTimestamp, coverage.Roles.Assistant.LastTimestamp = optionalCatalogString(assistantFirst), optionalCatalogString(assistantLast)
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 		COUNT(DISTINCT CASE WHEN s.repository_name IS NOT NULL AND s.repository_name<>'' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.repository_name IS NULL OR s.repository_name='' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.branch IS NOT NULL AND s.branch<>'' THEN s.id END),
@@ -682,7 +682,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	}
 	coverageQuery.ThreadKind = "all"
 	coverageWhere, coverageArgs = promptWhere(coverageQuery, false, "p", "s")
-	if err := s.db.QueryRow(`SELECT
+	if err := s.runner.QueryRow(`SELECT
 		COUNT(DISTINCT CASE WHEN s.thread_kind='root' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.thread_kind='subagent' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.thread_kind='unknown' THEN s.id END)

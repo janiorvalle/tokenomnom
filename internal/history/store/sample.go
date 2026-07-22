@@ -560,7 +560,7 @@ func (s *Store) sampleGroupForID(query SampleQuery, publicID string) (sampleGrou
 	}
 	var encoded string
 	var hash []byte
-	err := s.db.QueryRow(`SELECT ss.group_values,ss.group_key FROM sample_strata ss JOIN `+table+` unit ON unit.id=ss.unit_id
+	err := s.runner.QueryRow(`SELECT ss.group_values,ss.group_key FROM sample_strata ss JOIN `+table+` unit ON unit.id=ss.unit_id
 		WHERE ss.unit_kind=? AND ss.dimensions=? AND unit.public_id=?`, idColumn, strings.Join(query.GroupBy, ","), publicID).Scan(&encoded, &hash)
 	if err != nil {
 		return sampleGroup{}, fmt.Errorf("read history sample group: %w", err)
@@ -676,7 +676,7 @@ func normalizeSampleGroups(values []string) ([]string, error) {
 }
 
 func (s *Store) sampleGroups(query SampleQuery) ([]sampleGroup, error) {
-	rows, err := s.db.Query(`SELECT group_values,group_key FROM sample_groups WHERE unit_kind=? AND dimensions=? ORDER BY group_key`,
+	rows, err := s.runner.Query(`SELECT group_values,group_key FROM sample_groups WHERE unit_kind=? AND dimensions=? ORDER BY group_key`,
 		query.Unit, strings.Join(query.GroupBy, ","))
 	if err != nil {
 		return nil, fmt.Errorf("list history sample groups: %w", err)
@@ -782,7 +782,7 @@ func (s *Store) nextSampleID(query SampleQuery, pivot []byte, state *sampleState
 	}
 	var id string
 	var key []byte
-	err := s.db.QueryRow(`SELECT `+idColumn+`,`+keyColumn+` FROM `+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY `+keyColumn+`,`+idColumn+` LIMIT 1`, args...).Scan(&id, &key)
+	err := s.runner.QueryRow(`SELECT `+idColumn+`,`+keyColumn+` FROM `+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY `+keyColumn+`,`+idColumn+` LIMIT 1`, args...).Scan(&id, &key)
 	if err == sql.ErrNoRows && !state.wrapped {
 		state.wrapped, state.lastKey, state.lastID = true, nil, ""
 		return s.nextSampleID(query, pivot, state)
@@ -951,11 +951,11 @@ func sampleWarnings(query SampleQuery) []string {
 
 func (s *Store) sampleSessionText(sessionID string, pivot []byte) (*string, error) {
 	var value string
-	err := s.db.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
+	err := s.runner.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
 		WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key>=?
 		ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	if err == sql.ErrNoRows {
-		err = s.db.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
+		err = s.runner.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
 			WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key<?
 			ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	}

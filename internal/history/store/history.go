@@ -291,7 +291,7 @@ func (s *Store) BeginSnapshotBundle(archive, fingerprint string, memberCount int
 func (s *Store) VaultBundleCurrent(archive, fingerprint string, memberCount int) (bool, error) {
 	var existing string
 	var count, extractorVersion int
-	err := s.db.QueryRow(`SELECT manifest_fingerprint,member_count,extractor_version
+	err := s.runner.QueryRow(`SELECT manifest_fingerprint,member_count,extractor_version
 		FROM vault_bundle_state WHERE archive=? AND last_error=''`, archive).Scan(&existing, &count, &extractorVersion)
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -1664,7 +1664,7 @@ func (tx *Tx) refreshPromptCanonical(promptID int64) error {
 
 // CheckFTS validates the FTS index, including external-content agreement.
 func (s *Store) CheckFTS() error {
-	if _, err := s.db.Exec(`INSERT INTO prompt_fts(prompt_fts, rank) VALUES('integrity-check', 1)`); err != nil {
+	if _, err := s.runner.Exec(`INSERT INTO prompt_fts(prompt_fts, rank) VALUES('integrity-check', 1)`); err != nil {
 		return fmt.Errorf("check history FTS integrity: %w", err)
 	}
 	return nil
@@ -1672,7 +1672,7 @@ func (s *Store) CheckFTS() error {
 
 // RebuildFTS rebuilds the external-content index from searchable prompts.
 func (s *Store) RebuildFTS() error {
-	if _, err := s.db.Exec(`INSERT INTO prompt_fts(prompt_fts) VALUES('rebuild')`); err != nil {
+	if _, err := s.runner.Exec(`INSERT INTO prompt_fts(prompt_fts) VALUES('rebuild')`); err != nil {
 		return fmt.Errorf("rebuild history FTS: %w", err)
 	}
 	return s.CheckFTS()
@@ -1681,7 +1681,7 @@ func (s *Store) RebuildFTS() error {
 // Stats returns normalized row counts.
 func (s *Store) Stats() (Stats, error) {
 	var value Stats
-	err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations),(SELECT COUNT(*) FROM prompts),(SELECT COUNT(*) FROM occurrences)`).Scan(
+	err := s.runner.QueryRow(`SELECT (SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations),(SELECT COUNT(*) FROM prompts),(SELECT COUNT(*) FROM occurrences)`).Scan(
 		&value.Sessions, &value.Sources, &value.Snapshots, &value.Locations, &value.Prompts, &value.Occurrences)
 	return value, err
 }

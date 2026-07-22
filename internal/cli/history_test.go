@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +56,52 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(historyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("doctor created history index: %v", err)
+	}
+}
+
+func TestParallelHistoryReadCommandsIgnoreWriterLock(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "parallel.jsonl"), historyCodexFixture("parallel", "parallel history read"))
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	historyPath := filepath.Join(stateDir, historystore.DatabaseName)
+	release, err := historystore.Lock(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	commands := [][]string{
+		{"history", "list", "--format", "json"},
+		{"history", "search", "parallel", "--format", "json"},
+		{"history", "prompts", "--format", "json"},
+		{"history", "stats", "--format", "json"},
+		{"history", "sample", "--count", "1", "--format", "json"},
+		{"history", "status", "--format", "json"},
+	}
+	var wait sync.WaitGroup
+	errorsFound := make(chan error, len(commands))
+	for _, args := range commands {
+		args := args
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := executeReport(args, codexDir, claudeDir)
+			errorsFound <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatalf("parallel history read: %v", err)
+		}
 	}
 }
 

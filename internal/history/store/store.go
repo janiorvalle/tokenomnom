@@ -17,7 +17,6 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
-	usagestore "github.com/janiorvalle/tokenomnom/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,8 +29,16 @@ var ErrStoreInUse = errors.New("history store is busy")
 
 // Store owns one history database connection.
 type Store struct {
-	db   *sql.DB
-	path string
+	db     *sql.DB
+	runner sqlRunner
+	readTx *sql.Tx
+	path   string
+}
+
+type sqlRunner interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // Info is non-content history database metadata.
@@ -62,12 +69,66 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	value := &Store{db: db, path: path}
+	value := &Store{db: db, runner: db, path: path}
 	if err := value.initialize(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	if err := secureFiles(path); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return value, nil
+}
+
+// OpenReadOnly opens an existing current-schema database without taking the
+// writer lock, creating storage, migrating, or changing file permissions.
+// SQLite's read-only URI mode preserves WAL visibility during concurrent
+// indexing while the bounded busy timeout prevents an unbounded wait.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("history index does not exist: %w", err)
+		}
+		return nil, fmt.Errorf("stat history store: %w", err)
+	}
+	dsn, err := fileDSN(path, true)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open history store read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	value := &Store{db: db, runner: db, path: path}
+	readTx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("begin history read snapshot: %w", err)
+	}
+	value.readTx = readTx
+	value.runner = readTx
+	var schemaVersion int
+	if err := readTx.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')`).Scan(&schemaVersion); err != nil {
+		readTx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("read history schema version: %w", err)
+	}
+	if schemaVersion != SchemaVersion {
+		readTx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("history store schema %d requires migration; run tokenomnom history index", schemaVersion)
+	}
+	var foreignKeys bool
+	if err := readTx.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil || !foreignKeys {
+		readTx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("history foreign keys are not enabled")
+	}
+	if err := validateSchema(readTx); err != nil {
+		readTx.Rollback()
 		db.Close()
 		return nil, err
 	}
@@ -123,17 +184,17 @@ func fileDSN(path string, readOnly bool) (string, error) {
 }
 
 func (s *Store) initialize() error {
-	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
+	if _, err := s.runner.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
 		return fmt.Errorf("set history SQLite busy timeout: %w", err)
 	}
 	if err := sqliteutil.EnableWAL(s.db, "history"); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
+	if _, err := s.runner.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
 		return fmt.Errorf("enable history foreign keys: %w", err)
 	}
 	var enabled bool
-	if err := s.db.QueryRow(`PRAGMA foreign_keys;`).Scan(&enabled); err != nil || !enabled {
+	if err := s.runner.QueryRow(`PRAGMA foreign_keys;`).Scan(&enabled); err != nil || !enabled {
 		return fmt.Errorf("history foreign keys are not enabled")
 	}
 
@@ -143,7 +204,7 @@ func (s *Store) initialize() error {
 	if err := s.backfillRepositoryMetadata(); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`INSERT INTO meta(key,value) VALUES('extractor_version',?)
+	if _, err := s.runner.Exec(`INSERT INTO meta(key,value) VALUES('extractor_version',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, history.ExtractorVersion); err != nil {
 		return fmt.Errorf("record current history extractor version: %w", err)
 	}
@@ -455,7 +516,7 @@ func applySchemaStep(db *sql.DB, version int, ddl string) error {
 	return sqliteutil.ApplyStep(db, plan, version, ddl)
 }
 
-func validateSchema(db *sql.DB) error {
+func validateSchema(db sqlRunner) error {
 	for _, name := range []string{"prompts_ai", "prompts_ad", "prompts_au"} {
 		var exists bool
 		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?)`, name).Scan(&exists); err != nil || !exists {
@@ -481,12 +542,21 @@ func secureFiles(path string) error {
 func (s *Store) Path() string { return s.path }
 
 // Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	var txErr error
+	if s.readTx != nil {
+		txErr = s.readTx.Rollback()
+		if errors.Is(txErr, sql.ErrTxDone) {
+			txErr = nil
+		}
+	}
+	return errors.Join(txErr, s.db.Close())
+}
 
 // Meta returns one history metadata value or an empty string when absent.
 func (s *Store) Meta(key string) (string, error) {
 	var value string
-	err := s.db.QueryRow(`SELECT value FROM meta WHERE key=?`, key).Scan(&value)
+	err := s.runner.QueryRow(`SELECT value FROM meta WHERE key=?`, key).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -617,7 +687,7 @@ func (s *Store) MarkAssistantIndexingComplete(providers ...history.Provider) err
 // ResolvePublicID returns the current opaque ID for an active or retired ID.
 func (s *Store) ResolvePublicID(publicID string) (string, error) {
 	var canonical string
-	err := s.db.QueryRow(`SELECT canonical_public_id FROM public_id_aliases WHERE alias_public_id=?`, publicID).Scan(&canonical)
+	err := s.runner.QueryRow(`SELECT canonical_public_id FROM public_id_aliases WHERE alias_public_id=?`, publicID).Scan(&canonical)
 	if err == sql.ErrNoRows {
 		return publicID, nil
 	}
@@ -625,25 +695,6 @@ func (s *Store) ResolvePublicID(publicID string) (string, error) {
 		return "", fmt.Errorf("resolve history public ID %q: %w", publicID, err)
 	}
 	return canonical, nil
-}
-
-// Lock acquires the dedicated history database lock.
-func Lock(databasePath string) (func(), error) {
-	stateDir := filepath.Dir(databasePath)
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create history state directory: %w", err)
-	}
-	if err := os.Chmod(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure history state directory: %w", err)
-	}
-	release, err := usagestore.Lock(databasePath)
-	if err != nil {
-		if errors.Is(err, usagestore.ErrStoreInUse) {
-			return nil, fmt.Errorf("%w: another history operation may be running (lock %s)", ErrStoreInUse, databasePath+".lock")
-		}
-		return nil, fmt.Errorf("acquire history store lock: %w", err)
-	}
-	return release, nil
 }
 
 // Transaction executes fn atomically.

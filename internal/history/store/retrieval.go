@@ -26,7 +26,7 @@ func (s *Store) GetPrompt(publicID string) (PromptResult, error) {
 	if err != nil {
 		return PromptResult{}, err
 	}
-	row := s.db.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
+	row := s.runner.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sqliteTimestampKey("p.timestamp")+`,substr(p.clean_text,1,2048),p.clean_text
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.public_id=? AND p.searchable=1 AND p.role IN ('user','assistant')`, resolved)
 	values, err := s.scanPromptRows(&singlePromptRow{row: row}, true, false, true)
@@ -45,7 +45,7 @@ func (s *Store) GetSession(publicID string) (CatalogSession, error) {
 	if err != nil {
 		return CatalogSession{}, err
 	}
-	value, err := scanCatalogSession(s.db.QueryRow(catalogSelect+` WHERE s.public_id=?`, resolved))
+	value, err := scanCatalogSession(s.runner.QueryRow(catalogSelect+` WHERE s.public_id=?`, resolved))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CatalogSession{}, fmt.Errorf("history session ID %q not found", publicID)
 	}
@@ -106,7 +106,7 @@ func (s *Store) SessionPrompts(publicID string, query PromptQuery) (PromptsPage,
 	queryArgs := []any{true}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	rows, err := s.db.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
+	rows, err := s.runner.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sortExpr+`,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY (`+sortExpr+`='') ASC,`+sortExpr+` DESC,p.public_id ASC LIMIT ?`, queryArgs...)
@@ -172,7 +172,7 @@ func (s *Store) RawCandidates(sessionID, snapshotID string) ([]RawCandidate, err
 	if snapshotID != "" {
 		queryArgs = append(queryArgs, snapshotID)
 	}
-	rows, err := s.db.Query(statement, queryArgs...)
+	rows, err := s.runner.Query(statement, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list raw history locations: %w", err)
 	}

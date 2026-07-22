@@ -1,12 +1,14 @@
 package store
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -29,6 +31,91 @@ func TestInspectAbsentDoesNotCreateStorage(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
 		t.Fatalf("inspection created parent directory: %v", err)
+	}
+}
+
+func TestOpenReadOnlyAbsentDoesNotCreateStorage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", DatabaseName)
+	if _, err := OpenReadOnly(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenReadOnly error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only open created parent directory: %v", err)
+	}
+}
+
+func TestOpenReadOnlyPreservesFilesAndWorksWithoutWALCompanions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/read-only.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:read-only", "read-only", source, prompt("native:p", "p", "read only", 1)), head(source, "hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, companion := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Remove(companion); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+			stat, statErr := os.Stat(candidate)
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			if statErr != nil {
+				t.Fatal(statErr)
+			}
+			if stat.Mode().Perm() != 0o600 {
+				t.Fatalf("read-only SQLite file mode for %s = %v", candidate, stat.Mode().Perm())
+			}
+		}
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, companion := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Remove(companion); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reader, err = OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := reader.ListPrompts(PromptQuery{})
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || len(page.Prompts) != 1 {
+		t.Fatalf("read-only page=%+v err=%v", page, err)
+	}
+	if runtime.GOOS != "windows" {
+		stat, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Mode().Perm() != 0o640 {
+			t.Fatalf("read-only open changed database mode to %v", stat.Mode().Perm())
+		}
+	}
+	if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only open left a process lock: %v", err)
 	}
 }
 
@@ -559,6 +646,318 @@ func TestLockFailsFastAndPreservesNonContentionErrors(t *testing.T) {
 	}
 	if _, err := Lock(filepath.Join(t.TempDir(), "bad\x00path")); err == nil || errors.Is(err, ErrStoreInUse) {
 		t.Fatalf("non-contention lock error = %v", err)
+	}
+}
+
+func TestLockSelfHealsDeadAndReusedPIDOwners(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pid       int
+		startHint string
+	}{
+		{name: "dead", pid: 1 << 30, startHint: "dead-process"},
+		{name: "reused", pid: os.Getpid(), startHint: "not-the-current-process-start"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DatabaseName)
+			lockPath := path + ".lock"
+			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf(`{"pid":%d,"start_hint":%q,"token":"stale","acquired":"2026-07-21T00:00:00Z"}`+"\n", test.pid, test.startHint)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			release, err := Lock(path)
+			if err != nil {
+				t.Fatalf("heal stale lock: %v", err)
+			}
+			owner, err := readLockOwner(lockPath)
+			if err != nil || owner.PID != os.Getpid() || owner.Token == "stale" {
+				t.Fatalf("replacement owner=%+v err=%v", owner, err)
+			}
+			release()
+			if _, err := readLockOwner(lockPath); err != nil {
+				t.Fatalf("released ownership record unreadable: %v", err)
+			}
+		})
+	}
+}
+
+func TestLockSelfHealsUnlockedLegacyOwner(t *testing.T) {
+	for _, pid := range []int{1 << 30, os.Getpid()} {
+		path := filepath.Join(t.TempDir(), DatabaseName)
+		lockPath := path + ".lock"
+		if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("pid=%d started=2026-07-21T00:00:00Z\n", pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		release, err := Lock(path)
+		if err != nil {
+			t.Fatalf("heal legacy stale lock for pid %d: %v", pid, err)
+		}
+		release()
+		if _, err := readLockOwner(lockPath); err != nil {
+			t.Fatalf("healed legacy ownership record unreadable for pid %d: %v", pid, err)
+		}
+	}
+}
+
+func TestLockSelfHealsIncompleteUnlockedOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, []byte("incomplete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := Lock(path)
+	if err != nil {
+		t.Fatalf("heal incomplete lock: %v", err)
+	}
+	release()
+	if _, err := readLockOwner(lockPath); err != nil {
+		t.Fatalf("healed incomplete ownership record unreadable: %v", err)
+	}
+}
+
+func TestKilledReaderLeavesNoLockAndKilledWriterSelfHeals(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runAndKillHistoryLockHelper(t, "reader", path)
+	if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("killed reader left process lock: %v", err)
+	}
+
+	runAndKillHistoryLockHelper(t, "writer", path)
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Fatalf("killed writer did not leave ownership record: %v", err)
+	}
+	release, err := Lock(path)
+	if err != nil {
+		t.Fatalf("next writer did not heal killed owner: %v", err)
+	}
+	release()
+	if _, err := readLockOwner(path + ".lock"); err != nil {
+		t.Fatalf("healed writer ownership record unreadable: %v", err)
+	}
+}
+
+func TestLockExcludesLegacyAdvisoryOwnerAndHealsAfterKill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	runAndKillHistoryLockHelper(t, "legacy-writer", path, func() {
+		if _, err := Lock(path); !errors.Is(err, ErrStoreInUse) {
+			t.Fatalf("legacy advisory owner error = %v", err)
+		}
+		if _, err := os.Stat(path + ".lock"); err != nil {
+			t.Fatalf("contended legacy lock was removed: %v", err)
+		}
+	})
+	release, err := Lock(path)
+	if err != nil {
+		t.Fatalf("heal killed legacy owner: %v", err)
+	}
+	release()
+}
+
+func runAndKillHistoryLockHelper(t *testing.T, mode, path string, beforeKill ...func()) {
+	t.Helper()
+	command := exec.Command(os.Args[0], "-test.run=^TestHistoryLockHelperProcess$")
+	command.Env = append(os.Environ(), "TOKENOMNOM_HISTORY_LOCK_HELPER="+mode, "TOKENOMNOM_HISTORY_LOCK_PATH="+path)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan bool, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		ready <- scanner.Scan() && scanner.Text() == "ready"
+	}()
+	select {
+	case ok := <-ready:
+		if !ok {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatalf("history lock helper did not become ready: %s", stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("history lock helper timed out")
+	}
+	for _, run := range beforeKill {
+		run()
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = command.Wait()
+}
+
+func TestHistoryLockHelperProcess(t *testing.T) {
+	mode := os.Getenv("TOKENOMNOM_HISTORY_LOCK_HELPER")
+	if mode == "" {
+		return
+	}
+	path := os.Getenv("TOKENOMNOM_HISTORY_LOCK_PATH")
+	var release func()
+	var err error
+	switch mode {
+	case "reader":
+		var database *Store
+		database, err = OpenReadOnly(path)
+		if err == nil {
+			release = func() { _ = database.Close() }
+		}
+	case "writer":
+		release, err = Lock(path)
+	case "legacy-writer":
+		var file *os.File
+		file, err = os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+		if err == nil {
+			err = tryLockHistoryOwnerFile(file)
+		}
+		if err == nil {
+			_, err = fmt.Fprintf(file, "pid=%d started=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))
+		}
+		if err == nil {
+			release = func() {
+				_ = unlockHistoryOwnerFile(file)
+				_ = file.Close()
+			}
+		}
+	default:
+		err = fmt.Errorf("unknown helper mode %q", mode)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	fmt.Println("ready")
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func TestConcurrentReadersIgnoreWriterProcessLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRef("/provider/concurrent-read.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:concurrent-read", "concurrent-read", source, prompt("native:p", "p", "parallel read", 1)), head(source, "hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release, err := Lock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	var wait sync.WaitGroup
+	errorsFound := make(chan error, 6)
+	for range 6 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			reader, err := OpenReadOnly(path)
+			if err == nil {
+				var page CatalogPage
+				page, err = reader.ListCatalog(CatalogQuery{})
+				if err == nil && len(page.Sessions) != 1 {
+					err = fmt.Errorf("sessions=%d", len(page.Sessions))
+				}
+				if closeErr := reader.Close(); err == nil {
+					err = closeErr
+				}
+			}
+			errorsFound <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestReadDuringActiveWriteUsesWALSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	source := sourceRef("/provider/wal-read.jsonl", history.LocationProviderLive)
+	if _, err := writer.ApplySource(extraction("native:wal-read", "wal-read", source, prompt("native:p", "p", "before write", 1)), head(source, "hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := writer.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE prompts SET clean_text='uncommitted'`); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	page, err := reader.ListPrompts(PromptQuery{IncludeText: true})
+	if err != nil || len(page.Prompts) != 1 || page.Prompts[0].Text == nil || *page.Prompts[0].Text != "before write" {
+		t.Fatalf("WAL snapshot page=%+v err=%v", page, err)
+	}
+}
+
+func TestReadOnlyStoreKeepsOneSnapshotAcrossQueries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DatabaseName)
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	firstSource := sourceRef("/provider/snapshot-first.jsonl", history.LocationProviderLive)
+	if _, err := writer.ApplySource(extraction("native:snapshot-first", "snapshot-first", firstSource, prompt("native:p1", "p1", "first", 1)), head(firstSource, "hash-1", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	before, err := reader.ListCatalog(CatalogQuery{})
+	if err != nil || len(before.Sessions) != 1 {
+		t.Fatalf("initial snapshot page=%+v err=%v", before, err)
+	}
+	secondSource := sourceRef("/provider/snapshot-second.jsonl", history.LocationProviderLive)
+	if _, err := writer.ApplySource(extraction("native:snapshot-second", "snapshot-second", secondSource, prompt("native:p2", "p2", "second", 2)), head(secondSource, "hash-2", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	after, err := reader.ListCatalog(CatalogQuery{})
+	if err != nil || len(after.Sessions) != 1 || after.Generation != before.Generation {
+		t.Fatalf("reader snapshot moved: before=%+v after=%+v err=%v", before, after, err)
+	}
+	newReader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newReader.Close()
+	latest, err := newReader.ListCatalog(CatalogQuery{})
+	if err != nil || len(latest.Sessions) != 2 || latest.Generation == before.Generation {
+		t.Fatalf("new reader snapshot=%+v err=%v", latest, err)
 	}
 }
 
