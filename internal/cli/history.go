@@ -578,31 +578,44 @@ func formatHistoryIndexIssue(issue indexer.Issue) string {
 	return location + ": " + issue.Error
 }
 
-func historyStatusValue(health historystore.Health) string {
+func historyStatusDetails(health historystore.Health, drift historyfreshness.Result) (string, []string) {
+	reasons := []string{}
 	if !health.Exists {
-		return "not_indexed"
+		return "not_indexed", []string{"not_indexed"}
+	}
+	if health.ErrorSources > 0 {
+		reasons = append(reasons, "error_sources")
+	}
+	if health.LastRunErrorCount > 0 {
+		reasons = append(reasons, "last_run_errors")
+	}
+	if health.StaleSources > 0 {
+		reasons = append(reasons, "stale_sources")
+	}
+	if drift.SettledChangedSources > 0 {
+		reasons = append(reasons, "settled_drift")
+	}
+	if !health.SamplingReady {
+		reasons = append(reasons, "sampling_not_ready")
 	}
 	if health.ErrorSources > 0 || health.LastRunErrorCount > 0 {
-		return "error"
+		return "error", reasons
 	}
-	if health.StaleSources > 0 || health.MissingSources > 0 || !health.SamplingReady {
-		return "degraded"
+	if len(reasons) > 0 {
+		return "degraded", reasons
 	}
-	return "ready"
+	return "ready", reasons
 }
 
 func writeHistoryStatus(cmd *cobra.Command, health historystore.Health, drift historyfreshness.Result) error {
-	status := historyStatusValue(health)
+	status, reasons := historyStatusDetails(health, drift)
 	location, _ := historyPresentationTimezone(cmd)
 	if currentFormat(cmd) == "json" {
 		return writeHistoryJSONEnvelope(cmd, "history status", jsonFilters{}, drift.Warnings, configuredHistoryHealth(cmd, health, drift))
 	}
 	writeHeading(cmd, "History")
-	statusText := status
-	if status == "ready" && drift.SettledChangedSources > 0 {
-		statusText = fmt.Sprintf("ready (%d settled sources changed since last index)", drift.SettledChangedSources)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Status:", statusText)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Status:", status)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Status reasons:", dashIfEmpty(strings.Join(reasons, ", ")))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Path:", health.Path)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", "Size:", humanBytes(health.SizeBytes))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Sessions:", health.Sessions)
@@ -664,6 +677,7 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health, drift hi
 
 type jsonHistoryHealth struct {
 	Status                   string   `json:"status"`
+	StatusReasons            []string `json:"status_reasons"`
 	DatabasePath             string   `json:"database_path"`
 	DatabaseSizeBytes        int64    `json:"database_size_bytes"`
 	SchemaVersion            int      `json:"schema_version"`
@@ -722,13 +736,14 @@ type jsonHistoryHealth struct {
 }
 
 func historyHealthJSON(health historystore.Health, drift historyfreshness.Result) jsonHistoryHealth {
+	status, reasons := historyStatusDetails(health, drift)
 	newestSourceChange := (*string)(nil)
 	if drift.NewestSourceChange != nil {
 		value := drift.NewestSourceChange.Format(time.RFC3339Nano)
 		newestSourceChange = &value
 	}
 	return jsonHistoryHealth{
-		Status: historyStatusValue(health), DatabasePath: health.Path, DatabaseSizeBytes: health.SizeBytes,
+		Status: status, StatusReasons: reasons, DatabasePath: health.Path, DatabaseSizeBytes: health.SizeBytes,
 		SchemaVersion: health.SchemaVersion, ExtractorVersion: health.ExtractorVersion, LogicalSessions: health.Sessions,
 		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, UserLogicalPrompts: health.UserPrompts,
 		SearchableUserPrompts: health.SearchableUserPrompts, ReclassifiedPrompts: health.ReclassifiedPrompts, AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,

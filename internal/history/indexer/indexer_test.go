@@ -458,14 +458,17 @@ func TestClassifierRebuildPreservesPromptIDsAndInvalidatesCursor(t *testing.T) {
 	path := filepath.Join(env.claudeRoot, "projects", "repo", "classification.jsonl")
 	harnessMessage := "Another Claude session sent a message:\n<teammate-message teammate_id=\"reviewer\" color=\"blue\">review complete</teammate-message>"
 	commandMessage := "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>"
-	writeFile(t, path, claudePrompt("classification", "m1", harnessMessage)+claudePrompt("classification", "m2", commandMessage)+claudePrompt("classification", "m3", "ordinary human prompt"))
+	messageFirstCommand := "<command-message>review is running</command-message>\n<command-name>/review</command-name>\n<command-args>--base main</command-args>"
+	commandDiscussion := "The prior command emitted:\n<command-message>review is running</command-message>\n<command-name>/review</command-name>"
+	writeFile(t, path, claudePrompt("classification", "m1", harnessMessage)+claudePrompt("classification", "m2", commandMessage)+claudePrompt("classification", "m3", "ordinary human prompt")+
+		claudePrompt("classification", "m4", messageFirstCommand)+claudePrompt("classification", "m5", commandDiscussion))
 	initial := env.index(t, false)
-	if initial.ReclassifiedPrompts != 2 || initial.PromptKindCounts[history.PromptKindAgentMessage] != 1 || initial.PromptKindCounts[history.PromptKindCommand] != 1 || initial.PromptKindCounts[history.PromptKindHuman] != 1 {
+	if initial.ReclassifiedPrompts != 3 || initial.PromptKindCounts[history.PromptKindAgentMessage] != 1 || initial.PromptKindCounts[history.PromptKindCommand] != 2 || initial.PromptKindCounts[history.PromptKindHuman] != 2 {
 		t.Fatalf("initial classification summary=%+v", initial)
 	}
 	allKinds := []history.PromptKind{history.PromptKindHuman, history.PromptKindDelegation, history.PromptKindAgentMessage, history.PromptKindCommand, history.PromptKindControl}
 	before, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: allKinds, IncludeText: true, Limit: 10})
-	if err != nil || len(before.Prompts) != 3 {
+	if err != nil || len(before.Prompts) != 5 {
 		t.Fatalf("initial prompts err=%v page=%+v", err, before)
 	}
 	ids := make(map[string]string, len(before.Prompts))
@@ -500,11 +503,11 @@ func TestClassifierRebuildPreservesPromptIDsAndInvalidatesCursor(t *testing.T) {
 	}
 
 	rebuilt := env.index(t, false)
-	if rebuilt.RewrittenSources != 1 || rebuilt.ReclassifiedPrompts != 2 || rebuilt.PromptKindCounts[history.PromptKindAgentMessage] != 1 || rebuilt.PromptKindCounts[history.PromptKindCommand] != 1 || rebuilt.PromptKindCounts[history.PromptKindHuman] != 1 {
+	if rebuilt.RewrittenSources != 1 || rebuilt.ReclassifiedPrompts != 3 || rebuilt.PromptKindCounts[history.PromptKindAgentMessage] != 1 || rebuilt.PromptKindCounts[history.PromptKindCommand] != 2 || rebuilt.PromptKindCounts[history.PromptKindHuman] != 2 {
 		t.Fatalf("rebuild classification summary=%+v", rebuilt)
 	}
 	after, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: allKinds, IncludeText: true, Limit: 10})
-	if err != nil || after.Generation <= generation || len(after.Prompts) != 3 {
+	if err != nil || after.Generation <= generation || len(after.Prompts) != 5 {
 		t.Fatalf("rebuilt prompts err=%v page=%+v", err, after)
 	}
 	for _, prompt := range after.Prompts {

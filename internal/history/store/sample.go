@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 )
@@ -19,6 +20,7 @@ const (
 
 	SampleStrategyRandom     = "random"
 	SampleStrategyStratified = "stratified"
+	maxSampleSnippetBytes    = 64
 )
 
 // SampleQuery selects a bounded deterministic sample of logical units.
@@ -47,7 +49,7 @@ type SampleCoverage struct {
 // SampleItem contains exactly one logical prompt or session.
 type SampleItem struct {
 	Unit    string            `json:"unit"`
-	Groups  map[string]string `json:"groups"`
+	Groups  map[string]string `json:"groups,omitempty"`
 	Prompt  *PromptResult     `json:"prompt,omitempty"`
 	Session *CatalogSession   `json:"session,omitempty"`
 	Text    *string           `json:"text,omitempty"`
@@ -99,6 +101,7 @@ type samplingMetadata struct {
 	sampleKey                                                        []byte
 	month, repository, project, projectSource, thread, provider, cwd string
 	branch, firstDate, lastDate                                      string
+	projectSessionCount                                              int
 	providerLive, providerArchive, vaultAvailable                    bool
 }
 
@@ -111,14 +114,16 @@ func populateSampleStrata(tx samplingExecer) error {
 	if _, err := tx.Exec(`DELETE FROM sample_strata`); err != nil {
 		return fmt.Errorf("clear history sample strata: %w", err)
 	}
-	rows, err := tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+	rows, err := tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
 		EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)
 		FROM sessions s
 		UNION ALL
-		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -131,7 +136,7 @@ func populateSampleStrata(tx samplingExecer) error {
 	for rows.Next() {
 		var value samplingMetadata
 		var timestamp string
-		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
+		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.projectSessionCount, &value.thread,
 			&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 			&value.providerLive, &value.providerArchive, &value.vaultAvailable); err != nil {
 			rows.Close()
@@ -159,18 +164,60 @@ func populateSampleStrata(tx samplingExecer) error {
 }
 
 func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
+	if err := tx.refreshAllSampleStrataOne(sessionID); err != nil {
+		return err
+	}
+	var project string
+	var count int
+	if err := tx.tx.QueryRow(`SELECT project,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project)
+		FROM sessions s WHERE s.id=?`, sessionID).Scan(&project, &count); err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read project sampling threshold: %w", err)
+	}
+	if count != history.ProjectGroupMinSessions {
+		return nil
+	}
+	rows, err := tx.tx.Query(`SELECT id FROM sessions WHERE project=? AND id<>? ORDER BY id`, project, sessionID)
+	if err != nil {
+		return fmt.Errorf("list project sampling sessions: %w", err)
+	}
+	var related []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		related = append(related, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range related {
+		if err := tx.refreshAllSampleStrataOne(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (tx *Tx) refreshAllSampleStrataOne(sessionID int64) error {
 	if _, err := tx.tx.Exec(`DELETE FROM sample_strata WHERE (unit_kind='session' AND unit_id=?) OR
 		(unit_kind='prompt' AND unit_id IN (SELECT id FROM prompts WHERE session_id=?))`, sessionID, sessionID); err != nil {
 		return fmt.Errorf("clear session sample strata: %w", err)
 	}
-	rows, err := tx.tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+	rows, err := tx.tx.Query(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
 		EXISTS(SELECT 1 FROM preserved_snapshots ps JOIN locations l ON l.snapshot_id=ps.id WHERE ps.session_id=s.id AND l.available=1)
 		FROM sessions s WHERE s.id=?
 		UNION ALL
-		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+		SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -183,7 +230,7 @@ func (tx *Tx) refreshAllSampleStrata(sessionID int64) error {
 	for rows.Next() {
 		var value samplingMetadata
 		var timestamp string
-		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
+		if err := rows.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.projectSessionCount, &value.thread,
 			&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 			&value.providerLive, &value.providerArchive, &value.vaultAvailable); err != nil {
 			rows.Close()
@@ -214,7 +261,8 @@ func (tx *Tx) refreshSessionSampleStratum(sessionID int64) error {
 	if _, err := tx.tx.Exec(`DELETE FROM sample_strata WHERE unit_kind='session' AND unit_id=?`, sessionID); err != nil {
 		return fmt.Errorf("clear session sample strata: %w", err)
 	}
-	row := tx.tx.QueryRow(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+	row := tx.tx.QueryRow(`SELECT 'session',s.id,s.sample_key,COALESCE(s.first_ts,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+		(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 		s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(s.first_ts,''),COALESCE(s.last_ts,''),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		EXISTS(SELECT 1 FROM source_heads sh WHERE sh.session_id=s.id AND sh.available=1 AND sh.source_kind='codex_archive'),
@@ -235,7 +283,8 @@ func (tx *Tx) refreshPromptSampleStrata(promptIDs []int64) error {
 		if _, err := tx.tx.Exec(`DELETE FROM sample_strata WHERE unit_kind='prompt' AND unit_id=?`, promptID); err != nil {
 			return fmt.Errorf("clear prompt sample strata: %w", err)
 		}
-		row := tx.tx.QueryRow(`SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,s.thread_kind,
+		row := tx.tx.QueryRow(`SELECT 'prompt',p.id,p.sample_key,COALESCE(p.timestamp,''),COALESCE(s.repository_name,''),s.project,s.project_source,
+			(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project),s.thread_kind,
 			s.provider,COALESCE(s.cwd,''),COALESCE(s.branch,''),COALESCE(p.timestamp,''),COALESCE(p.timestamp,''),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_live'),
 			EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1 AND l.kind='provider_archive'),
@@ -258,7 +307,7 @@ func (tx *Tx) refreshPromptSampleStrata(promptIDs []int64) error {
 func scanSamplingMetadata(row interface{ Scan(...any) error }) (samplingMetadata, error) {
 	var value samplingMetadata
 	var timestamp string
-	err := row.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.thread,
+	err := row.Scan(&value.unitKind, &value.unitID, &value.sampleKey, &timestamp, &value.repository, &value.project, &value.projectSource, &value.projectSessionCount, &value.thread,
 		&value.provider, &value.cwd, &value.branch, &value.firstDate, &value.lastDate,
 		&value.providerLive, &value.providerArchive, &value.vaultAvailable)
 	if err != nil {
@@ -288,7 +337,11 @@ func insertSampleStrata(tx interface {
 	if strings.TrimSpace(groupCWD) == "" {
 		groupCWD = "unknown"
 	}
-	allValues := map[string]string{"month": value.month, "cwd": groupCWD, "repo": value.repository, "project": value.project, "project_source": value.projectSource, "thread-kind": value.thread}
+	groupProject, groupProjectSource := value.project, value.projectSource
+	if value.projectSessionCount < history.ProjectGroupMinSessions {
+		groupProject, groupProjectSource = "other", string(history.ProjectSourceUnknown)
+	}
+	allValues := map[string]string{"month": value.month, "cwd": groupCWD, "repo": value.repository, "project": groupProject, "project_source": groupProjectSource, "thread-kind": value.thread}
 	for _, current := range dimensions {
 		expanded := expandedProjectDimensions(current)
 		groups := make([]string, len(expanded))
@@ -593,6 +646,10 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 			if !query.IncludeText {
 				prompt.Text = nil
 			}
+			prompt.sampleCompact = !query.AllOccurrences
+			if prompt.sampleCompact {
+				prompt.Snippet = boundSampleSnippet(prompt.Snippet)
+			}
 			if len(item.Groups) == 0 && len(query.GroupBy) > 0 {
 				item.Groups = promptSampleGroups(prompt, query.GroupBy)
 			}
@@ -618,6 +675,17 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	coverage := sampleCoverage(items)
 	return SampleResult{Items: items, Unit: query.Unit, Strategy: query.Strategy, GroupBy: query.GroupBy,
 		Count: len(items), Seed: query.Seed, Generation: generation, Coverage: coverage, Warnings: sampleWarnings(query)}, nil
+}
+
+func boundSampleSnippet(value string) string {
+	if len(value) <= maxSampleSnippetBytes {
+		return value
+	}
+	value = value[:maxSampleSnippetBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (s *Store) sampleGroupForID(query SampleQuery, publicID string) (sampleGroup, error) {

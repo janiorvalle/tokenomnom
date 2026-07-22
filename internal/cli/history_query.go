@@ -362,7 +362,7 @@ func newHistorySampleCommand() *cobra.Command {
 	command.Flags().IntVar(&count, "count", 25, "maximum sampled units (1-100)")
 	command.Flags().StringVar(&seed, "seed", "", "deterministic sample seed")
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
-	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded source and snapshot occurrence provenance")
+	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded full prompt provenance metadata")
 	command.Flags().IntVar(&minLength, "min-length", 0, "minimum cleaned prompt characters")
 	command.Flags().BoolVar(&onePerSession, "one-per-session", false, "sample at most one prompt per session")
 	return command

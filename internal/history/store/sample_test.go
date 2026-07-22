@@ -3,11 +3,21 @@ package store
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 )
+
+func TestBoundSampleSnippetPreservesUTF8WithinBudget(t *testing.T) {
+	value := strings.Repeat("é", maxSampleSnippetBytes)
+	bounded := boundSampleSnippet(value)
+	if len(bounded) > maxSampleSnippetBytes || !utf8.ValidString(bounded) {
+		t.Fatalf("bounded snippet bytes=%d valid=%t", len(bounded), utf8.ValidString(bounded))
+	}
+}
 
 func TestSampleDeterministicSeedAndLogicalPromptUnits(t *testing.T) {
 	database := openTestStore(t)

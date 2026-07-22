@@ -103,8 +103,10 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		return Statistics{}, err
 	}
 	groupByRole := false
+	groupByProject := false
 	for _, dimension := range dimensions {
 		groupByRole = groupByRole || dimension == "role"
+		groupByProject = groupByProject || dimension == "project"
 	}
 	coverage, warnings, err := s.promptCoverage(query.PromptQuery)
 	if err != nil {
@@ -160,7 +162,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		(SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions) AND sh.available=1 AND sh.source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions) AND sh.available=1 AND sh.source_kind='codex_archive'),
 		(SELECT COUNT(*) FROM locations l JOIN preserved_snapshots ps ON ps.id=l.snapshot_id WHERE ps.session_id IN (SELECT id FROM statistics_sessions) AND l.available=1),
-		((SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions) AND sh.extractor_version<>?)+
+		((SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions) AND sh.available=1 AND sh.extractor_version<>?)+
 		 (SELECT COUNT(*) FROM preserved_snapshots ps WHERE ps.session_id IN (SELECT id FROM statistics_sessions) AND ps.extractor_version<>?)),
 		((SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions) AND sh.last_error<>'')+
 		 (SELECT COUNT(*) FROM source_errors se WHERE EXISTS(SELECT 1 FROM source_heads sh WHERE sh.provider=se.provider AND sh.source_path=se.source_path AND sh.session_id IN (SELECT id FROM statistics_sessions)))+
@@ -224,7 +226,11 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 			groupQuery.Role = "any"
 		}
 		groupFilters, groupPromptArgs := promptWhere(groupQuery, true, "p", "s")
-		groupCTE := `WITH selected_sessions AS (SELECT s.* FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
+		selectedSessionColumns := "s.*"
+		if groupByProject {
+			selectedSessionColumns += `,(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project) AS project_session_count`
+		}
+		groupCTE := `WITH selected_sessions AS (SELECT ` + selectedSessionColumns + ` FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
 			available_prompts AS (
 				SELECT p.*,(SELECT COUNT(*) FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) AS available_occurrences
 				FROM prompts p JOIN selected_sessions s ON s.id=p.session_id WHERE ` + strings.Join(groupFilters, " AND ") + `)`
@@ -267,34 +273,43 @@ func limitStatisticsGroups(groups []StatisticsGroup, dimensions []string, top in
 	}
 	protectedSlots := map[int]bool{}
 	for _, dimension := range dimensions {
-		if dimension != "repo" && dimension != "cwd" && dimension != "project" || containsUnknownDimension(selected, dimension) {
+		if dimension != "repo" && dimension != "cwd" && dimension != "project" {
 			continue
 		}
-		candidate := -1
-		for index := top; index < len(groups); index++ {
-			if groups[index].Values[dimension] == "unknown" && groups[index].LogicalSessions > 0 {
-				candidate = index
-				break
+		wanted := []string{"unknown"}
+		if dimension == "project" {
+			wanted = []string{"other", "unknown"}
+		}
+		for _, wantedValue := range wanted {
+			if containsStatisticsDimensionValue(selected, dimension, wantedValue) {
+				continue
 			}
-		}
-		if candidate < 0 {
-			continue
-		}
-		replace := -1
-		for index := len(selected) - 1; index >= 0; index-- {
-			if !protectedSlots[index] {
-				replace = index
-				break
+			candidate := -1
+			for index := top; index < len(groups); index++ {
+				if groups[index].Values[dimension] == wantedValue && groups[index].LogicalSessions > 0 {
+					candidate = index
+					break
+				}
 			}
+			if candidate < 0 {
+				continue
+			}
+			replace := -1
+			for index := len(selected) - 1; index >= 0; index-- {
+				if !protectedSlots[index] {
+					replace = index
+					break
+				}
+			}
+			if replace < 0 {
+				continue
+			}
+			selectedIndexes[selectedOriginal[replace]] = false
+			selected[replace] = groups[candidate]
+			selectedOriginal[replace] = candidate
+			selectedIndexes[candidate] = true
+			protectedSlots[replace] = true
 		}
-		if replace < 0 {
-			continue
-		}
-		selectedIndexes[selectedOriginal[replace]] = false
-		selected[replace] = groups[candidate]
-		selectedOriginal[replace] = candidate
-		selectedIndexes[candidate] = true
-		protectedSlots[replace] = true
 	}
 	other := &StatisticsGroup{Values: map[string]string{}}
 	for _, dimension := range dimensions {
@@ -349,9 +364,9 @@ func statisticsGroupKey(group StatisticsGroup, dimensions []string) string {
 	return strings.Join(values, "\x00")
 }
 
-func containsUnknownDimension(groups []StatisticsGroup, dimension string) bool {
+func containsStatisticsDimensionValue(groups []StatisticsGroup, dimension, value string) bool {
 	for _, group := range groups {
-		if group.Values[dimension] == "unknown" {
+		if group.Values[dimension] == value {
 			return true
 		}
 	}
@@ -367,7 +382,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 	expressionByDimension := map[string]string{
 		"provider":    "s.provider",
 		"repo":        "COALESCE(NULLIF(s.repository_name,''),'unknown')",
-		"project":     "s.project",
+		"project":     fmt.Sprintf("CASE WHEN s.project_session_count < %d THEN 'other' ELSE s.project END", history.ProjectGroupMinSessions),
 		"cwd":         "COALESCE(NULLIF(s.cwd,''),'unknown')",
 		"thread-kind": "s.thread_kind",
 		"weekday":     "CASE strftime('%w',p.timestamp) WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' WHEN '6' THEN 'Saturday' ELSE 'unknown' END",
@@ -391,7 +406,7 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 		if value == "project" {
 			seen["project_source"] = true
 			dimensions = append(dimensions, "project_source")
-			expressions = append(expressions, "s.project_source")
+			expressions = append(expressions, fmt.Sprintf("CASE WHEN s.project_session_count < %d THEN 'unknown' ELSE s.project_source END", history.ProjectGroupMinSessions))
 		}
 	}
 	return dimensions, expressions, nil

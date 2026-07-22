@@ -9,6 +9,7 @@ import (
 // sanitized public reproductions. Every rule is a complete match.
 var localCommandWrapper = regexp.MustCompile(`(?s)^<local-command-caveat>.*</local-command-caveat>\n[ \t]*<command-name>.*</command-name>(?:\n[ \t]*<command-message>.*</command-message>)?(?:\n[ \t]*<command-args>.*</command-args>)?(?:\n[ \t]*<local-command-stdout>.*</local-command-stdout>)?$`)
 var commandRecord = regexp.MustCompile(`(?s)^<command-name>[^<]*</command-name>(?:\n[ \t]*<command-message>.*</command-message>)?(?:\n[ \t]*<command-args>.*</command-args>)?(?:\n[ \t]*<local-command-stdout>.*</local-command-stdout>)?$`)
+var commandMessageFirstRecord = regexp.MustCompile(`(?s)^<command-message>[^<]*</command-message>\n[ \t]*<command-name>[^<]*</command-name>(?:\n[ \t]*<command-args>.*</command-args>)?$`)
 var teammateMessage = regexp.MustCompile(`(?s)^<teammate-message(?:[ \t\n]+[A-Za-z_][A-Za-z0-9_-]*="[^"\r\n]*")*[ \t\n]*>(.*)</teammate-message>$`)
 var agentMessageEnvelope = regexp.MustCompile(`(?s)^Message Type: (?:MESSAGE|FINAL_ANSWER)\nTask name: [^\r\n]+\nSender: [^\r\n]+\nPayload:\n.*$`)
 var delegationEnvelope = regexp.MustCompile(`(?s)^Message Type: NEW_TASK\nTask name: [^\r\n]+\nSender: [^\r\n]+\nPayload:\n.*$`)
@@ -56,7 +57,7 @@ func ClassifyPromptKind(value string, role Role, classification Classification) 
 		return PromptKindDelegation
 	case agentMessageEnvelope.MatchString(clean), completeTeammateMessage(clean), completeHarnessTeammateMessage(clean):
 		return PromptKindAgentMessage
-	case localCommandWrapper.MatchString(clean), commandRecord.MatchString(clean),
+	case localCommandWrapper.MatchString(clean), commandRecord.MatchString(clean), commandMessageFirstRecord.MatchString(clean),
 		completeTag(clean, "local-command-caveat"), completeTag(clean, "local-command-stdout"),
 		completeTag(clean, "user_shell_command"),
 		bashCommandRecords.MatchString(clean):

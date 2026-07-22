@@ -100,6 +100,7 @@ type PromptOccurrence struct {
 type PromptResult struct {
 	sortTimestamp               string
 	provenanceExpanded          bool
+	sampleCompact               bool
 	PromptID                    string                `json:"prompt_id"`
 	SessionID                   string                `json:"session_id"`
 	Provider                    history.Provider      `json:"provider"`
@@ -132,9 +133,57 @@ type PromptResult struct {
 	PreferredLocation           *PromptOccurrence     `json:"preferred_location"`
 }
 
-// MarshalJSON preserves the expanded provenance schema while omitting its
-// arrays entirely from compact search and sample results.
+// MarshalJSON preserves expanded provenance while keeping default search and
+// sample results bounded. Samples additionally omit relationship provenance.
 func (value PromptResult) MarshalJSON() ([]byte, error) {
+	if value.sampleCompact && !value.provenanceExpanded {
+		type compactOccurrence struct {
+			Kind         string  `json:"kind"`
+			SourceHeadID *string `json:"source_head_id,omitempty"`
+			SnapshotID   *string `json:"snapshot_id,omitempty"`
+			VaultVersion int     `json:"vault_version,omitempty"`
+		}
+		var preferred *compactOccurrence
+		if value.PreferredLocation != nil {
+			preferred = &compactOccurrence{
+				Kind: value.PreferredLocation.Kind, SourceHeadID: value.PreferredLocation.SourceHeadID,
+				SnapshotID: value.PreferredLocation.SnapshotID, VaultVersion: value.PreferredLocation.VaultVersion,
+			}
+		}
+		type compactAvailability struct {
+			ProviderLive    int `json:"provider_live,omitempty"`
+			ProviderArchive int `json:"provider_archive,omitempty"`
+			Vault           int `json:"vault,omitempty"`
+		}
+		return json.Marshal(struct {
+			PromptID          string                `json:"prompt_id"`
+			SessionID         string                `json:"session_id"`
+			Provider          history.Provider      `json:"provider"`
+			PromptKind        history.PromptKind    `json:"prompt_kind"`
+			Timestamp         *string               `json:"timestamp,omitempty"`
+			RepositoryName    *string               `json:"repository_name,omitempty"`
+			Project           string                `json:"project"`
+			ProjectSource     history.ProjectSource `json:"project_source"`
+			CWD               string                `json:"cwd,omitempty"`
+			Branch            *string               `json:"branch,omitempty"`
+			ThreadKind        history.ThreadKind    `json:"thread_kind"`
+			Snippet           string                `json:"snippet"`
+			Text              *string               `json:"text,omitempty"`
+			OccurrenceCount   int                   `json:"occurrence_count"`
+			Availability      compactAvailability   `json:"availability"`
+			PreferredLocation *compactOccurrence    `json:"preferred_location"`
+		}{
+			PromptID: value.PromptID, SessionID: value.SessionID, Provider: value.Provider,
+			PromptKind: value.PromptKind, Timestamp: value.Timestamp, RepositoryName: value.RepositoryName,
+			Project: value.Project, ProjectSource: value.ProjectSource, CWD: value.CWD, Branch: value.Branch,
+			ThreadKind: value.ThreadKind, Snippet: value.Snippet, Text: value.Text,
+			OccurrenceCount: value.OccurrenceCount,
+			Availability: compactAvailability{
+				ProviderLive: value.Availability.ProviderLive, ProviderArchive: value.Availability.ProviderArchive, Vault: value.Availability.Vault,
+			},
+			PreferredLocation: preferred,
+		})
+	}
 	type promptResultJSON PromptResult
 	if !value.provenanceExpanded {
 		return json.Marshal(promptResultJSON(value))

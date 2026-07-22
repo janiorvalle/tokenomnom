@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,7 @@ func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status.Status != "ready" || status.ChangedSourcesSinceIndex != 2 || status.NewSourcesSinceIndex != 1 || status.ActiveChangedSources != 2 ||
-		status.ActiveNewSources != 1 || status.SettledChangedSources != 0 || status.SettledNewSources != 0 || status.NewestSourceChange == nil || status.SourceDriftAsOf == "" {
+		status.ActiveNewSources != 1 || status.SettledChangedSources != 0 || status.SettledNewSources != 0 || status.NewestSourceChange == nil || status.SourceDriftAsOf == "" || status.StatusReasons == nil || len(status.StatusReasons) != 0 {
 		t.Fatalf("history drift status = %+v", status)
 	}
 	doctorOutput, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
@@ -123,7 +124,7 @@ func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, doctorOutput).Data, &doctor); err != nil {
 		t.Fatal(err)
 	}
-	if doctor.History.ChangedSourcesSinceIndex != 2 || doctor.History.NewSourcesSinceIndex != 1 || doctor.History.ActiveChangedSources != 2 || doctor.History.SettledChangedSources != 0 {
+	if doctor.History.Status != "ready" || doctor.History.StatusReasons == nil || len(doctor.History.StatusReasons) != 0 || doctor.History.ChangedSourcesSinceIndex != 2 || doctor.History.NewSourcesSinceIndex != 1 || doctor.History.ActiveChangedSources != 2 || doctor.History.SettledChangedSources != 0 {
 		t.Fatalf("doctor drift status = %+v", doctor.History)
 	}
 	pretty, err := executeReport([]string{"history", "status", "--no-color"}, codexDir, claudeDir)
@@ -140,9 +141,93 @@ func TestHistoryStatusAndDoctorReportLiveSourceDrift(t *testing.T) {
 		}
 	}
 	pretty, err = executeReport([]string{"history", "status", "--no-color"}, codexDir, claudeDir)
-	if err != nil || !strings.Contains(pretty, "ready (2 settled sources changed since last index)") {
+	if err != nil || !strings.Contains(pretty, "Status:              degraded") || !strings.Contains(pretty, "Status reasons:      settled_drift") {
 		t.Fatalf("pretty settled drift status err=%v:\n%s", err, pretty)
 	}
+}
+
+func TestHistoryStatusReasons(t *testing.T) {
+	ready := historystore.Health{Exists: true, SamplingReady: true}
+	for _, test := range []struct {
+		name    string
+		health  historystore.Health
+		drift   historyfreshness.Result
+		status  string
+		reasons []string
+	}{
+		{name: "not indexed", status: "not_indexed", reasons: []string{"not_indexed"}},
+		{name: "ready ignores active drift and missing sources", health: historystore.Health{Exists: true, SamplingReady: true, MissingSources: 20}, drift: historyfreshness.Result{ActiveChangedSources: 1}, status: "ready", reasons: []string{}},
+		{name: "all error and degraded reasons", health: historystore.Health{Exists: true, SamplingReady: false, ErrorSources: 1, LastRunErrorCount: 2, StaleSources: 3}, drift: historyfreshness.Result{SettledChangedSources: 4}, status: "error", reasons: []string{"error_sources", "last_run_errors", "stale_sources", "settled_drift", "sampling_not_ready"}},
+		{name: "settled drift", health: ready, drift: historyfreshness.Result{SettledChangedSources: 1}, status: "degraded", reasons: []string{"settled_drift"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, reasons := historyStatusDetails(test.health, test.drift)
+			if status != test.status || !slices.Equal(reasons, test.reasons) {
+				t.Fatalf("status=%q reasons=%v; want %q %v", status, reasons, test.status, test.reasons)
+			}
+		})
+	}
+}
+
+func TestHistoryStatusReadyWithTwentyMissingSourcesAndActiveDrift(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	paths := make([]string, 21)
+	for index := range paths {
+		paths[index] = filepath.Join(codexDir, "sessions", fmt.Sprintf("status-%02d.jsonl", index))
+		writeTextFixture(t, paths[index], historyCodexFixture(fmt.Sprintf("status-%02d", index), fmt.Sprintf("status prompt %02d", index)))
+	}
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths[:20] {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(paths[20], os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertReady := func(command []string) {
+		t.Helper()
+		output, err := executeReport(command, codexDir, claudeDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status jsonHistoryHealth
+		if command[0] == "doctor" {
+			var doctor struct {
+				History jsonHistoryHealth `json:"history"`
+			}
+			if err := json.Unmarshal(decodeEnvelope(t, output).Data, &doctor); err != nil {
+				t.Fatal(err)
+			}
+			status = doctor.History
+		} else if err := json.Unmarshal(decodeEnvelope(t, output).Data, &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Status != "ready" || status.StatusReasons == nil || len(status.StatusReasons) != 0 || status.MissingSources != 20 || status.StaleSources != 0 || status.ActiveChangedSources != 1 || status.SettledChangedSources != 0 {
+			t.Fatalf("status=%+v", status)
+		}
+	}
+	assertReady([]string{"history", "status", "--format", "json"})
+	assertReady([]string{"doctor", "--format", "json"})
 }
 
 func TestParallelHistoryReadCommandsIgnoreWriterLock(t *testing.T) {
@@ -888,15 +973,17 @@ func TestHistoryRepositoryAndProjectFiltersCoverageAndGrouping(t *testing.T) {
 	}
 	projectSources := map[string]bool{}
 	for _, group := range stats.Groups {
-		projectSources[group.Values["project_source"]] = true
+		if group.Values["project"] == "other" {
+			projectSources[group.Values["project_source"]] = true
+		}
 	}
-	if !projectSources["git"] || !projectSources["cwd"] {
+	if !projectSources["unknown"] {
 		t.Fatalf("project stats = %+v", stats)
 	}
 
 	output, err = executeReport([]string{"history", "sample", "--project", "claude-demo", "--group-by", "project", "--count", "1", "--format", "json"}, codexDir, claudeDir)
 	var sample historystore.SampleResult
-	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &sample) != nil || len(sample.Items) != 1 || sample.Items[0].Groups["project"] != "claude-demo" || sample.Items[0].Groups["project_source"] != "cwd" {
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &sample) != nil || len(sample.Items) != 1 || sample.Items[0].Groups["project"] != "other" || sample.Items[0].Groups["project_source"] != "unknown" {
 		t.Fatalf("project sample err=%v value=%+v", err, sample)
 	}
 }
