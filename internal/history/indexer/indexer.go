@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
@@ -43,6 +45,9 @@ type Options struct {
 	// CompleteAssistantScope is true only when every configured provider and
 	// vault source is included in the enclosing run.
 	CompleteAssistantScope bool
+	// hashWorkers is an internal benchmark/test override. Zero selects the
+	// bounded production default.
+	hashWorkers int
 }
 
 // Issue is bounded non-content failure or warning detail.
@@ -136,16 +141,18 @@ func Index(options Options) (Summary, error) {
 	if err := reconcileMoves(options.Store, files, checkpoints, discoveryFailed); err != nil {
 		return summary, err
 	}
+	classifications := classifyFiles(files, checkpoints, options.Full, options.hashWorkers)
 	seen := make(map[string]bool, len(files))
-	for _, file := range files {
+	for index, file := range files {
 		provider := history.Provider(file.Provider)
 		seen[historystore.CheckpointKey(provider, file.Path)] = true
 		checkpoint, found := checkpoints[historystore.CheckpointKey(provider, file.Path)]
-		kind, classifyErr := classify(file, checkpoint, found, options.Full)
-		if classifyErr != nil {
-			recordError(options.Store, provider, file.Path, classifyErr, &summary)
+		classification := classifications[index]
+		if classification.err != nil {
+			recordError(options.Store, provider, file.Path, classification.err, &summary)
 			continue
 		}
+		kind := classification.kind
 		if kind == fileUnchanged {
 			if err := options.Store.RecordSourceChecked(provider, file.Path); err != nil {
 				recordError(options.Store, provider, file.Path, err, &summary)
@@ -238,6 +245,53 @@ func Index(options Options) (Summary, error) {
 		}
 	}
 	return summary, nil
+}
+
+type fileClassification struct {
+	kind fileKind
+	err  error
+}
+
+func classifyFiles(files []discover.SourceFile, checkpoints map[string]historystore.Checkpoint, full bool, requestedWorkers int) []fileClassification {
+	result := make([]fileClassification, len(files))
+	workers := requestedWorkers
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+		if workers > 8 {
+			workers = 8
+		}
+	}
+	if workers > len(files) {
+		workers = len(files)
+	}
+	classifyAt := func(index int) {
+		file := files[index]
+		checkpoint, found := checkpoints[historystore.CheckpointKey(history.Provider(file.Provider), file.Path)]
+		result[index].kind, result[index].err = classify(file, checkpoint, found, full)
+	}
+	if workers <= 1 {
+		for index := range files {
+			classifyAt(index)
+		}
+		return result
+	}
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				classifyAt(index)
+			}
+		}()
+	}
+	for index := range files {
+		jobs <- index
+	}
+	close(jobs)
+	group.Wait()
+	return result
 }
 
 func isReclassifiedPrompt(prompt history.Prompt, kind history.PromptKind) bool {
