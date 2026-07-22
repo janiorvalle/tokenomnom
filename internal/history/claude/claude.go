@@ -184,7 +184,7 @@ recordsLoop:
 		if assistant {
 			evidence = "assistant.message.content.text"
 		}
-		prompt := history.Prompt{LogicalKey: key, NativeMessageID: item.UUID, ParentNativeMessageID: item.ParentUUID, Role: role, CleanText: clean, Classification: classification, Searchable: searchable, Oversized: oversized, Timestamp: parseTime(item.Timestamp), Model: msg.Model, Evidence: evidence, Confidence: history.ConfidenceExact}
+		prompt := history.Prompt{LogicalKey: key, NativeMessageID: item.UUID, ParentNativeMessageID: item.ParentUUID, Role: role, CleanText: clean, Classification: classification, PromptKind: history.ClassifyPromptKind(clean, role, classification), Searchable: searchable, Oversized: oversized, Timestamp: parseTime(item.Timestamp), Model: msg.Model, Evidence: evidence, Confidence: history.ConfidenceExact}
 		if index, ok := seen[key]; ok {
 			if history.CanonicalPromptWins(prompt, result.Prompts[index]) {
 				result.Prompts[index] = prompt

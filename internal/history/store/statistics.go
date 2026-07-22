@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
@@ -15,6 +16,7 @@ import (
 type StatisticsQuery struct {
 	PromptQuery
 	GroupBy []string
+	Top     int
 }
 
 // StatisticsGroup contains text-free aggregates for one dimension tuple.
@@ -47,6 +49,8 @@ type Statistics struct {
 	OversizedCount           int                  `json:"oversized_count"`
 	RoleCounts               StatisticsRoleCounts `json:"role_counts"`
 	Groups                   []StatisticsGroup    `json:"groups"`
+	GroupsTruncated          bool                 `json:"groups_truncated"`
+	Other                    *StatisticsGroup     `json:"other"`
 	Coverage                 QueryCoverage        `json:"coverage"`
 	Warnings                 []string             `json:"-"`
 	Generation               int64                `json:"index_generation"`
@@ -67,6 +71,12 @@ type StatisticsRoleCounts struct {
 
 // Statistics computes all body-dependent aggregates in SQLite.
 func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
+	if query.Top == 0 {
+		query.Top = 20
+	}
+	if query.Top < 1 || query.Top > 100 {
+		return Statistics{}, errors.New("history stats top must be between 1 and 100")
+	}
 	if query.Source == "" {
 		query.Source = CatalogSourceAny
 	}
@@ -80,6 +90,9 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	var err error
 	query.PromptQuery, err = s.resolvePromptRole(query.PromptQuery)
 	if err != nil {
+		return Statistics{}, err
+	}
+	if err := validatePromptQuery(query.PromptQuery); err != nil {
 		return Statistics{}, err
 	}
 	if !validThreadKindFilter(query.ThreadKind) {
@@ -128,12 +141,8 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		matching_oversized AS (
 			SELECT p.id FROM prompts p JOIN selected_sessions s ON s.id=p.session_id WHERE ` + strings.Join(oversizedFilters, " AND ") + `
 		)`
-	promptScopedSessions := query.Since != nil || query.Until != nil || (query.Source != "" && query.Source != CatalogSourceAny)
-	if promptScopedSessions {
-		cte += `, statistics_sessions AS (SELECT s.id FROM selected_sessions s WHERE EXISTS(SELECT 1 FROM available_prompts p WHERE p.session_id=s.id))`
-	} else {
-		cte += `, statistics_sessions AS (SELECT id FROM selected_sessions)`
-	}
+	promptScopedSessions := true
+	cte += `, statistics_sessions AS (SELECT s.id FROM selected_sessions s WHERE EXISTS(SELECT 1 FROM available_prompts p WHERE p.session_id=s.id))`
 	statement := cte + ` SELECT
 		(SELECT COUNT(*) FROM statistics_sessions),
 		(SELECT COUNT(*) FROM source_heads sh WHERE sh.session_id IN (SELECT id FROM statistics_sessions)),
@@ -230,13 +239,127 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 			return Statistics{}, err
 		}
 		value.Groups = ensureUnknownStatisticsGroups(value.Groups, dimensions)
+		sort.SliceStable(value.Groups, func(i, j int) bool {
+			if value.Groups[i].LogicalPrompts != value.Groups[j].LogicalPrompts {
+				return value.Groups[i].LogicalPrompts > value.Groups[j].LogicalPrompts
+			}
+			return statisticsGroupKey(value.Groups[i], dimensions) < statisticsGroupKey(value.Groups[j], dimensions)
+		})
+		if len(value.Groups) > query.Top {
+			value.Groups, value.Other = limitStatisticsGroups(value.Groups, dimensions, query.Top)
+			value.Other.LogicalSessions, err = s.statisticsRemainderSessions(groupCTE, groupArgs, dimensions, expressions, value.Groups, groupSessionsFollowPrompts)
+			if err != nil {
+				return Statistics{}, err
+			}
+			value.GroupsTruncated = true
+		}
 	}
 	return value, nil
 }
 
+func limitStatisticsGroups(groups []StatisticsGroup, dimensions []string, top int) ([]StatisticsGroup, *StatisticsGroup) {
+	selected := append([]StatisticsGroup(nil), groups[:top]...)
+	selectedIndexes := map[int]bool{}
+	selectedOriginal := make([]int, top)
+	for index := range top {
+		selectedIndexes[index] = true
+		selectedOriginal[index] = index
+	}
+	protectedSlots := map[int]bool{}
+	for _, dimension := range dimensions {
+		if dimension != "repo" && dimension != "cwd" || containsUnknownDimension(selected, dimension) {
+			continue
+		}
+		candidate := -1
+		for index := top; index < len(groups); index++ {
+			if groups[index].Values[dimension] == "unknown" && groups[index].LogicalSessions > 0 {
+				candidate = index
+				break
+			}
+		}
+		if candidate < 0 {
+			continue
+		}
+		replace := -1
+		for index := len(selected) - 1; index >= 0; index-- {
+			if !protectedSlots[index] {
+				replace = index
+				break
+			}
+		}
+		if replace < 0 {
+			continue
+		}
+		selectedIndexes[selectedOriginal[replace]] = false
+		selected[replace] = groups[candidate]
+		selectedOriginal[replace] = candidate
+		selectedIndexes[candidate] = true
+		protectedSlots[replace] = true
+	}
+	other := &StatisticsGroup{Values: map[string]string{}}
+	for _, dimension := range dimensions {
+		other.Values[dimension] = "other"
+	}
+	for index, group := range groups {
+		if selectedIndexes[index] {
+			continue
+		}
+		other.LogicalPrompts += group.LogicalPrompts
+		other.PromptOccurrences += group.PromptOccurrences
+		other.PromptLengthBytes += group.PromptLengthBytes
+	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		if selected[i].LogicalPrompts != selected[j].LogicalPrompts {
+			return selected[i].LogicalPrompts > selected[j].LogicalPrompts
+		}
+		return statisticsGroupKey(selected[i], dimensions) < statisticsGroupKey(selected[j], dimensions)
+	})
+	return selected, other
+}
+
+func (s *Store) statisticsRemainderSessions(cte string, args []any, dimensions, expressions []string, selected []StatisticsGroup, sessionsFollowPrompts bool) (int, error) {
+	tuples := make([]string, 0, len(selected))
+	queryArgs := append([]any{}, args...)
+	for _, group := range selected {
+		parts := make([]string, len(expressions))
+		for index, expression := range expressions {
+			parts[index] = "COALESCE(CAST((" + expression + ") AS TEXT),'unknown')=?"
+			queryArgs = append(queryArgs, group.Values[dimensions[index]])
+		}
+		tuples = append(tuples, "("+strings.Join(parts, " AND ")+")")
+	}
+	where := "NOT (" + strings.Join(tuples, " OR ") + ")"
+	if sessionsFollowPrompts {
+		where += " AND p.id IS NOT NULL"
+	}
+	var count int
+	statement := cte + ` SELECT COUNT(DISTINCT s.id) FROM selected_sessions s LEFT JOIN available_prompts p ON p.session_id=s.id WHERE ` + where
+	if err := s.runner.QueryRow(statement, queryArgs...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count history statistics remainder sessions: %w", err)
+	}
+	return count, nil
+}
+
+func statisticsGroupKey(group StatisticsGroup, dimensions []string) string {
+	values := make([]string, len(dimensions))
+	for index, dimension := range dimensions {
+		values[index] = group.Values[dimension]
+	}
+	return strings.Join(values, "\x00")
+}
+
+func containsUnknownDimension(groups []StatisticsGroup, dimension string) bool {
+	for _, group := range groups {
+		if group.Values[dimension] == "unknown" {
+			return true
+		}
+	}
+	return false
+}
+
 func statisticsQueryIsUnfiltered(query PromptQuery) bool {
 	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Branch == "" &&
-		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all")
+		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all") && len(query.PromptKinds) == 0 && !query.ExcludeControl
 }
 
 func statisticsDimensions(requested []string) ([]string, []string, error) {

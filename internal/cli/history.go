@@ -393,28 +393,30 @@ func historyDatabasePath(home string) (string, error) {
 }
 
 type jsonHistoryIndexData struct {
-	ScannedSources        int             `json:"scanned_sources"`
-	IndexedSources        int             `json:"indexed_sources"`
-	NewSources            int             `json:"new_sources"`
-	SkippedSources        int             `json:"skipped_sources"`
-	AppendedSources       int             `json:"appended_sources"`
-	RewrittenSources      int             `json:"rewritten_sources"`
-	MissingSources        int             `json:"missing_sources"`
-	IndexedPrompts        int             `json:"indexed_prompts"`
-	OversizedPrompts      int             `json:"oversized_prompts"`
-	ErrorCount            int             `json:"error_count"`
-	Errors                []indexer.Issue `json:"errors"`
-	Warnings              []indexer.Issue `json:"warnings"`
-	Full                  bool            `json:"full"`
-	DurationMS            int64           `json:"duration_ms"`
-	Source                string          `json:"source"`
-	SelectedVaultBundles  int             `json:"selected_vault_bundles"`
-	SelectedVaultVersions int             `json:"selected_vault_versions"`
-	TraversedVaultBundles int             `json:"traversed_vault_bundles"`
-	IndexedVaultBundles   int             `json:"indexed_vault_bundles"`
-	SkippedVaultBundles   int             `json:"skipped_vault_bundles"`
-	IndexedVaultVersions  int             `json:"indexed_vault_versions"`
-	BrokenSkippedBundles  int             `json:"broken_skipped_bundles"`
+	ScannedSources        int                        `json:"scanned_sources"`
+	IndexedSources        int                        `json:"indexed_sources"`
+	NewSources            int                        `json:"new_sources"`
+	SkippedSources        int                        `json:"skipped_sources"`
+	AppendedSources       int                        `json:"appended_sources"`
+	RewrittenSources      int                        `json:"rewritten_sources"`
+	MissingSources        int                        `json:"missing_sources"`
+	IndexedPrompts        int                        `json:"indexed_prompts"`
+	OversizedPrompts      int                        `json:"oversized_prompts"`
+	ReclassifiedPrompts   int                        `json:"reclassified_prompts"`
+	PromptKindCounts      map[history.PromptKind]int `json:"prompt_kind_counts"`
+	ErrorCount            int                        `json:"error_count"`
+	Errors                []indexer.Issue            `json:"errors"`
+	Warnings              []indexer.Issue            `json:"warnings"`
+	Full                  bool                       `json:"full"`
+	DurationMS            int64                      `json:"duration_ms"`
+	Source                string                     `json:"source"`
+	SelectedVaultBundles  int                        `json:"selected_vault_bundles"`
+	SelectedVaultVersions int                        `json:"selected_vault_versions"`
+	TraversedVaultBundles int                        `json:"traversed_vault_bundles"`
+	IndexedVaultBundles   int                        `json:"indexed_vault_bundles"`
+	SkippedVaultBundles   int                        `json:"skipped_vault_bundles"`
+	IndexedVaultVersions  int                        `json:"indexed_vault_versions"`
+	BrokenSkippedBundles  int                        `json:"broken_skipped_bundles"`
 }
 
 func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary) error {
@@ -426,11 +428,19 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 		// Vault duration encloses the provider callback in combined runs.
 		duration = vaultSummary.Duration
 	}
+	promptKindCounts := map[history.PromptKind]int{}
+	for kind, count := range summary.PromptKindCounts {
+		promptKindCounts[kind] += count
+	}
+	for kind, count := range vaultSummary.PromptKindCounts {
+		promptKindCounts[kind] += count
+	}
 	if currentFormat(cmd) == "json" {
 		return writeHistoryJSONEnvelope(cmd, "history index", jsonFilters{Provider: optionalString(provider)}, nil, jsonHistoryIndexData{
 			ScannedSources: summary.ScannedSources, IndexedSources: summary.IndexedSources, NewSources: summary.NewSources,
 			SkippedSources: summary.SkippedSources, AppendedSources: summary.AppendedSources, RewrittenSources: summary.RewrittenSources,
 			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts + vaultSummary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts + vaultSummary.OversizedPrompts,
+			ReclassifiedPrompts: summary.ReclassifiedPrompts + vaultSummary.ReclassifiedPrompts, PromptKindCounts: promptKindCounts,
 			ErrorCount: errorCount, Errors: errorsFound, Warnings: warnings, Full: summary.Full || vaultSummary.Full,
 			DurationMS: duration.Milliseconds(), Source: source,
 			SelectedVaultBundles: vaultSummary.SelectedBundles, SelectedVaultVersions: vaultSummary.SelectedVersions,
@@ -444,6 +454,7 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 	fmt.Fprintf(cmd.OutOrStdout(), "  New: %d  Appended: %d  Rewritten: %d  Missing: %d\n", summary.NewSources, summary.AppendedSources, summary.RewrittenSources, summary.MissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Vault bundles: %d indexed  %d skipped  %d failed  Versions: %d\n", vaultSummary.IndexedBundles, vaultSummary.SkippedBundles, vaultSummary.ErrorCount, vaultSummary.IndexedVersions)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Prompts: %d  Oversized: %d  Errors: %d  Duration: %s\n", summary.IndexedPrompts+vaultSummary.IndexedPrompts, summary.OversizedPrompts+vaultSummary.OversizedPrompts, errorCount, duration.Round(time.Millisecond))
+	fmt.Fprintf(cmd.OutOrStdout(), "  Reclassified prompts: %d\n", summary.ReclassifiedPrompts+vaultSummary.ReclassifiedPrompts)
 	return nil
 }
 
@@ -475,6 +486,7 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Prompts:", health.Prompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "User/assistant:", health.UserPrompts, health.AssistantPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Searchable users:", health.SearchableUserPrompts)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Reclassified:", health.ReclassifiedPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Occurrences:", health.Occurrences)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d\n", "Vault snapshots:", health.PreservedSnapshots)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d / %d\n", "Vault bundles/versions:", health.IndexedVaultBundles, health.IndexedVaultVersions)
@@ -523,6 +535,7 @@ type jsonHistoryHealth struct {
 	LogicalPrompts          int      `json:"logical_prompts"`
 	UserLogicalPrompts      int      `json:"user_logical_prompts"`
 	SearchableUserPrompts   int      `json:"searchable_user_prompts"`
+	ReclassifiedPrompts     int      `json:"reclassified_prompts"`
 	AssistantLogicalPrompts int      `json:"assistant_logical_prompts"`
 	Occurrences             int      `json:"occurrences"`
 	LiveSources             int      `json:"live_sources"`
@@ -567,7 +580,7 @@ func historyHealthJSON(health historystore.Health) jsonHistoryHealth {
 		Status: historyStatusValue(health), DatabasePath: health.Path, DatabaseSizeBytes: health.SizeBytes,
 		SchemaVersion: health.SchemaVersion, ExtractorVersion: health.ExtractorVersion, LogicalSessions: health.Sessions,
 		SourceHeads: health.SourceHeads, LogicalPrompts: health.Prompts, UserLogicalPrompts: health.UserPrompts,
-		SearchableUserPrompts: health.SearchableUserPrompts, AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,
+		SearchableUserPrompts: health.SearchableUserPrompts, ReclassifiedPrompts: health.ReclassifiedPrompts, AssistantLogicalPrompts: health.AssistantPrompts, AssistantIndexed: health.AssistantIndexed, Occurrences: health.Occurrences,
 		LiveSources: health.LiveSources, ProviderArchiveSources: health.ProviderArchiveSources,
 		PreservedSnapshots: health.PreservedSnapshots, VaultLocations: health.VaultLocations,
 		ProviderLiveOnly: health.ProviderLiveOnly, ProviderArchiveOnly: health.ProviderArchiveOnly,

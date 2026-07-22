@@ -317,7 +317,7 @@ func addPrompt(result *history.Extraction, seen map[string]int, record jsonl.Rec
 			key = history.MessageIdentityKey(nativeID, record.LineNumber, clean)
 		}
 	}
-	prompt := history.Prompt{LogicalKey: key, NativeMessageID: nativeID, Role: role, CleanText: clean, Classification: classification, Searchable: searchable, Oversized: oversized, Timestamp: parseTime(timestamp), Evidence: evidence, Confidence: history.ConfidenceExact}
+	prompt := history.Prompt{LogicalKey: key, NativeMessageID: nativeID, Role: role, CleanText: clean, Classification: classification, PromptKind: history.ClassifyPromptKind(clean, role, classification), Searchable: searchable, Oversized: oversized, Timestamp: parseTime(timestamp), Evidence: evidence, Confidence: history.ConfidenceExact}
 	if index, ok := seen[key]; ok {
 		if prompt.NativeMessageID == "" {
 			prompt.NativeMessageID = result.Prompts[index].NativeMessageID

@@ -52,6 +52,7 @@ type Health struct {
 	Prompts                 int
 	UserPrompts             int
 	SearchableUserPrompts   int
+	ReclassifiedPrompts     int
 	AssistantPrompts        int
 	AssistantIndexed        bool
 	Occurrences             int
@@ -341,7 +342,8 @@ func InspectHealth(path string) (Health, error) {
 
 var healthQuery = `SELECT
 		(SELECT COUNT(*) FROM sessions),(SELECT COUNT(*) FROM source_heads),(SELECT COUNT(*) FROM prompts),
-			(SELECT COUNT(*) FROM prompts WHERE role='user'),(SELECT COUNT(*) FROM prompts WHERE role='user' AND searchable=1),(SELECT COUNT(*) FROM prompts WHERE role='assistant'),
+			(SELECT COUNT(*) FROM prompts WHERE role='user'),(SELECT COUNT(*) FROM prompts WHERE role='user' AND searchable=1 AND prompt_kind='human'),
+			(SELECT COUNT(*) FROM prompts WHERE role='user' AND classification='human' AND prompt_kind IN ('delegation','agent_message','command','control')),(SELECT COUNT(*) FROM prompts WHERE role='assistant'),
 		(SELECT COUNT(*) FROM occurrences),(SELECT COUNT(*) FROM source_heads WHERE source_kind IN ('codex_live','claude_project')),
 		(SELECT COUNT(*) FROM source_heads WHERE source_kind='codex_archive'),
 		(SELECT COUNT(*) FROM preserved_snapshots),(SELECT COUNT(*) FROM locations WHERE kind='vault'),
@@ -365,8 +367,8 @@ var healthQuery = `SELECT
 			SELECT ps.last_ts FROM preserved_snapshots ps WHERE ps.last_ts IS NOT NULL AND ps.last_ts<>''
 				AND EXISTS(SELECT 1 FROM locations l WHERE l.snapshot_id=ps.id AND l.available=1)
 		) ORDER BY ` + sqliteTimestampKey("last_ts") + ` DESC LIMIT 1),''),
-		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
-		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
+		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND prompt_kind='human' AND timestamp IS NOT NULL AND timestamp<>''),''),
+		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='user' AND searchable=1 AND prompt_kind='human' AND timestamp IS NOT NULL AND timestamp<>''),''),
 		COALESCE((SELECT MIN(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
 		COALESCE((SELECT MAX(` + sqliteTimestampKey("timestamp") + `) FROM prompts WHERE role='assistant' AND searchable=1 AND timestamp IS NOT NULL AND timestamp<>''),''),
 		((SELECT COUNT(*) FROM source_heads WHERE extractor_version<>?)+
@@ -388,7 +390,7 @@ type rowScanner interface {
 
 func scanHealth(row rowScanner, value *Health) error {
 	return row.Scan(
-		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.UserPrompts, &value.SearchableUserPrompts, &value.AssistantPrompts, &value.Occurrences, &value.LiveSources,
+		&value.Sessions, &value.SourceHeads, &value.Prompts, &value.UserPrompts, &value.SearchableUserPrompts, &value.ReclassifiedPrompts, &value.AssistantPrompts, &value.Occurrences, &value.LiveSources,
 		&value.ProviderArchiveSources, &value.PreservedSnapshots, &value.VaultLocations,
 		&value.ProviderLiveOnly, &value.ProviderArchiveOnly, &value.VaultOnly, &value.ExactLiveAndVaulted,
 		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,

@@ -955,8 +955,8 @@ func (tx *Tx) mergeSessions(recipientID, donorID int64) error {
 		if err != nil {
 			return fmt.Errorf("find matching history prompt: %w", err)
 		}
-		if _, err := tx.tx.Exec(`INSERT INTO occurrences(prompt_id,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset)
-			SELECT ?,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset FROM occurrences WHERE prompt_id=?
+		if _, err := tx.tx.Exec(`INSERT INTO occurrences(prompt_id,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset)
+			SELECT ?,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset FROM occurrences WHERE prompt_id=?
 			ON CONFLICT DO NOTHING`, recipientPromptID, donor.id); err != nil {
 			return fmt.Errorf("merge history prompt occurrences: %w", err)
 		}
@@ -1459,9 +1459,9 @@ func (tx *Tx) ensurePrompts(sessionID int64, prompts []history.Prompt) (map[stri
 			if err != nil {
 				return nil, nil, err
 			}
-			result, err := tx.tx.Exec(`INSERT INTO prompts(public_id,session_id,logical_key,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version,sample_key)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, sessionID, prompt.LogicalKey, nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText,
-				normalizedClassification(prompt.Classification), boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion, sampleKey(publicID))
+			result, err := tx.tx.Exec(`INSERT INTO prompts(public_id,session_id,logical_key,native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,model,evidence,confidence,extractor_version,sample_key)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, sessionID, prompt.LogicalKey, nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText,
+				normalizedClassification(prompt.Classification), normalizedPromptKind(prompt), history.PromptKindVersion, boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion, sampleKey(publicID))
 			if err != nil {
 				return nil, nil, fmt.Errorf("insert logical prompt: %w", err)
 			}
@@ -1472,8 +1472,8 @@ func (tx *Tx) ensurePrompts(sessionID int64, prompts []history.Prompt) (map[stri
 		} else if err != nil {
 			return nil, nil, fmt.Errorf("find logical prompt: %w", err)
 		} else if occurrenceCount == 0 || canonicalPromptWins(prompt, existingTimestamp, existingText, existingClassification, existingSearchable, existingExtractorVersion) {
-			_, err = tx.tx.Exec(`UPDATE prompts SET native_message_id=?,parent_native_message_id=?,role=?,clean_text=?,classification=?,searchable=?,oversized=?,timestamp=?,model=?,evidence=?,confidence=?,extractor_version=? WHERE id=?`,
-				nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText, normalizedClassification(prompt.Classification),
+			_, err = tx.tx.Exec(`UPDATE prompts SET native_message_id=?,parent_native_message_id=?,role=?,clean_text=?,classification=?,prompt_kind=?,prompt_kind_version=?,searchable=?,oversized=?,timestamp=?,model=?,evidence=?,confidence=?,extractor_version=? WHERE id=?`,
+				nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText, normalizedClassification(prompt.Classification), normalizedPromptKind(prompt), history.PromptKindVersion,
 				boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion, id)
 			if err != nil {
 				return nil, nil, fmt.Errorf("update logical prompt: %w", err)
@@ -1537,10 +1537,10 @@ func (tx *Tx) addOccurrences(locationID, sourceID, snapshotID int64, promptIDs m
 		if prompt.CleanText == "" {
 			return fmt.Errorf("occurrence references missing prompt value %q", occurrence.PromptKey)
 		}
-		if _, err := tx.tx.Exec(`INSERT INTO occurrences(prompt_id,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET native_message_id=excluded.native_message_id,parent_native_message_id=excluded.parent_native_message_id,role=excluded.role,clean_text=excluded.clean_text,classification=excluded.classification,searchable=excluded.searchable,oversized=excluded.oversized,timestamp=excluded.timestamp,timestamp_unix_nano=excluded.timestamp_unix_nano,model=excluded.model,evidence=excluded.evidence,confidence=excluded.confidence,extractor_version=excluded.extractor_version`,
+		if _, err := tx.tx.Exec(`INSERT INTO occurrences(prompt_id,location_id,source_head_id,snapshot_id,native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,timestamp_unix_nano,model,evidence,confidence,extractor_version,line_number,start_offset,end_offset)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET native_message_id=excluded.native_message_id,parent_native_message_id=excluded.parent_native_message_id,role=excluded.role,clean_text=excluded.clean_text,classification=excluded.classification,prompt_kind=excluded.prompt_kind,prompt_kind_version=excluded.prompt_kind_version,searchable=excluded.searchable,oversized=excluded.oversized,timestamp=excluded.timestamp,timestamp_unix_nano=excluded.timestamp_unix_nano,model=excluded.model,evidence=excluded.evidence,confidence=excluded.confidence,extractor_version=excluded.extractor_version`,
 			promptID, locationID, nullableID(sourceID), nullableID(snapshotID), nullText(prompt.NativeMessageID), nullText(prompt.ParentNativeMessageID), normalizedRole(prompt.Role), prompt.CleanText,
-			normalizedClassification(prompt.Classification), boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), timeUnixNano(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion,
+			normalizedClassification(prompt.Classification), normalizedPromptKind(prompt), history.PromptKindVersion, boolInt(searchablePrompt(prompt)), boolInt(prompt.Oversized), timeText(prompt.Timestamp), timeUnixNano(prompt.Timestamp), nullText(prompt.Model), nullText(prompt.Evidence), normalizedConfidence(prompt.Confidence), history.ExtractorVersion,
 			occurrence.LineNumber, occurrence.StartOffset, occurrence.EndOffset); err != nil {
 			return fmt.Errorf("insert prompt occurrence: %w", err)
 		}
@@ -1649,12 +1649,12 @@ func (tx *Tx) clearSourceError(provider history.Provider, path string) error {
 
 func (tx *Tx) refreshPromptCanonical(promptID int64) error {
 	_, err := tx.tx.Exec(`WITH canonical AS (
-		SELECT native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version
+		SELECT native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,model,evidence,confidence,extractor_version
 		FROM occurrences WHERE prompt_id=?
 		ORDER BY extractor_version DESC,(classification <> 'provider_metadata') DESC,timestamp_unix_nano IS NOT NULL DESC,timestamp_unix_nano DESC,length(CAST(clean_text AS BLOB)) DESC,clean_text DESC LIMIT 1
 	)
-	UPDATE prompts SET (native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version)=
-		(SELECT native_message_id,parent_native_message_id,role,clean_text,classification,searchable,oversized,timestamp,model,evidence,confidence,extractor_version FROM canonical)
+	UPDATE prompts SET (native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,model,evidence,confidence,extractor_version)=
+		(SELECT native_message_id,parent_native_message_id,role,clean_text,classification,prompt_kind,prompt_kind_version,searchable,oversized,timestamp,model,evidence,confidence,extractor_version FROM canonical)
 	WHERE id=? AND occurrence_count>0`, promptID, promptID)
 	if err != nil {
 		return fmt.Errorf("refresh source-backed prompt canonical: %w", err)
@@ -1749,8 +1749,17 @@ func normalizedClassification(value history.Classification) history.Classificati
 	return value
 }
 
+func normalizedPromptKind(value history.Prompt) history.PromptKind {
+	if value.PromptKind == "" {
+		return history.ClassifyPromptKind(value.CleanText, value.Role, value.Classification)
+	}
+	return value.PromptKind
+}
+
 func searchablePrompt(value history.Prompt) bool {
-	searchableRole := (value.Role == history.RoleUser && value.Classification == history.ClassificationHuman) ||
-		(value.Role == history.RoleAssistant && value.Classification == history.ClassificationAssistant)
-	return value.Searchable && !value.Oversized && searchableRole && value.CleanText != ""
+	kind := normalizedPromptKind(value)
+	classifiedEnvelope := kind != history.PromptKindHuman && kind != history.PromptKindUnknown
+	searchableRole := (value.Role == history.RoleUser && ((value.Classification == history.ClassificationHuman && value.Searchable) || classifiedEnvelope)) ||
+		(value.Role == history.RoleAssistant && value.Classification == history.ClassificationAssistant && value.Searchable)
+	return !value.Oversized && len([]byte(value.CleanText)) <= history.MaxPromptBytes && searchableRole && value.CleanText != ""
 }

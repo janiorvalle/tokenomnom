@@ -22,14 +22,18 @@ type RawCandidate struct {
 
 // GetPrompt resolves a stable prompt ID and returns its full clean text.
 func (s *Store) GetPrompt(publicID string) (PromptResult, error) {
+	return s.getPrompt(publicID, true)
+}
+
+func (s *Store) getPrompt(publicID string, allOccurrences bool) (PromptResult, error) {
 	resolved, err := s.ResolvePublicID(publicID)
 	if err != nil {
 		return PromptResult{}, err
 	}
-	row := s.runner.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
+	row := s.runner.QueryRow(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.prompt_kind,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sqliteTimestampKey("p.timestamp")+`,substr(p.clean_text,1,2048),p.clean_text
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.public_id=? AND p.searchable=1 AND p.role IN ('user','assistant')`, resolved)
-	values, err := s.scanPromptRows(&singlePromptRow{row: row}, true, false, true)
+	values, err := s.scanPromptRows(&singlePromptRow{row: row}, true, false, allOccurrences)
 	if err != nil {
 		return PromptResult{}, err
 	}
@@ -91,8 +95,9 @@ func (s *Store) SessionPrompts(publicID string, query PromptQuery) (PromptsPage,
 		query.Limit = cursor.Limit
 		bound.Limit = cursor.Limit
 	}
-	where := []string{"p.searchable=1", "p.role='user'", "s.public_id=?", `EXISTS(SELECT 1 FROM occurrences qo JOIN locations ql ON ql.id=qo.location_id WHERE qo.prompt_id=p.id AND ql.available=1)`}
-	args := []any{resolved}
+	where, args := promptWhere(query, true, "p", "s")
+	where = append(where, "s.public_id=?")
+	args = append(args, resolved)
 	sortExpr := sqliteTimestampKey("p.timestamp")
 	if query.Cursor != "" {
 		if cursor.Unknown {
@@ -106,7 +111,7 @@ func (s *Store) SessionPrompts(publicID string, query PromptQuery) (PromptsPage,
 	queryArgs := []any{true}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	rows, err := s.runner.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
+	rows, err := s.runner.Query(`SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.prompt_kind,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,`+sortExpr+`,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY (`+sortExpr+`='') ASC,`+sortExpr+` DESC,p.public_id ASC LIMIT ?`, queryArgs...)

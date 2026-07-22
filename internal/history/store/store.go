@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SchemaVersion = 9
+	SchemaVersion = 10
 	DatabaseName  = "history.db"
 )
 
@@ -115,6 +115,11 @@ func OpenReadOnly(path string) (*Store, error) {
 		readTx.Rollback()
 		db.Close()
 		return nil, fmt.Errorf("read history schema version: %w", err)
+	}
+	if schemaVersion > SchemaVersion {
+		readTx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("history store schema %d is newer than this tokenomnom; upgrade tokenomnom", schemaVersion)
 	}
 	if schemaVersion != SchemaVersion {
 		readTx.Rollback()
@@ -439,6 +444,15 @@ CREATE TRIGGER sample_strata_group_delete AFTER DELETE ON sample_strata
 		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
 END;
 UPDATE meta SET value='0' WHERE key='sampling_ready';
+`,
+			10: `
+ALTER TABLE prompts ADD COLUMN prompt_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (prompt_kind IN ('human','delegation','agent_message','command','control','unknown'));
+ALTER TABLE prompts ADD COLUMN prompt_kind_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE occurrences ADD COLUMN prompt_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (prompt_kind IN ('human','delegation','agent_message','command','control','unknown'));
+ALTER TABLE occurrences ADD COLUMN prompt_kind_version INTEGER NOT NULL DEFAULT 0;
+UPDATE prompts SET prompt_kind='human' WHERE role='user' AND classification='human';
+UPDATE occurrences SET prompt_kind='human' WHERE role='user' AND classification='human';
+CREATE INDEX prompts_role_kind_timestamp_idx ON prompts(role,prompt_kind,timestamp,public_id);
 `,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {

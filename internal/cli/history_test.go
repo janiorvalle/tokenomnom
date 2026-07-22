@@ -339,7 +339,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	searchOutput, err := executeReport([]string{"history", "search", "foo OR bar", "--since", "2026-01-01", "--until", "2026-12-31", "--limit", "1", "--format", "json"}, codexDir, claudeDir)
+	searchOutput, err := executeReport([]string{"history", "search", "foo OR bar", "--since", "2026-01-01", "--until", "2026-12-31", "--limit", "1", "--all-occurrences", "--format", "json"}, codexDir, claudeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,13 +389,13 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 		t.Fatalf("prompts err=%v value=%+v", err, prompts)
 	}
 
-	sampleOutput, err := executeReport([]string{"history", "sample", "--group-by", "month,repo", "--format", "json"}, codexDir, claudeDir)
+	sampleOutput, err := executeReport([]string{"history", "sample", "--group-by", "month,repo", "--min-length", "10", "--one-per-session", "--all-occurrences", "--format", "json"}, codexDir, claudeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var sample historystore.SampleResult
 	sampleEnvelope := decodeEnvelope(t, sampleOutput)
-	if err := json.Unmarshal(sampleEnvelope.Data, &sample); err != nil || sampleEnvelope.Timezone != localTimezoneName() || len(sample.Items) != 1 || sample.Strategy != "stratified" || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Text != nil || sample.Items[0].Groups["repo"] != "unknown" {
+	if err := json.Unmarshal(sampleEnvelope.Data, &sample); err != nil || sampleEnvelope.Timezone != localTimezoneName() || len(sample.Items) != 1 || sample.Strategy != "stratified" || sample.Items[0].Prompt == nil || sample.Items[0].Prompt.Text != nil || sample.Items[0].Groups["repo"] != "unknown" || len(sample.Items[0].Prompt.Occurrences) != 1 {
 		t.Fatalf("sample err=%v envelope=%+v value=%+v", err, sampleEnvelope, sample)
 	}
 	sampleTextOutput, err := executeReport([]string{"history", "sample", "--count", "1", "--include-text", "--format", "json"}, codexDir, claudeDir)
@@ -406,7 +406,7 @@ func TestHistorySearchShowPromptsStatsAndRawEndToEnd(t *testing.T) {
 		t.Fatalf("sample text err=%v value=%+v", err, sample)
 	}
 
-	statsOutput, err := executeReport([]string{"history", "stats", "--group-by", "provider", "--format", "json"}, codexDir, claudeDir)
+	statsOutput, err := executeReport([]string{"history", "stats", "--group-by", "provider", "--top", "1", "--format", "json"}, codexDir, claudeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +503,38 @@ func TestHistoryAssistantRoleConsentWorkflow(t *testing.T) {
 	}
 }
 
+func TestHistoryPromptKindFilterLeavesControlOutsideDefaultCorpus(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	fixture := historyCodexFixture("prompt-kinds", "<heartbeat>controlword complete</heartbeat>")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "2026", "07", "prompt-kinds.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	read := func(args ...string) historystore.SearchPage {
+		t.Helper()
+		output, err := executeReport(append([]string{"history", "search", "controlword", "--format", "json"}, args...), codexDir, claudeDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page historystore.SearchPage
+		if err := json.Unmarshal(decodeEnvelope(t, output).Data, &page); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	if page := read(); len(page.Hits) != 0 {
+		t.Fatalf("default corpus included control prompt: %+v", page)
+	}
+	page := read("--prompt-kind", "control")
+	if len(page.Hits) != 1 || page.Hits[0].PromptKind != history.PromptKindControl {
+		t.Fatalf("control filter page=%+v", page)
+	}
+}
+
 func TestHistoryRawFallsBackToExactVaultSnapshot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
@@ -519,7 +551,7 @@ func TestHistoryRawFallsBackToExactVaultSnapshot(t *testing.T) {
 	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
 		t.Fatal(err)
 	}
-	searchOutput, err := executeReport([]string{"history", "search", "vaulted exact", "--format", "json"}, codexDir, claudeDir)
+	searchOutput, err := executeReport([]string{"history", "search", "vaulted exact", "--all-occurrences", "--format", "json"}, codexDir, claudeDir)
 	if err != nil {
 		t.Fatal(err)
 	}

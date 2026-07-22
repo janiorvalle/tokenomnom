@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type PromptQuery struct {
 	Cursor                   string
 	IncludeText              bool
 	AllOccurrences           bool
+	PromptKinds              []history.PromptKind
+	ExcludeControl           bool
 	assistantIndexed         bool
 	assistantProviders       []history.Provider
 	assistantCoveragePartial bool
@@ -94,10 +97,12 @@ type PromptOccurrence struct {
 // PromptResult is one logical human prompt, not one snapshot occurrence.
 type PromptResult struct {
 	sortTimestamp               string
+	provenanceExpanded          bool
 	PromptID                    string                `json:"prompt_id"`
 	SessionID                   string                `json:"session_id"`
 	Provider                    history.Provider      `json:"provider"`
 	Role                        history.Role          `json:"role"`
+	PromptKind                  history.PromptKind    `json:"prompt_kind"`
 	Timestamp                   *string               `json:"timestamp"`
 	RepositoryName              *string               `json:"repository_name"`
 	CWD                         string                `json:"cwd,omitempty"`
@@ -113,13 +118,38 @@ type PromptResult struct {
 	Snippet                     string                `json:"snippet"`
 	Text                        *string               `json:"text,omitempty"`
 	OccurrenceCount             int                   `json:"occurrence_count"`
-	SourceHeadIDs               []string              `json:"source_head_ids"`
-	PreservedSnapshotIDs        []string              `json:"preserved_snapshot_ids"`
-	Occurrences                 []PromptOccurrence    `json:"occurrences"`
-	OccurrenceMetadataTruncated bool                  `json:"occurrence_metadata_truncated"`
-	ProvenanceIDsTruncated      bool                  `json:"provenance_ids_truncated"`
+	SourceHeadIDs               []string              `json:"source_head_ids,omitempty"`
+	PreservedSnapshotIDs        []string              `json:"preserved_snapshot_ids,omitempty"`
+	Occurrences                 []PromptOccurrence    `json:"occurrences,omitempty"`
+	OccurrenceMetadataTruncated bool                  `json:"occurrence_metadata_truncated,omitempty"`
+	ProvenanceIDsTruncated      bool                  `json:"provenance_ids_truncated,omitempty"`
 	Availability                Availability          `json:"availability"`
 	PreferredRetrievalSource    string                `json:"preferred_retrieval_source"`
+	PreferredLocation           *PromptOccurrence     `json:"preferred_location"`
+}
+
+// MarshalJSON preserves the expanded provenance schema while omitting its
+// arrays entirely from compact search and sample results.
+func (value PromptResult) MarshalJSON() ([]byte, error) {
+	type promptResultJSON PromptResult
+	if !value.provenanceExpanded {
+		return json.Marshal(promptResultJSON(value))
+	}
+	return json.Marshal(struct {
+		promptResultJSON
+		SourceHeadIDs               []string           `json:"source_head_ids"`
+		PreservedSnapshotIDs        []string           `json:"preserved_snapshot_ids"`
+		Occurrences                 []PromptOccurrence `json:"occurrences"`
+		OccurrenceMetadataTruncated bool               `json:"occurrence_metadata_truncated"`
+		ProvenanceIDsTruncated      bool               `json:"provenance_ids_truncated"`
+	}{
+		promptResultJSON:            promptResultJSON(value),
+		SourceHeadIDs:               value.SourceHeadIDs,
+		PreservedSnapshotIDs:        value.PreservedSnapshotIDs,
+		Occurrences:                 value.Occurrences,
+		OccurrenceMetadataTruncated: value.OccurrenceMetadataTruncated,
+		ProvenanceIDsTruncated:      value.ProvenanceIDsTruncated,
+	})
 }
 
 // SearchPage is one generation-bound FTS result page.
@@ -154,6 +184,8 @@ type promptCursor struct {
 	Branch           string        `json:"branch"`
 	Source           CatalogSource `json:"source"`
 	ThreadKind       string        `json:"thread_kind"`
+	PromptKinds      string        `json:"prompt_kinds"`
+	ExcludeControl   bool          `json:"exclude_control"`
 	Query            string        `json:"query,omitempty"`
 	FTSQuery         bool          `json:"fts_query,omitempty"`
 	Limit            int           `json:"limit"`
@@ -201,14 +233,14 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
 	args = append([]any{match, query.IncludeText}, args...)
 	statement := `WITH matched AS (
-		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.timestamp,
+		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
 			s.repository_name,s.cwd,s.branch,bm25(prompt_fts) AS rank,
 			` + sqliteTimestampKey("p.timestamp") + ` AS sort_ts,
 			snippet(prompt_fts,0,'[',']',' ... ',24) AS snippet,
 			CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
 		FROM prompt_fts JOIN prompts p ON p.id=prompt_fts.rowid JOIN sessions s ON s.id=p.session_id
 		WHERE prompt_fts MATCH ? AND ` + strings.Join(where, " AND ") + `)
-		SELECT id,prompt_id,session_id,provider,role,timestamp,repository_name,cwd,branch,rank,sort_ts,snippet,full_text
+		SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,repository_name,cwd,branch,rank,sort_ts,snippet,full_text
 		FROM matched`
 	// IncludeText precedes MATCH in SQL, so repair the argument order.
 	args[0], args[1] = args[1], args[0]
@@ -232,7 +264,7 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 		return SearchPage{}, fmt.Errorf("search history prompts: %w", err)
 	}
 	defer rows.Close()
-	hits, err := s.scanPromptRows(rows, query.IncludeText, true, true)
+	hits, err := s.scanPromptRows(rows, query.IncludeText, true, query.AllOccurrences)
 	if err != nil {
 		return SearchPage{}, err
 	}
@@ -292,7 +324,7 @@ func (s *Store) ListPrompts(query PromptQuery) (PromptsPage, error) {
 	queryArgs := []any{query.IncludeText}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, query.Limit+1)
-	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.timestamp,s.repository_name,s.cwd,s.branch,
+	statement := `SELECT p.id,p.public_id,s.public_id,s.provider,p.role,p.prompt_kind,p.timestamp,s.repository_name,s.cwd,s.branch,
 		NULL,` + sortExpr + `,substr(p.clean_text,1,2048),CASE WHEN ? THEN p.clean_text ELSE NULL END
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY (` + sortExpr + `='') ASC,` + sortExpr + ` DESC,p.public_id ASC LIMIT ?`
@@ -370,7 +402,21 @@ func validatePromptQuery(query PromptQuery) error {
 	if query.Limit != 0 && (query.Limit < 1 || query.Limit > 500) {
 		return errors.New("history prompt limit must be between 1 and 500")
 	}
+	for _, kind := range query.PromptKinds {
+		if !validPromptKind(kind) {
+			return fmt.Errorf("invalid history prompt kind %q", kind)
+		}
+	}
 	return nil
+}
+
+func validPromptKind(kind history.PromptKind) bool {
+	switch kind {
+	case history.PromptKindHuman, history.PromptKindDelegation, history.PromptKindAgentMessage, history.PromptKindCommand, history.PromptKindControl, history.PromptKindUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 func literalFTSQuery(value string) string {
@@ -408,6 +454,19 @@ func promptWhere(query PromptQuery, includeMetadataFilters bool, promptAlias, se
 	default:
 		args = args[:0]
 		where = append(where, p+"role='user'")
+	}
+	if len(query.PromptKinds) > 0 {
+		placeholders := make([]string, len(query.PromptKinds))
+		for index, kind := range query.PromptKinds {
+			placeholders[index] = "?"
+			args = append(args, kind)
+		}
+		where = append(where, p+"prompt_kind IN ("+strings.Join(placeholders, ",")+")")
+	} else {
+		where = append(where, "("+p+"role<>'user' OR "+p+"prompt_kind='human')")
+	}
+	if query.ExcludeControl {
+		where = append(where, p+"prompt_kind<>'control'")
 	}
 	if query.Provider != "" {
 		where = append(where, s+"provider=?")
@@ -473,7 +532,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 		var timestamp, repo, cwd, branch, snippet, text sql.NullString
 		var rank sql.NullFloat64
 		var sortTimestamp string
-		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &value.Role, &timestamp, &repo, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
+		if err := rows.Scan(&dbID, &value.PromptID, &value.SessionID, &value.Provider, &value.Role, &value.PromptKind, &timestamp, &repo, &cwd, &branch, &rank, &sortTimestamp, &snippet, &text); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				_ = rows.Close()
 				return []PromptResult{}, nil
@@ -511,6 +570,7 @@ func (s *Store) scanPromptRows(rows promptRows, includeText, ranked, includeOccu
 }
 
 func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, includeOccurrences bool) error {
+	value.provenanceExpanded = includeOccurrences
 	var sessionID int64
 	var threadEvidence sql.NullString
 	if err := s.runner.QueryRow(`SELECT s.id,s.thread_kind,s.thread_evidence,s.thread_confidence,s.thread_rule_version
@@ -543,13 +603,38 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 		AND sh.current_sha256<>'' AND sh.current_sha256=ps.content_sha256)`, promptID).Scan(&value.Availability.ExactLiveAndVaulted); err != nil {
 		return fmt.Errorf("read prompt exact availability: %w", err)
 	}
+	var exactProviderLive, exactProviderArchive bool
+	if err := s.runner.QueryRow(`SELECT
+		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
+			WHERE o.prompt_id=? AND l.available=1 AND l.kind='provider_live' AND sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>''),
+		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
+			WHERE o.prompt_id=? AND l.available=1 AND l.kind='provider_archive' AND sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>'')`, promptID, promptID).Scan(&exactProviderLive, &exactProviderArchive); err != nil {
+		return fmt.Errorf("read prompt retrieval availability: %w", err)
+	}
+	preferredKind := ""
+	switch {
+	case exactProviderLive:
+		value.PreferredRetrievalSource, preferredKind = "provider-live", "provider_live"
+	case exactProviderArchive:
+		value.PreferredRetrievalSource, preferredKind = "provider-archive", "provider_archive"
+	case value.Availability.Vault > 0:
+		value.PreferredRetrievalSource, preferredKind = "vault", "vault"
+	default:
+		value.PreferredRetrievalSource = "unavailable"
+	}
+	occurrenceLimit := 1
+	if includeOccurrences {
+		occurrenceLimit = maxOccurrenceMetadata + 1
+	}
 	rows, err := s.runner.Query(`SELECT l.kind,sh.public_id,ps.public_id,l.source_path,l.archive,l.relative_path,l.vault_version,
 		o.line_number,o.start_offset,o.end_offset
 		FROM occurrences o JOIN locations l ON l.id=o.location_id
 		LEFT JOIN source_heads sh ON sh.id=o.source_head_id LEFT JOIN preserved_snapshots ps ON ps.id=o.snapshot_id
 		WHERE o.prompt_id=? AND l.available=1
-		ORDER BY CASE l.kind WHEN 'provider_live' THEN 0 WHEN 'provider_archive' THEN 1 ELSE 2 END,
-			l.vault_version DESC,o.line_number,o.start_offset LIMIT ?`, promptID, maxOccurrenceMetadata+1)
+		ORDER BY CASE WHEN l.kind=? AND (l.kind='vault' OR
+			(sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>'')) THEN 0
+			WHEN l.kind='provider_live' THEN 1 WHEN l.kind='provider_archive' THEN 2 ELSE 3 END,
+			l.vault_version DESC,o.line_number,o.start_offset,l.location_key,o.id LIMIT ?`, promptID, preferredKind, occurrenceLimit)
 	if err != nil {
 		return fmt.Errorf("list prompt occurrences: %w", err)
 	}
@@ -569,6 +654,10 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 			id := snapshotID.String
 			occurrence.SnapshotID = &id
 		}
+		if value.PreferredLocation == nil {
+			preferred := occurrence
+			value.PreferredLocation = &preferred
+		}
 		if includeOccurrences && len(value.Occurrences) < maxOccurrenceMetadata {
 			value.Occurrences = append(value.Occurrences, occurrence)
 		}
@@ -579,41 +668,27 @@ func (s *Store) populatePromptProvenance(promptID int64, value *PromptResult, in
 	if includeOccurrences && value.OccurrenceCount > maxOccurrenceMetadata {
 		value.OccurrenceMetadataTruncated = true
 	}
-	value.SourceHeadIDs, err = s.promptProvenanceIDs(promptID, "source_heads", "source_head_id")
-	if err != nil {
-		return err
-	}
-	if len(value.SourceHeadIDs) > maxPromptProvenanceIDs {
-		value.SourceHeadIDs = value.SourceHeadIDs[:maxPromptProvenanceIDs]
-		value.ProvenanceIDsTruncated = true
-	}
-	value.PreservedSnapshotIDs, err = s.promptProvenanceIDs(promptID, "preserved_snapshots", "snapshot_id")
-	if err != nil {
-		return err
-	}
-	if len(value.PreservedSnapshotIDs) > maxPromptProvenanceIDs {
-		value.PreservedSnapshotIDs = value.PreservedSnapshotIDs[:maxPromptProvenanceIDs]
-		value.ProvenanceIDsTruncated = true
+	value.SourceHeadIDs = []string{}
+	value.PreservedSnapshotIDs = []string{}
+	if includeOccurrences {
+		value.SourceHeadIDs, err = s.promptProvenanceIDs(promptID, "source_heads", "source_head_id")
+		if err != nil {
+			return err
+		}
+		if len(value.SourceHeadIDs) > maxPromptProvenanceIDs {
+			value.SourceHeadIDs = value.SourceHeadIDs[:maxPromptProvenanceIDs]
+			value.ProvenanceIDsTruncated = true
+		}
+		value.PreservedSnapshotIDs, err = s.promptProvenanceIDs(promptID, "preserved_snapshots", "snapshot_id")
+		if err != nil {
+			return err
+		}
+		if len(value.PreservedSnapshotIDs) > maxPromptProvenanceIDs {
+			value.PreservedSnapshotIDs = value.PreservedSnapshotIDs[:maxPromptProvenanceIDs]
+			value.ProvenanceIDsTruncated = true
+		}
 	}
 	value.Availability.Unavailable = value.OccurrenceCount == 0
-	var exactProviderLive, exactProviderArchive bool
-	if err := s.runner.QueryRow(`SELECT
-		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
-			WHERE o.prompt_id=? AND l.available=1 AND l.kind='provider_live' AND sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>''),
-		EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id JOIN source_heads sh ON sh.id=o.source_head_id
-			WHERE o.prompt_id=? AND l.available=1 AND l.kind='provider_archive' AND sh.available=1 AND sh.complete_offset=sh.size AND sh.current_sha256<>'')`, promptID, promptID).Scan(&exactProviderLive, &exactProviderArchive); err != nil {
-		return fmt.Errorf("read prompt retrieval availability: %w", err)
-	}
-	switch {
-	case exactProviderLive:
-		value.PreferredRetrievalSource = "provider-live"
-	case exactProviderArchive:
-		value.PreferredRetrievalSource = "provider-archive"
-	case value.Availability.Vault > 0:
-		value.PreferredRetrievalSource = "vault"
-	default:
-		value.PreferredRetrievalSource = "unavailable"
-	}
 	return nil
 }
 
@@ -782,7 +857,7 @@ func assistantIndexWarnings(query PromptQuery) []string {
 }
 
 func newPromptCursor(kind string, query PromptQuery, generation int64, search string, fts bool, result PromptResult) promptCursor {
-	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Role: query.Role, AssistantConsent: cursorAssistantConsent(query), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
+	cursor := promptCursor{Version: 1, Kind: kind, Generation: generation, Provider: string(query.Provider), Role: query.Role, AssistantConsent: cursorAssistantConsent(query), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until), CWD: query.CWD, Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: normalizedThreadKindFilter(query.ThreadKind), PromptKinds: promptKindsCursorValue(query.PromptKinds), ExcludeControl: query.ExcludeControl, Query: search, FTSQuery: fts, Limit: query.Limit, PromptID: result.PromptID}
 	if result.Timestamp == nil {
 		cursor.Unknown = true
 	} else {
@@ -808,7 +883,7 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 	if cursor.Generation != generation {
 		return promptCursor{}, errors.New("history cursor is stale because the index generation changed")
 	}
-	if cursor.Provider != string(query.Provider) || cursor.Role != query.Role || cursor.AssistantConsent != cursorAssistantConsent(query) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.Query != search || cursor.FTSQuery != fts {
+	if cursor.Provider != string(query.Provider) || cursor.Role != query.Role || cursor.AssistantConsent != cursorAssistantConsent(query) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) || cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Branch != query.Branch || cursor.Source != query.Source || cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) || cursor.PromptKinds != promptKindsCursorValue(query.PromptKinds) || cursor.ExcludeControl != query.ExcludeControl || cursor.Query != search || cursor.FTSQuery != fts {
 		return promptCursor{}, errors.New("history cursor does not match the requested filters or query mode")
 	}
 	if cursor.Limit < 1 || cursor.Limit > 500 || cursor.PromptID == "" || (cursor.Unknown && cursor.Timestamp != "") || (!cursor.Unknown && !validCatalogTimestamp(cursor.Timestamp)) {
@@ -820,6 +895,15 @@ func preparePromptCursor(value, kind string, query PromptQuery, generation int64
 		}
 	}
 	return cursor, nil
+}
+
+func promptKindsCursorValue(kinds []history.PromptKind) string {
+	values := make([]string, len(kinds))
+	for index, kind := range kinds {
+		values[index] = string(kind)
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 func cursorAssistantConsent(query PromptQuery) bool {

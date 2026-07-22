@@ -54,20 +54,22 @@ type Issue struct {
 
 // Summary reports aggregate work without emitting one object per source.
 type Summary struct {
-	ScannedSources   int           `json:"scanned_sources"`
-	IndexedSources   int           `json:"indexed_sources"`
-	NewSources       int           `json:"new_sources"`
-	SkippedSources   int           `json:"skipped_sources"`
-	AppendedSources  int           `json:"appended_sources"`
-	RewrittenSources int           `json:"rewritten_sources"`
-	MissingSources   int           `json:"missing_sources"`
-	IndexedPrompts   int           `json:"indexed_prompts"`
-	OversizedPrompts int           `json:"oversized_prompts"`
-	ErrorCount       int           `json:"error_count"`
-	Errors           []Issue       `json:"errors"`
-	Warnings         []Issue       `json:"warnings"`
-	Full             bool          `json:"full"`
-	Duration         time.Duration `json:"-"`
+	ScannedSources      int                        `json:"scanned_sources"`
+	IndexedSources      int                        `json:"indexed_sources"`
+	NewSources          int                        `json:"new_sources"`
+	SkippedSources      int                        `json:"skipped_sources"`
+	AppendedSources     int                        `json:"appended_sources"`
+	RewrittenSources    int                        `json:"rewritten_sources"`
+	MissingSources      int                        `json:"missing_sources"`
+	IndexedPrompts      int                        `json:"indexed_prompts"`
+	OversizedPrompts    int                        `json:"oversized_prompts"`
+	ReclassifiedPrompts int                        `json:"reclassified_prompts"`
+	PromptKindCounts    map[history.PromptKind]int `json:"prompt_kind_counts"`
+	ErrorCount          int                        `json:"error_count"`
+	Errors              []Issue                    `json:"errors"`
+	Warnings            []Issue                    `json:"warnings"`
+	Full                bool                       `json:"full"`
+	Duration            time.Duration              `json:"-"`
 }
 
 // PartialError means independent sources failed after successful sources were
@@ -90,7 +92,7 @@ const (
 // Index discovers and reconciles selected provider sources.
 func Index(options Options) (Summary, error) {
 	started := time.Now()
-	summary := Summary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full}
+	summary := Summary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
 	if options.Store == nil {
 		return summary, errors.New("history store is required")
 	}
@@ -158,6 +160,14 @@ func Index(options Options) (Summary, error) {
 			}, false)
 		}
 		for _, prompt := range indexed.Prompts {
+			kind := prompt.PromptKind
+			if kind == "" {
+				kind = history.ClassifyPromptKind(prompt.CleanText, prompt.Role, prompt.Classification)
+			}
+			summary.PromptKindCounts[kind]++
+			if isReclassifiedPrompt(prompt, kind) {
+				summary.ReclassifiedPrompts++
+			}
 			if prompt.Oversized {
 				summary.OversizedPrompts++
 			}
@@ -218,6 +228,18 @@ func Index(options Options) (Summary, error) {
 		}
 	}
 	return summary, nil
+}
+
+func isReclassifiedPrompt(prompt history.Prompt, kind history.PromptKind) bool {
+	if prompt.Role != history.RoleUser || prompt.Classification != history.ClassificationHuman {
+		return false
+	}
+	switch kind {
+	case history.PromptKindDelegation, history.PromptKindAgentMessage, history.PromptKindCommand, history.PromptKindControl:
+		return true
+	default:
+		return false
+	}
 }
 
 func reconcileMoves(database *historystore.Store, files []discover.SourceFile, checkpoints map[string]historystore.Checkpoint, discoveryFailed map[history.Provider]bool) error {

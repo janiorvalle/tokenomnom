@@ -32,13 +32,13 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
-- Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets, then retrieve selected evidence with `history show`.
+- Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets and compact provenance, then retrieve selected evidence with `history show`. Add `--all-occurrences` only when every bounded location is needed.
 - Agent proposal/claim search: first check `doctor.data.history.index_assistant_enabled` and `assistant_indexed`, then use `history search "literal phrase" --role assistant --format json`; report the not-indexed warning honestly.
 - User-initiated transcript search: check `coverage.thread_kind.unknown` first. Use `--root-only` only when the unknown share is acceptably small for the question; otherwise search all thread kinds and inspect thread evidence and relationships.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
-- Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; use `--include-text` only when complete clean prompts are necessary.
-- Corpus statistics: `tokenomnom history stats --group-by provider --format json`; never infer conclusions from counts without checking coverage and warnings.
-- Broad corpus analysis: `tokenomnom history sample --strategy stratified --group-by month,repo --count 25 --format json`; use `--cwd` or `--group-by month,cwd` when cross-provider completeness matters, and use a different `--seed` only when another deterministic sample is needed.
+- Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; the default kind is `human`. Use `--prompt-kind` for complete provider envelopes, and `--include-text` only when complete clean prompts are necessary.
+- Corpus statistics: `tokenomnom history stats --group-by provider --top 20 --format json`; inspect `groups_truncated` and `other`, and never infer conclusions from counts without checking coverage and warnings.
+- Broad corpus analysis: `tokenomnom history sample --strategy stratified --group-by month,repo --count 25 --min-length 40 --one-per-session --format json`; use `--cwd` or `--group-by month,cwd` when cross-provider completeness matters, and use a different `--seed` only when another deterministic sample is needed.
 
 Provider, model, and explicit date filters are available on report commands.
 
