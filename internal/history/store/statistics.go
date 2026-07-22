@@ -329,11 +329,12 @@ func (s *Store) statisticsRemainderSessions(cte string, args []any, dimensions, 
 		tuples = append(tuples, "("+strings.Join(parts, " AND ")+")")
 	}
 	where := "NOT (" + strings.Join(tuples, " OR ") + ")"
+	from := "FROM selected_sessions s LEFT JOIN available_prompts p ON p.session_id=s.id"
 	if sessionsFollowPrompts {
-		where += " AND p.id IS NOT NULL"
+		from = "FROM available_prompts p JOIN selected_sessions s ON s.id=p.session_id"
 	}
 	var count int
-	statement := cte + ` SELECT COUNT(DISTINCT s.id) FROM selected_sessions s LEFT JOIN available_prompts p ON p.session_id=s.id WHERE ` + where
+	statement := cte + ` SELECT COUNT(DISTINCT s.id) ` + from + ` WHERE ` + where
 	if err := s.runner.QueryRow(statement, queryArgs...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count history statistics remainder sessions: %w", err)
 	}
@@ -399,17 +400,18 @@ func statisticsDimensions(requested []string) ([]string, []string, error) {
 func (s *Store) statisticsGroups(cte string, args []any, dimensions, expressions []string, sessionsFollowPrompts bool) ([]StatisticsGroup, error) {
 	selectExpressions := strings.Join(expressions, ",")
 	sessionCountExpression := "COUNT(DISTINCT s.id)"
+	from := "FROM selected_sessions s LEFT JOIN available_prompts p ON p.session_id=s.id"
 	if sessionsFollowPrompts {
-		sessionCountExpression = "COUNT(DISTINCT CASE WHEN p.id IS NOT NULL THEN s.id END)"
+		// Drive prompt-scoped groups from the materialized prompt set. Starting
+		// from sessions makes SQLite rescan that CTE once per session because a
+		// materialized CTE has no session_id index.
+		from = "FROM available_prompts p JOIN selected_sessions s ON s.id=p.session_id"
 	}
 	statement := cte + ` SELECT ` + selectExpressions + `,
 		` + sessionCountExpression + `,COUNT(DISTINCT p.id),COALESCE(SUM(p.available_occurrences),0),
 		COALESCE(SUM(length(CAST(p.clean_text AS BLOB))),0)
-		FROM selected_sessions s LEFT JOIN available_prompts p ON p.session_id=s.id
+		` + from + `
 		GROUP BY ` + selectExpressions
-	if sessionsFollowPrompts {
-		statement += ` HAVING COUNT(p.id)>0`
-	}
 	statement += ` ORDER BY ` + selectExpressions
 	rows, err := s.runner.Query(statement, args...)
 	if err != nil {
