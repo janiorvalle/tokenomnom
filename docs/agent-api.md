@@ -247,6 +247,8 @@ never inferred from cwd.
 YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--branch NAME]
 [--source any|provider|provider-live|provider-archive|vault] [--limit N]
 [--cursor OPAQUE] [--include-text] [--fts-query] [--role user|assistant|any]
+[--prompt-kind human|delegation|agent_message|command|control|unknown[,KIND...]]
+[--exclude-control] [--all-occurrences]
 [--root-only | --thread-kind root|subagent|unknown|all] --format json`
 
 The default limit is 50 and the maximum is 500. Default search quotes the
@@ -260,10 +262,11 @@ warning; assistant hits remain empty rather than implying the agent never said
 something.
 
 `data.hits` is always an array. Each logical-prompt hit contains `prompt_id`,
-`session_id`, `role`, provider and session metadata, nullable timestamp/repository/
+`session_id`, `role`, `prompt_kind`, provider and session metadata, nullable timestamp/repository/
 branch, raw FTS5 `rank` with `rank_direction: "lower_is_better"`, a bounded
-highlighted `snippet`, occurrence and stable source/snapshot IDs, bounded
-`occurrences`, availability, and preferred retrieval source. `text` is present
+highlighted `snippet`, exact occurrence counts, availability, preferred
+retrieval source, and `preferred_location`. Stable source/snapshot ID and
+bounded `occurrences` arrays are included only with `--all-occurrences`. `text` is present
 only with `--include-text`. Rank is not a normalized confidence score.
 `data.page` contains `limit`, `has_more`, and `next_cursor`. Search cursors bind
 the exact query, literal/raw mode, filters, rank bits, stable tie-breakers, and
@@ -303,11 +306,24 @@ adds at most 20 provenance objects per logical prompt; total occurrence counts
 remain exact and truncation is explicit. Its `data.page`, `coverage`, cursor,
 warning, and optional-text contracts match search.
 
+The default user corpus is `prompt_kind: "human"`. Complete, versioned provider
+envelopes may instead be `delegation`, `agent_message`, `command`, `control`,
+or `unknown`. `--prompt-kind` accepts a comma-separated explicit selection;
+`--exclude-control` composes with it. Prompt-kind and control filters are bound
+into cursors.
+
 ## History Sample
 
 `tokenomnom history sample [--unit prompt|session] [--strategy
 random|stratified] [--group-by month,cwd,repo,thread-kind] [--count N] [--seed
 STRING] [shared filters] [--include-text] --format json`
+
+Prompt samples also accept `--min-length N`, `--one-per-session`, and
+`--all-occurrences`. Minimum length uses cleaned Unicode characters. These
+filters compose with the seed, grouping, and shared prompt filters without
+changing deterministic order.
+Session samples reject prompt-kind, minimum-length, one-per-session, control,
+and occurrence-expansion flags rather than silently ignoring them.
 
 The default unit is `prompt`, the default count is 25, and the maximum is 100.
 Without grouping, the default strategy is deterministic random sampling; with
@@ -339,7 +355,7 @@ warnings without scanning excluded rows.
 
 ## History Stats
 
-`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday|hour|role]
+`tokenomnom history stats [shared filters] [--group-by provider|repo|cwd|thread-kind|weekday|hour|role] [--top N]
 --format json` returns SQL-computed, text-free aggregates labeled with
 `scope: "searchable_prompt_corpus"`: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
@@ -348,7 +364,11 @@ vault availability; index bytes; and stale/error/oversized counts.
 `data.role_counts` discloses text-free user and assistant logical-prompt,
 occurrence, and byte totals for the consented corpus.
 `data.groups` contains dimension `values` and session/prompt/occurrence/length
-aggregates. Repository/CWD groups always include an explicit `unknown` group.
+aggregates. Groups sort by logical prompt count and default to the top 20
+(maximum 100). `groups_truncated` and the aggregate `other` object explicitly
+disclose any remainder. Before top-N truncation, repository/CWD group sets
+include an explicit `unknown` group; a zero-count synthetic unknown can be
+folded into `other`, while observed unknown groups are retained when capacity allows.
 Weekday/hour grouping remains UTC-normalized; RFC 3339 coverage timestamps use
 the effective presentation timezone described below.
 Coverage and warnings use the same provider-uneven metadata rules as search.

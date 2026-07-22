@@ -64,6 +64,65 @@ func TestSampleDeterministicSeedAndLogicalPromptUnits(t *testing.T) {
 	}
 }
 
+func TestSampleMinLengthAndOnePerSessionComposeDeterministically(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	firstSource := sourceRef("/provider/sample-filter-first.jsonl", history.LocationProviderLive)
+	first := extraction("native:sample-filter-first", "sample-filter-first", firstSource,
+		prompt("native:short", "short", "no", 1),
+		prompt("native:first", "first", "long enough first", 2),
+		prompt("native:second", "second", "long enough second", 3))
+	if _, err := database.ApplySource(first, head(firstSource, "sample-filter-first", 100, 3), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	secondSource := sourceRef("/provider/sample-filter-second.jsonl", history.LocationProviderLive)
+	if _, err := database.ApplySource(extraction("native:sample-filter-second", "sample-filter-second", secondSource,
+		prompt("native:third", "third", "long enough third", 1)), head(secondSource, "sample-filter-second", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	query := SampleQuery{Count: 10, Seed: "filters", MinLength: 10, OnePerSession: true}
+	firstRun, err := database.Sample(query)
+	secondRun, secondErr := database.Sample(query)
+	if err != nil || secondErr != nil || len(firstRun.Items) != 2 || len(secondRun.Items) != 2 {
+		t.Fatalf("filtered samples first=%+v second=%+v err=%v/%v", firstRun, secondRun, err, secondErr)
+	}
+	seenSessions := map[string]bool{}
+	for index := range firstRun.Items {
+		prompt := firstRun.Items[index].Prompt
+		if prompt == nil || len([]rune(prompt.Snippet)) < 10 || seenSessions[prompt.SessionID] || prompt.PromptID != secondRun.Items[index].Prompt.PromptID {
+			t.Fatalf("sample item %d first=%+v second=%+v", index, firstRun.Items[index], secondRun.Items[index])
+		}
+		seenSessions[prompt.SessionID] = true
+	}
+}
+
+func TestSampleOnePerSessionFillsAcrossExtraStrata(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	sharedSource := sourceRef("/provider/one-per-shared.jsonl", history.LocationProviderLive)
+	january := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	february := time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC)
+	first := prompt("native:one-per-jan", "one-per-jan", "january prompt", 1)
+	second := prompt("native:one-per-feb", "one-per-feb", "february prompt", 2)
+	first.Timestamp, second.Timestamp = &january, &february
+	if _, err := database.ApplySource(extraction("native:one-per-shared", "one-per-shared", sharedSource, first, second), head(sharedSource, "one-per-shared", 100, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	marchSource := sourceRef("/provider/one-per-march.jsonl", history.LocationProviderLive)
+	march := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	third := prompt("native:one-per-mar", "one-per-mar", "march prompt", 1)
+	third.Timestamp = &march
+	if _, err := database.ApplySource(extraction("native:one-per-march", "one-per-march", marchSource, third), head(marchSource, "one-per-march", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 20; index++ {
+		result, err := database.Sample(SampleQuery{Count: 2, Seed: fmt.Sprintf("strata-%d", index), GroupBy: []string{"month"}, OnePerSession: true})
+		if err != nil || len(result.Items) != 2 || result.Items[0].Prompt.SessionID == result.Items[1].Prompt.SessionID {
+			t.Fatalf("seed %d one-per-session err=%v result=%+v", index, err, result)
+		}
+	}
+}
+
 func TestSampleStratifiedAllocationUnknownsAndSessionMonth(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()
@@ -277,6 +336,35 @@ func BenchmarkSampleSelectiveFilters(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkStatsSingleAndComposite(b *testing.B) {
+	database, err := Open(b.TempDir() + "/" + DatabaseName)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer database.Close()
+	for index := 0; index < 1000; index++ {
+		source := sourceRef(fmt.Sprintf("/provider/stats-benchmark-%d.jsonl", index), history.LocationProviderLive)
+		when := time.Date(2026, time.Month(index%12+1), index%27+1, index%24, 0, 0, 0, time.UTC)
+		currentPrompt := prompt(fmt.Sprintf("native:stats-p-%d", index), fmt.Sprintf("stats-p-%d", index), "benchmark statistics prompt", 1)
+		currentPrompt.Timestamp = &when
+		value := extraction(fmt.Sprintf("native:stats-%d", index), fmt.Sprintf("stats-%d", index), source, currentPrompt)
+		value.Session.RepositoryName = fmt.Sprintf("repo-%02d", index%25)
+		value.Session.FirstTimestamp, value.Session.LastTimestamp = &when, &when
+		if _, err := database.ApplySource(value, head(source, fmt.Sprintf("stats-hash-%d", index), 10, 1), ApplyReplace); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for name, groups := range map[string][]string{"single": {"repo"}, "composite": {"repo", "weekday"}} {
+		b.Run(name, func(b *testing.B) {
+			for range b.N {
+				if _, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, GroupBy: groups}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func timePointer(value time.Time) *time.Time { return &value }

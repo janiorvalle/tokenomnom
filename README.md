@@ -109,12 +109,13 @@ once, explicitly, then query it:
 tokenomnom history index
 tokenomnom history search "do not implement" --since 2026-07-01
 tokenomnom history search "delegated task" --thread-kind subagent
+tokenomnom history search "worker status" --prompt-kind control
 tokenomnom history search "proposed approach" --role assistant
 tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
-tokenomnom history stats --group-by provider
-tokenomnom history sample --group-by month,repo --count 25
+tokenomnom history stats --group-by provider --top 20
+tokenomnom history sample --group-by month,repo --count 25 --min-length 40 --one-per-session
 tokenomnom history status
 tokenomnom history purge
 ```
@@ -130,6 +131,13 @@ enables raw FTS5 syntax. Results are bounded snippets unless you ask for
 `--include-text` or `history show`, and raw retrieval revalidates the exact
 indexed bytes before returning them.
 
+Complete, versioned provider envelopes classify user-role records as `human`,
+`delegation`, `agent_message`, `command`, `control`, or `unknown`. Human prompts
+remain the default corpus. Use `--prompt-kind` for an explicit comma-separated
+selection or `--exclude-control` when combining kinds. Search, prompt, and
+sample JSON use compact provenance by default: exact occurrence counts plus a
+preferred location. `--all-occurrences` opts into bounded occurrence arrays.
+
 A few honesty rules are built in. Repository and branch filters are complete
 for Codex but partial for Claude Code — use `--cwd` when you need
 cross-provider completeness, and read the JSON coverage warnings. Root versus
@@ -141,6 +149,8 @@ deterministic rules; when the evidence is missing, sessions stay explicitly
 same corpus, same sample. It walks indexed SHA-256 keys instead of sorting
 the corpus randomly, defaults to 25 logical prompts, caps at 100, and
 stratifies when you pass `--group-by month,repo,thread-kind`.
+`--min-length` filters by cleaned Unicode characters and `--one-per-session`
+prevents one long conversation from dominating a prompt sample.
 
 On privacy: indexing never runs implicitly from usage reports or normal
 syncs, and user prompts are the only corpus by default. Setting

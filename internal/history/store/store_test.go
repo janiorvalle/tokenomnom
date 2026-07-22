@@ -170,6 +170,9 @@ func TestFutureSchemaVersionIsRefused(t *testing.T) {
 	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "unsupported history store schema 99") {
 		t.Fatalf("Open error = %v", err)
 	}
+	if _, err := OpenReadOnly(path); err == nil || !strings.Contains(err.Error(), "upgrade tokenomnom") {
+		t.Fatalf("OpenReadOnly error = %v", err)
+	}
 }
 
 func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
@@ -184,9 +187,14 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := database.db.Exec(`DROP TRIGGER sample_strata_session_delete; DROP TRIGGER sample_strata_prompt_delete; DROP TRIGGER sample_strata_group_insert; DROP TRIGGER sample_strata_group_delete; DROP TABLE sample_strata; DROP TABLE sample_groups;
+		DROP INDEX prompts_role_kind_timestamp_idx;
 		DROP INDEX sessions_sample_key_idx; DROP INDEX sessions_sample_month_idx; DROP INDEX sessions_sample_repo_idx; DROP INDEX sessions_sample_thread_idx; DROP INDEX prompts_sample_key_idx; DROP INDEX prompts_session_sample_key_idx;
 		ALTER TABLE sessions DROP COLUMN sample_key;
 		ALTER TABLE prompts DROP COLUMN sample_key;
+		ALTER TABLE prompts DROP COLUMN prompt_kind_version;
+		ALTER TABLE prompts DROP COLUMN prompt_kind;
+		ALTER TABLE occurrences DROP COLUMN prompt_kind_version;
+		ALTER TABLE occurrences DROP COLUMN prompt_kind;
 		DROP TABLE vault_bundle_state; DROP TABLE vault_prompt_tombstones; DROP TABLE session_thread_supports; DROP TABLE session_relation_supports; DROP TRIGGER session_relations_parent_delete; DROP TABLE session_relations;
 		ALTER TABLE sessions DROP COLUMN thread_evidence;
 		ALTER TABLE sessions DROP COLUMN thread_confidence;
@@ -255,7 +263,12 @@ func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`ALTER TABLE sessions DROP COLUMN repository_rule_version;
+	if _, err := database.db.Exec(`DROP INDEX prompts_role_kind_timestamp_idx;
+		ALTER TABLE prompts DROP COLUMN prompt_kind_version;
+		ALTER TABLE prompts DROP COLUMN prompt_kind;
+		ALTER TABLE occurrences DROP COLUMN prompt_kind_version;
+		ALTER TABLE occurrences DROP COLUMN prompt_kind;
+		ALTER TABLE sessions DROP COLUMN repository_rule_version;
 		UPDATE meta SET value='8' WHERE key='schema_version'`); err != nil {
 		t.Fatal(err)
 	}
@@ -646,34 +659,6 @@ func TestLockFailsFastAndPreservesNonContentionErrors(t *testing.T) {
 	}
 	if _, err := Lock(filepath.Join(t.TempDir(), "bad\x00path")); err == nil || errors.Is(err, ErrStoreInUse) {
 		t.Fatalf("non-contention lock error = %v", err)
-	}
-}
-
-func TestLockSelfHealsDeadAndReusedPIDOwners(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		pid       int
-		startHint string
-	}{
-		{name: "dead", pid: 1 << 30, startHint: "dead-process"},
-		{name: "reused", pid: os.Getpid(), startHint: "not-the-current-process-start"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), DatabaseName)
-			lockPath := path + ".lock"
-			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf(`{"pid":%d,"start_hint":%q,"token":"stale","acquired":"2026-07-21T00:00:00Z"}`+"\n", test.pid, test.startHint)), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			release, err := Lock(path)
-			if err != nil {
-				t.Fatalf("heal stale lock: %v", err)
-			}
-			release()
-			owner, err := readLockOwner(lockPath)
-			if err != nil || owner.PID != os.Getpid() || owner.Token == "stale" {
-				t.Fatalf("replacement owner=%+v err=%v", owner, err)
-			}
-		})
 	}
 }
 
@@ -1440,6 +1425,10 @@ func TestIdentityPromotionMergesAnExistingNativeSession(t *testing.T) {
 	}
 	if cwd != "/native" || branch != "native-branch" || repository != "https://example.invalid/native.git" || threadKind != string(history.ThreadSubagent) || parent != "parent" || first != firstTime.Format(time.RFC3339Nano) || last != lastTime.Format(time.RFC3339Nano) {
 		t.Fatalf("merged metadata = cwd=%q branch=%q repo=%q thread=%q parent=%q range=%q..%q", cwd, branch, repository, threadKind, parent, first, last)
+	}
+	var nonHumanOccurrences int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM occurrences WHERE prompt_kind<>'human' OR prompt_kind_version<>?`, history.PromptKindVersion).Scan(&nonHumanOccurrences); err != nil || nonHumanOccurrences != 0 {
+		t.Fatalf("merged prompt kinds count=%d err=%v", nonHumanOccurrences, err)
 	}
 }
 

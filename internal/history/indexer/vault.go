@@ -34,27 +34,29 @@ type VaultOptions struct {
 
 // VaultSummary reports archive-atomic backfill work.
 type VaultSummary struct {
-	SelectedBundles      int           `json:"selected_bundles"`
-	SelectedVersions     int           `json:"selected_versions"`
-	TraversedBundles     int           `json:"traversed_bundles"`
-	IndexedBundles       int           `json:"indexed_bundles"`
-	SkippedBundles       int           `json:"skipped_bundles"`
-	IndexedVersions      int           `json:"indexed_versions"`
-	IndexedPrompts       int           `json:"indexed_prompts"`
-	OversizedPrompts     int           `json:"oversized_prompts"`
-	BrokenSkippedBundles int           `json:"broken_skipped_bundles"`
-	ErrorCount           int           `json:"error_count"`
-	Errors               []Issue       `json:"errors"`
-	Warnings             []Issue       `json:"warnings"`
-	Full                 bool          `json:"full"`
-	Duration             time.Duration `json:"-"`
+	SelectedBundles      int                        `json:"selected_bundles"`
+	SelectedVersions     int                        `json:"selected_versions"`
+	TraversedBundles     int                        `json:"traversed_bundles"`
+	IndexedBundles       int                        `json:"indexed_bundles"`
+	SkippedBundles       int                        `json:"skipped_bundles"`
+	IndexedVersions      int                        `json:"indexed_versions"`
+	IndexedPrompts       int                        `json:"indexed_prompts"`
+	OversizedPrompts     int                        `json:"oversized_prompts"`
+	ReclassifiedPrompts  int                        `json:"reclassified_prompts"`
+	PromptKindCounts     map[history.PromptKind]int `json:"prompt_kind_counts"`
+	BrokenSkippedBundles int                        `json:"broken_skipped_bundles"`
+	ErrorCount           int                        `json:"error_count"`
+	Errors               []Issue                    `json:"errors"`
+	Warnings             []Issue                    `json:"warnings"`
+	Full                 bool                       `json:"full"`
+	Duration             time.Duration              `json:"-"`
 }
 
 // IndexVault verifies and reconciles every selected manifest version. Each
 // bundle is decompressed once and committed in one history transaction.
 func IndexVault(options VaultOptions) (VaultSummary, error) {
 	started := time.Now()
-	summary := VaultSummary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full}
+	summary := VaultSummary{Errors: []Issue{}, Warnings: []Issue{}, Full: options.Full, PromptKindCounts: map[history.PromptKind]int{}}
 	if options.Vault == nil || (options.Store == nil && options.StorePath == "") {
 		return summary, errors.New("history store path and vault are required")
 	}
@@ -137,6 +139,8 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 		}
 		defer writer.Rollback()
 		bundleOversized := 0
+		bundleReclassified := 0
+		bundleKindCounts := map[history.PromptKind]int{}
 		for {
 			member, err := bundle.Next()
 			if errors.Is(err, io.EOF) {
@@ -165,6 +169,14 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 				}, false)
 			}
 			for _, prompt := range extraction.Prompts {
+				kind := prompt.PromptKind
+				if kind == "" {
+					kind = history.ClassifyPromptKind(prompt.CleanText, prompt.Role, prompt.Classification)
+				}
+				bundleKindCounts[kind]++
+				if isReclassifiedPrompt(prompt, kind) {
+					bundleReclassified++
+				}
 				if prompt.Oversized {
 					bundleOversized++
 				}
@@ -179,6 +191,10 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 			summary.IndexedVersions += applied.Snapshots
 			summary.IndexedPrompts += applied.Prompts
 			summary.OversizedPrompts += bundleOversized
+			summary.ReclassifiedPrompts += bundleReclassified
+			for kind, count := range bundleKindCounts {
+				summary.PromptKindCounts[kind] += count
+			}
 		} else {
 			summary.SkippedBundles++
 		}

@@ -24,11 +24,14 @@ const (
 // SampleQuery selects a bounded deterministic sample of logical units.
 type SampleQuery struct {
 	PromptQuery
-	Unit     string
-	Strategy string
-	GroupBy  []string
-	Count    int
-	Seed     string
+	Unit               string
+	Strategy           string
+	GroupBy            []string
+	Count              int
+	Seed               string
+	MinLength          int
+	OnePerSession      bool
+	excludedSessionIDs []string
 }
 
 // SampleCoverage reports metadata and date coverage in the returned sample.
@@ -78,9 +81,10 @@ type sampleState struct {
 }
 
 type sampledID struct {
-	publicID string
-	key      []byte
-	group    sampleGroup
+	publicID  string
+	key       []byte
+	sessionID string
+	group     sampleGroup
 }
 
 type seededSampleState struct {
@@ -404,11 +408,17 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	if query.Unit != SampleUnitPrompt && query.Unit != SampleUnitSession {
 		return SampleResult{}, fmt.Errorf("invalid history sample unit %q", query.Unit)
 	}
+	if query.Unit == SampleUnitSession && (query.MinLength != 0 || query.OnePerSession || len(query.PromptKinds) > 0 || query.ExcludeControl || query.AllOccurrences) {
+		return SampleResult{}, errors.New("history session sampling does not support prompt-only filters or occurrence expansion")
+	}
 	if query.Count == 0 {
 		query.Count = 25
 	}
 	if query.Count < 1 || query.Count > 100 {
 		return SampleResult{}, errors.New("history sample count must be between 1 and 100")
+	}
+	if query.MinLength < 0 {
+		return SampleResult{}, errors.New("history sample minimum length must be zero or greater")
 	}
 	if query.Seed == "" {
 		query.Seed = "tokenomnom"
@@ -454,6 +464,21 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 		selectedGroups = []sampleGroup{{values: map[string]string{}, key: ""}}
 	}
 	ids := make([]sampledID, 0, query.Count)
+	seenSessions := map[string]bool{}
+	accept := func(value sampledID) (bool, error) {
+		if !query.OnePerSession || query.Unit == SampleUnitSession {
+			ids = append(ids, value)
+			return true, nil
+		}
+		sessionID := value.sessionID
+		if seenSessions[sessionID] {
+			return false, nil
+		}
+		seenSessions[sessionID] = true
+		query.excludedSessionIDs = append(query.excludedSessionIDs, sessionID)
+		ids = append(ids, value)
+		return true, nil
+	}
 	states := make([]sampleState, 0, len(selectedGroups))
 	if query.Strategy == SampleStrategyStratified {
 		seeded := make([]seededSampleState, 0, len(selectedGroups))
@@ -468,12 +493,38 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 			}
 		}
 		if len(seeded) > query.Count {
-			seeded = seededStatesAroundPivot(seeded, pivot, query.Count)
+			selectedCount := query.Count
+			if query.OnePerSession {
+				selectedCount = len(seeded)
+			}
+			seeded = seededStatesAroundPivot(seeded, pivot, selectedCount)
 		}
-		sort.Slice(seeded, func(i, j int) bool { return seeded[i].state.group.key < seeded[j].state.group.key })
+		if !query.OnePerSession {
+			sort.Slice(seeded, func(i, j int) bool { return seeded[i].state.group.key < seeded[j].state.group.key })
+		}
 		for _, value := range seeded {
-			ids = append(ids, value.first)
-			states = append(states, value.state)
+			state := value.state
+			accepted, err := accept(value.first)
+			if err != nil {
+				return SampleResult{}, err
+			}
+			for query.OnePerSession && !accepted {
+				next, found, err := s.nextSampleID(query, pivot, &state)
+				if err != nil {
+					return SampleResult{}, err
+				}
+				if !found {
+					break
+				}
+				accepted, err = accept(next)
+				if err != nil {
+					return SampleResult{}, err
+				}
+			}
+			states = append(states, state)
+			if len(ids) == query.Count {
+				break
+			}
 		}
 	} else {
 		states = append(states, sampleState{group: selectedGroups[0]})
@@ -489,8 +540,11 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 				return SampleResult{}, err
 			}
 			if found {
-				ids = append(ids, value)
-				progress = true
+				accepted, err := accept(value)
+				if err != nil {
+					return SampleResult{}, err
+				}
+				progress = progress || accepted || found
 			}
 		}
 		if !progress {
@@ -519,7 +573,7 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	for _, id := range ids {
 		item := SampleItem{Unit: query.Unit, Groups: id.group.values}
 		if query.Unit == SampleUnitPrompt {
-			prompt, err := s.GetPrompt(id.publicID)
+			prompt, err := s.getPrompt(id.publicID, query.AllOccurrences)
 			if err != nil {
 				return SampleResult{}, err
 			}
@@ -730,9 +784,9 @@ func (s *Store) nextSampleID(query SampleQuery, pivot []byte, state *sampleState
 	}
 	where, whereArgs, from := sampleBaseQuery(query)
 	joinArgs := []any{}
-	keyColumn, idColumn := "p.sample_key", "p.public_id"
+	keyColumn, idColumn, sessionColumn := "p.sample_key", "p.public_id", "s.public_id"
 	if query.Unit == SampleUnitSession {
-		keyColumn, idColumn = "s.sample_key", "s.public_id"
+		keyColumn, idColumn, sessionColumn = "s.sample_key", "s.public_id", "s.public_id"
 	}
 	if state.group.encoded != "" {
 		unitID := "p.id"
@@ -780,9 +834,9 @@ func (s *Store) nextSampleID(query SampleQuery, pivot []byte, state *sampleState
 			args = append(args, pivot)
 		}
 	}
-	var id string
+	var id, sessionID string
 	var key []byte
-	err := s.runner.QueryRow(`SELECT `+idColumn+`,`+keyColumn+` FROM `+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY `+keyColumn+`,`+idColumn+` LIMIT 1`, args...).Scan(&id, &key)
+	err := s.runner.QueryRow(`SELECT `+idColumn+`,`+keyColumn+`,`+sessionColumn+` FROM `+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY `+keyColumn+`,`+idColumn+` LIMIT 1`, args...).Scan(&id, &key, &sessionID)
 	if err == sql.ErrNoRows && !state.wrapped {
 		state.wrapped, state.lastKey, state.lastID = true, nil, ""
 		return s.nextSampleID(query, pivot, state)
@@ -795,7 +849,7 @@ func (s *Store) nextSampleID(query SampleQuery, pivot []byte, state *sampleState
 		return sampledID{}, false, fmt.Errorf("select history sample unit: %w", err)
 	}
 	state.lastKey, state.lastID = append(state.lastKey[:0], key...), id
-	return sampledID{publicID: id, key: append([]byte(nil), key...), group: state.group}, true, nil
+	return sampledID{publicID: id, key: append([]byte(nil), key...), sessionID: sessionID, group: state.group}, true, nil
 }
 
 type sampleFilterCondition struct {
@@ -867,9 +921,23 @@ func sampleBaseQuery(query SampleQuery) ([]string, []any, string) {
 		catalog := CatalogQuery{Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
 			Repo: query.Repo, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind}
 		where, args := catalogWhere(catalog, true)
+		where = append(where, `EXISTS(SELECT 1 FROM prompts p JOIN occurrences o ON o.prompt_id=p.id JOIN locations l ON l.id=o.location_id
+			WHERE p.session_id=s.id AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND l.available=1)`)
 		return where, args, "sessions s"
 	}
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
+	if query.MinLength > 0 {
+		where = append(where, "length(p.clean_text)>=?")
+		args = append(args, query.MinLength)
+	}
+	if query.OnePerSession && len(query.excludedSessionIDs) > 0 {
+		placeholders := make([]string, len(query.excludedSessionIDs))
+		for index, sessionID := range query.excludedSessionIDs {
+			placeholders[index] = "?"
+			args = append(args, sessionID)
+		}
+		where = append(where, "s.public_id NOT IN ("+strings.Join(placeholders, ",")+")")
+	}
 	return where, args, "prompts p JOIN sessions s ON s.id=p.session_id"
 }
 
@@ -952,11 +1020,11 @@ func sampleWarnings(query SampleQuery) []string {
 func (s *Store) sampleSessionText(sessionID string, pivot []byte) (*string, error) {
 	var value string
 	err := s.runner.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
-		WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key>=?
+		WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND p.occurrence_count>0 AND p.sample_key>=?
 		ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	if err == sql.ErrNoRows {
 		err = s.runner.QueryRow(`SELECT p.clean_text FROM prompts p JOIN sessions s ON s.id=p.session_id
-			WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.occurrence_count>0 AND p.sample_key<?
+			WHERE s.public_id=? AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND p.occurrence_count>0 AND p.sample_key<?
 			ORDER BY p.sample_key,p.public_id LIMIT 1`, sessionID, pivot).Scan(&value)
 	}
 	if err == sql.ErrNoRows {

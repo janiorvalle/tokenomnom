@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     role TEXT NOT NULL DEFAULT 'unknown',
     clean_text TEXT NOT NULL DEFAULT '',
     classification TEXT NOT NULL DEFAULT 'unknown',
+	prompt_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (prompt_kind IN ('human','delegation','agent_message','command','control','unknown')),
+	prompt_kind_version INTEGER NOT NULL DEFAULT 0,
     searchable INTEGER NOT NULL DEFAULT 0 CHECK (searchable IN (0, 1)),
     oversized INTEGER NOT NULL DEFAULT 0 CHECK (oversized IN (0, 1)),
     timestamp TEXT,
@@ -198,6 +200,7 @@ CREATE TABLE IF NOT EXISTS prompts (
 CREATE INDEX IF NOT EXISTS prompts_sample_key_idx ON prompts(sample_key, public_id);
 CREATE INDEX IF NOT EXISTS prompts_session_sample_key_idx ON prompts(session_id, sample_key, public_id);
 CREATE INDEX IF NOT EXISTS prompts_role_timestamp_idx ON prompts(role, timestamp, public_id);
+CREATE INDEX IF NOT EXISTS prompts_role_kind_timestamp_idx ON prompts(role, prompt_kind, timestamp, public_id);
 
 CREATE TABLE IF NOT EXISTS sample_groups (
 	unit_kind TEXT NOT NULL CHECK (unit_kind IN ('prompt','session')),
@@ -256,6 +259,8 @@ CREATE TABLE IF NOT EXISTS occurrences (
 	role TEXT NOT NULL,
 	clean_text TEXT NOT NULL,
 	classification TEXT NOT NULL,
+	prompt_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (prompt_kind IN ('human','delegation','agent_message','command','control','unknown')),
+	prompt_kind_version INTEGER NOT NULL DEFAULT 0,
 	searchable INTEGER NOT NULL CHECK (searchable IN (0, 1)),
 	oversized INTEGER NOT NULL CHECK (oversized IN (0, 1)),
 	timestamp TEXT,

@@ -280,7 +280,7 @@ var catalogSelect = `SELECT s.id,s.public_id,s.provider,s.native_session_id,s.fi
 		WHEN EXISTS(SELECT 1 FROM locations l JOIN preserved_snapshots ps ON ps.id=l.snapshot_id WHERE ps.session_id=s.id AND l.available=1) THEN 'vault'
 		ELSE 'unavailable'
 	END,
-	(SELECT substr(p.clean_text,1,2048) FROM prompts p WHERE p.session_id=s.id AND p.searchable=1 AND p.role='user' AND EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) ORDER BY (p.timestamp IS NULL),` + sqliteTimestampKey("p.timestamp") + `,p.id LIMIT 1),
+	(SELECT substr(p.clean_text,1,2048) FROM prompts p WHERE p.session_id=s.id AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND EXISTS(SELECT 1 FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) ORDER BY (p.timestamp IS NULL),` + sqliteTimestampKey("p.timestamp") + `,p.id LIMIT 1),
 	` + sqliteTimestampKey("COALESCE(NULLIF(s.last_ts,''),NULLIF(s.first_ts,''),'')") + `
 	FROM sessions s`
 

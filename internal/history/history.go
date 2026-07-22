@@ -5,7 +5,10 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 3
+	ExtractorVersion = 4
+	// PromptKindVersion identifies the exact wrapper allowlist used to refine
+	// provider user records without guessing from their prose.
+	PromptKindVersion = 1
 	// RelationshipRuleVersion identifies the deterministic provider rules used
 	// to classify threads and extract conversational relationships.
 	RelationshipRuleVersion = 1
@@ -54,6 +57,18 @@ const (
 	ClassificationAgentInstruction Classification = "agent_instruction"
 	ClassificationProviderMetadata Classification = "provider_metadata"
 	ClassificationUnknown          Classification = "unknown"
+)
+
+// PromptKind separates human prompts from provider-generated user records.
+type PromptKind string
+
+const (
+	PromptKindHuman        PromptKind = "human"
+	PromptKindDelegation   PromptKind = "delegation"
+	PromptKindAgentMessage PromptKind = "agent_message"
+	PromptKindCommand      PromptKind = "command"
+	PromptKindControl      PromptKind = "control"
+	PromptKindUnknown      PromptKind = "unknown"
 )
 
 // ExtractionOptions controls explicitly consented searchable roles.
@@ -180,6 +195,7 @@ type Prompt struct {
 	Role                  Role
 	CleanText             string
 	Classification        Classification
+	PromptKind            PromptKind
 	Searchable            bool
 	Oversized             bool
 	Timestamp             *time.Time

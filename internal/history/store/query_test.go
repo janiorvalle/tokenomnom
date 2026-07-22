@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +9,64 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 )
+
+func TestPromptKindFiltersAndCompactOccurrenceOutput(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	humanSource := sourceRef("/provider/kinds-human.jsonl", history.LocationProviderLive)
+	controlSource := sourceRef("/provider/kinds-control.jsonl", history.LocationProviderLive)
+	human := prompt("native:human", "human", "ordinary planning request", 1)
+	control := prompt("native:control", "control", "<heartbeat>background worker status</heartbeat>", 2)
+	control.PromptKind = history.PromptKindControl
+	if _, err := database.ApplySource(extraction("native:kinds-human", "kinds-human", humanSource, human), head(humanSource, "kinds-human", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplySource(extraction("native:kinds-control", "kinds-control", controlSource, control), head(controlSource, "kinds-control", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultPage, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny})
+	if err != nil || len(defaultPage.Prompts) != 1 || defaultPage.Prompts[0].PromptKind != history.PromptKindHuman {
+		t.Fatalf("default prompt kinds err=%v page=%+v", err, defaultPage)
+	}
+	compact := defaultPage.Prompts[0]
+	if compact.OccurrenceCount != 1 || compact.PreferredLocation == nil || len(compact.Occurrences) != 0 || len(compact.SourceHeadIDs) != 0 {
+		t.Fatalf("compact provenance=%+v", compact)
+	}
+	compactJSON, err := json.Marshal(compact)
+	if err != nil || strings.Contains(string(compactJSON), `"occurrences"`) || strings.Contains(string(compactJSON), `"source_head_ids"`) {
+		t.Fatalf("compact provenance JSON=%s err=%v", compactJSON, err)
+	}
+	controlPage, err := database.ListPrompts(PromptQuery{Source: CatalogSourceAny, PromptKinds: []history.PromptKind{history.PromptKindControl}, AllOccurrences: true})
+	if err != nil || len(controlPage.Prompts) != 1 || controlPage.Prompts[0].PromptKind != history.PromptKindControl || len(controlPage.Prompts[0].Occurrences) != 1 {
+		t.Fatalf("control prompt kinds err=%v page=%+v", err, controlPage)
+	}
+	expandedJSON, err := json.Marshal(controlPage.Prompts[0])
+	if err != nil || !strings.Contains(string(expandedJSON), `"preserved_snapshot_ids":[]`) || !strings.Contains(string(expandedJSON), `"source_head_ids":[`) || !strings.Contains(string(expandedJSON), `"occurrence_metadata_truncated":false`) || !strings.Contains(string(expandedJSON), `"provenance_ids_truncated":false`) {
+		t.Fatalf("expanded provenance JSON=%s err=%v", expandedJSON, err)
+	}
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, PromptKinds: []history.PromptKind{history.PromptKindControl}}})
+	if err != nil || stats.LogicalSessions != 1 || stats.LogicalPrompts != 1 {
+		t.Fatalf("control statistics scope err=%v stats=%+v", err, stats)
+	}
+}
+
+func TestCompactOutputBudgetForTwentyFiveItems(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index := 0; index < 25; index++ {
+		source := sourceRef(fmt.Sprintf("/provider/compact-%02d.jsonl", index), history.LocationProviderLive)
+		value := prompt(fmt.Sprintf("native:p-%02d", index), fmt.Sprintf("p-%02d", index), fmt.Sprintf("compact prompt %02d", index), 1)
+		if _, err := database.ApplySource(extraction(fmt.Sprintf("native:s-%02d", index), fmt.Sprintf("s-%02d", index), source, value), head(source, fmt.Sprintf("hash-%02d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := database.Sample(SampleQuery{Count: 25})
+	encoded, marshalErr := json.Marshal(result)
+	if err != nil || marshalErr != nil || len(result.Items) != 25 || len(encoded) > 64<<10 {
+		t.Fatalf("compact sample items=%d bytes=%d query_err=%v marshal_err=%v", len(result.Items), len(encoded), err, marshalErr)
+	}
+}
 
 func TestSearchLiteralPhraseEscapesPunctuationOperatorsAndRequiresAdjacency(t *testing.T) {
 	database := openTestStore(t)
@@ -57,7 +116,7 @@ func TestSearchDeduplicatesAndBoundsOccurrenceMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	page, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "searchable logical", FTSQuery: false})
+	page, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny, AllOccurrences: true}, Query: "searchable logical", FTSQuery: false})
 	if err != nil || len(page.Hits) != 1 {
 		t.Fatalf("deduplicated search err=%v page=%+v", err, page)
 	}
@@ -83,7 +142,7 @@ func TestSearchExactLiveAndVaultedRequiresCompleteLiveBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "incomplete exact"})
-	if err != nil || len(page.Hits) != 1 || page.Hits[0].Availability.ExactLiveAndVaulted || page.Hits[0].PreferredRetrievalSource != "vault" {
+	if err != nil || len(page.Hits) != 1 || page.Hits[0].Availability.ExactLiveAndVaulted || page.Hits[0].PreferredRetrievalSource != "vault" || page.Hits[0].PreferredLocation == nil || page.Hits[0].PreferredLocation.Kind != "vault" {
 		t.Fatalf("incomplete exact availability err=%v page=%+v", err, page)
 	}
 }
@@ -105,6 +164,51 @@ func TestFilteredStatsDiscloseUnscopedErrors(t *testing.T) {
 	unfiltered, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}})
 	if err != nil || unfiltered.ErrorCount != 1 || unfiltered.UnscopedErrorsExcluded != 0 {
 		t.Fatalf("unfiltered errors err=%v stats=%+v", err, unfiltered)
+	}
+}
+
+func TestStatisticsTopGroupsDiscloseRemainder(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index := 0; index < 25; index++ {
+		source := sourceRef(fmt.Sprintf("/provider/top-%02d.jsonl", index), history.LocationProviderLive)
+		extract := extraction(fmt.Sprintf("native:top-%02d", index), fmt.Sprintf("top-%02d", index), source,
+			prompt(fmt.Sprintf("native:top-p-%02d", index), fmt.Sprintf("top-p-%02d", index), "top group prompt", 1))
+		extract.Session.RepositoryName = fmt.Sprintf("repo-%02d", index)
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("top-%02d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, GroupBy: []string{"repo"}, Top: 5})
+	if err != nil || len(stats.Groups) != 5 || !stats.GroupsTruncated || stats.Other == nil || stats.Other.LogicalPrompts != 20 {
+		t.Fatalf("top statistics err=%v stats=%+v", err, stats)
+	}
+}
+
+func TestStatisticsTopRemainderCountsDistinctSessions(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	sharedSource := sourceRef("/provider/top-shared.jsonl", history.LocationProviderLive)
+	monday := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	tuesday := monday.Add(24 * time.Hour)
+	first := prompt("native:monday", "monday", "monday remainder", 1)
+	second := prompt("native:tuesday", "tuesday", "tuesday remainder", 2)
+	first.Timestamp, second.Timestamp = &monday, &tuesday
+	if _, err := database.ApplySource(extraction("native:top-shared", "top-shared", sharedSource, first, second), head(sharedSource, "top-shared", 100, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		source := sourceRef(fmt.Sprintf("/provider/top-wednesday-%d.jsonl", index), history.LocationProviderLive)
+		wednesday := tuesday.Add(24 * time.Hour)
+		value := prompt(fmt.Sprintf("native:wednesday-%d", index), fmt.Sprintf("wednesday-%d", index), "wednesday top", 1)
+		value.Timestamp = &wednesday
+		if _, err := database.ApplySource(extraction(fmt.Sprintf("native:top-wednesday-%d", index), fmt.Sprintf("top-wednesday-%d", index), source, value), head(source, fmt.Sprintf("top-wednesday-%d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := database.Statistics(StatisticsQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, GroupBy: []string{"weekday"}, Top: 1})
+	if err != nil || stats.Other == nil || stats.Other.LogicalPrompts != 2 || stats.Other.LogicalSessions != 1 {
+		t.Fatalf("distinct remainder sessions err=%v stats=%+v", err, stats)
 	}
 }
 

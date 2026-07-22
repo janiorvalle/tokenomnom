@@ -23,8 +23,10 @@ type lockOwner struct {
 	Legacy    bool   `json:"-"`
 }
 
-// Lock acquires the writer-only history process lock. A lock owned by a dead
-// process or a reused PID is removed and acquisition is retried once.
+var processStartedAt = time.Now().UTC()
+
+// Lock acquires the writer-only advisory file lock. The persistent inode is
+// reused so the OS owns exclusion and old metadata self-heals after acquisition.
 func Lock(databasePath string) (func(), error) {
 	stateDir := filepath.Dir(databasePath)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -33,17 +35,14 @@ func Lock(databasePath string) (func(), error) {
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure history state directory: %w", err)
 	}
-	startHint, err := processStartHint(os.Getpid())
-	if err != nil {
-		return nil, fmt.Errorf("identify history lock owner: %w", err)
-	}
+	acquired := time.Now().UTC().Format(time.RFC3339Nano)
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
 		return nil, fmt.Errorf("generate history lock owner token: %w", err)
 	}
 	owner := lockOwner{
-		PID: os.Getpid(), StartHint: startHint, Token: hex.EncodeToString(tokenBytes[:]),
-		Acquired: time.Now().UTC().Format(time.RFC3339Nano),
+		PID: os.Getpid(), StartHint: processStartedAt.Format(time.RFC3339Nano), Token: hex.EncodeToString(tokenBytes[:]),
+		Acquired: acquired,
 	}
 	release, err := acquireHistoryLock(databasePath+".lock", owner)
 	if err != nil {
@@ -63,9 +62,6 @@ func acquireHistoryLock(path string, owner lockOwner) (func(), error) {
 			return nil, historyLockBusyError(path)
 		}
 		return nil, fmt.Errorf("lock history store ownership file: %w", err)
-	}
-	if existing, readErr := readLockOwnerFile(file); readErr == nil {
-		_, _ = lockOwnerIsStale(existing)
 	}
 	if err := file.Truncate(0); err != nil {
 		_ = unlockHistoryOwnerFile(file)
@@ -123,26 +119,10 @@ func readLockOwnerFile(file *os.File) (lockOwner, error) {
 		digest := sha256.Sum256(data)
 		return lockOwner{PID: pid, Token: "legacy-" + hex.EncodeToString(digest[:]), Acquired: acquired, Legacy: true}, nil
 	}
-	if owner.PID <= 0 || owner.StartHint == "" || owner.Token == "" {
+	if owner.PID <= 0 || owner.Token == "" {
 		return lockOwner{}, errors.New("incomplete history lock owner")
 	}
 	return owner, nil
-}
-
-func lockOwnerIsStale(owner lockOwner) (bool, error) {
-	if owner.Legacy {
-		// Legacy owners hold the same advisory byte lock but did not record an
-		// OS process start time. Reaching this point proves that lock is free.
-		return true, nil
-	}
-	actual, err := processStartHint(owner.PID)
-	if errors.Is(err, errProcessNotFound) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return actual != owner.StartHint, nil
 }
 
 func historyLockBusyError(path string) error {

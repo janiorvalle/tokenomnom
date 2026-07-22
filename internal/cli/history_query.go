@@ -24,18 +24,20 @@ import (
 const maxHistoryRawJSONBytes int64 = 64 << 20
 
 type historyQueryFlags struct {
-	provider   string
-	since      string
-	until      string
-	cwd        string
-	repo       string
-	branch     string
-	source     string
-	limit      int
-	cursor     string
-	threadKind string
-	rootOnly   bool
-	role       string
+	provider       string
+	since          string
+	until          string
+	cwd            string
+	repo           string
+	branch         string
+	source         string
+	limit          int
+	cursor         string
+	threadKind     string
+	rootOnly       bool
+	role           string
+	promptKind     string
+	excludeControl bool
 }
 
 func (flags *historyQueryFlags) addRole(command *cobra.Command) {
@@ -54,6 +56,8 @@ func (flags *historyQueryFlags) add(command *cobra.Command, defaultLimit int) {
 	command.Flags().StringVar(&flags.cursor, "cursor", "", "continue a previous page")
 	command.Flags().StringVar(&flags.threadKind, "thread-kind", "all", "filter by thread kind (root, subagent, unknown, or all)")
 	command.Flags().BoolVar(&flags.rootOnly, "root-only", false, "include only directly evidenced root sessions")
+	command.Flags().StringVar(&flags.promptKind, "prompt-kind", "", "filter by comma-separated prompt kinds")
+	command.Flags().BoolVar(&flags.excludeControl, "exclude-control", false, "exclude control prompts")
 }
 
 func (flags historyQueryFlags) validate(command *cobra.Command) error {
@@ -81,6 +85,9 @@ func (flags historyQueryFlags) validate(command *cobra.Command) error {
 	if flags.role != "" && flags.role != "user" && flags.role != "assistant" && flags.role != "any" {
 		return fmt.Errorf("invalid --role %q (expected user, assistant, or any)", flags.role)
 	}
+	if _, err := flags.promptKinds(); err != nil {
+		return err
+	}
 	if command.Flags().Changed("limit") && (flags.limit < 1 || flags.limit > 500) {
 		return errors.New("--limit must be between 1 and 500")
 	}
@@ -96,7 +103,9 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 		Provider: history.Provider(flags.provider), CWD: flags.cwd, Repo: flags.repo, Branch: flags.branch,
 		Source: historystore.CatalogSource(flags.source), ThreadKind: flags.effectiveThreadKind(), Role: flags.role,
 		AssistantConsent: appconfig.FromContext(command.Context()).Config.History.IndexAssistant, Limit: limit, Cursor: flags.cursor,
+		ExcludeControl: flags.excludeControl,
 	}
+	query.PromptKinds, _ = flags.promptKinds()
 	if flags.since != "" {
 		value, _ := time.Parse("2006-01-02", flags.since)
 		query.Since = &value
@@ -110,7 +119,28 @@ func (flags historyQueryFlags) query(command *cobra.Command) historystore.Prompt
 }
 
 func (flags historyQueryFlags) jsonFilters() jsonFilters {
-	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until), ThreadKind: optionalString(flags.effectiveThreadKind()), Role: optionalString(flags.role)}
+	return jsonFilters{Provider: optionalString(flags.provider), Since: optionalString(flags.since), Until: optionalString(flags.until), ThreadKind: optionalString(flags.effectiveThreadKind()), Role: optionalString(flags.role), PromptKind: optionalString(flags.promptKind), ExcludeControl: flags.excludeControl}
+}
+
+func (flags historyQueryFlags) promptKinds() ([]history.PromptKind, error) {
+	if strings.TrimSpace(flags.promptKind) == "" {
+		return nil, nil
+	}
+	seen := map[history.PromptKind]bool{}
+	result := []history.PromptKind{}
+	for _, raw := range strings.Split(flags.promptKind, ",") {
+		kind := history.PromptKind(strings.TrimSpace(raw))
+		switch kind {
+		case history.PromptKindHuman, history.PromptKindDelegation, history.PromptKindAgentMessage, history.PromptKindCommand, history.PromptKindControl, history.PromptKindUnknown:
+		default:
+			return nil, fmt.Errorf("invalid --prompt-kind %q", raw)
+		}
+		if !seen[kind] {
+			seen[kind] = true
+			result = append(result, kind)
+		}
+	}
+	return result, nil
 }
 
 func (flags historyQueryFlags) effectiveThreadKind() string {
@@ -122,7 +152,7 @@ func (flags historyQueryFlags) effectiveThreadKind() string {
 
 func newHistorySearchCommand() *cobra.Command {
 	var flags historyQueryFlags
-	var includeText, ftsQuery bool
+	var includeText, ftsQuery, allOccurrences bool
 	command := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Search indexed prompts",
@@ -135,7 +165,7 @@ func newHistorySearchCommand() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := flags.query(cmd)
-			query.IncludeText, query.AllOccurrences = includeText, true
+			query.IncludeText, query.AllOccurrences = includeText, allOccurrences
 			var page historystore.SearchPage
 			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
 				var err error
@@ -176,6 +206,7 @@ func newHistorySearchCommand() *cobra.Command {
 	flags.addRole(command)
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
 	command.Flags().BoolVar(&ftsQuery, "fts-query", false, "interpret query as raw SQLite FTS5 syntax")
+	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded source and snapshot occurrence provenance")
 	return command
 }
 
@@ -233,7 +264,8 @@ func newHistorySampleCommand() *cobra.Command {
 	var flags historyQueryFlags
 	var unit, strategy, groupBy, seed string
 	var count int
-	var includeText bool
+	var includeText, allOccurrences, onePerSession bool
+	var minLength int
 	command := &cobra.Command{
 		Use:   "sample",
 		Short: "Sample indexed logical prompts or sessions",
@@ -248,11 +280,17 @@ func newHistorySampleCommand() *cobra.Command {
 			if unit != "prompt" && unit != "session" {
 				return fmt.Errorf("invalid --unit %q (expected prompt or session)", unit)
 			}
+			if unit == "session" && (minLength != 0 || onePerSession || flags.promptKind != "" || flags.excludeControl || allOccurrences) {
+				return errors.New("history session sampling does not support --min-length, --one-per-session, --prompt-kind, --exclude-control, or --all-occurrences")
+			}
 			if strategy != "" && strategy != "random" && strategy != "stratified" {
 				return fmt.Errorf("invalid --strategy %q (expected random or stratified)", strategy)
 			}
 			if count < 1 || count > 100 {
 				return errors.New("--count must be between 1 and 100")
+			}
+			if minLength < 0 {
+				return errors.New("--min-length must be zero or greater")
 			}
 			return nil
 		},
@@ -266,11 +304,11 @@ func newHistorySampleCommand() *cobra.Command {
 				}
 			}
 			query := flags.query(cmd)
-			query.IncludeText = includeText
+			query.IncludeText, query.AllOccurrences = includeText, allOccurrences
 			var result historystore.SampleResult
 			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
 				var err error
-				result, err = database.Sample(historystore.SampleQuery{PromptQuery: query, Unit: unit, Strategy: strategy, GroupBy: groups, Count: count, Seed: seed})
+				result, err = database.Sample(historystore.SampleQuery{PromptQuery: query, Unit: unit, Strategy: strategy, GroupBy: groups, Count: count, Seed: seed, MinLength: minLength, OnePerSession: onePerSession})
 				return err
 			}); err != nil {
 				return err
@@ -319,12 +357,16 @@ func newHistorySampleCommand() *cobra.Command {
 	command.Flags().IntVar(&count, "count", 25, "maximum sampled units (1-100)")
 	command.Flags().StringVar(&seed, "seed", "", "deterministic sample seed")
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
+	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded source and snapshot occurrence provenance")
+	command.Flags().IntVar(&minLength, "min-length", 0, "minimum cleaned prompt characters")
+	command.Flags().BoolVar(&onePerSession, "one-per-session", false, "sample at most one prompt per session")
 	return command
 }
 
 func newHistoryStatsCommand() *cobra.Command {
 	var flags historyQueryFlags
 	var groupBy string
+	var top int
 	command := &cobra.Command{
 		Use:   "stats",
 		Short: "Summarize the indexed prompt corpus",
@@ -335,6 +377,9 @@ func newHistoryStatsCommand() *cobra.Command {
 			}
 			if cmd.Flags().Changed("limit") || flags.cursor != "" {
 				return errors.New("history stats does not support --limit or --cursor")
+			}
+			if top < 1 || top > 100 {
+				return errors.New("--top must be between 1 and 100")
 			}
 			return nil
 		},
@@ -354,7 +399,7 @@ func newHistoryStatsCommand() *cobra.Command {
 			}
 			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
 				var err error
-				value, err = database.Statistics(historystore.StatisticsQuery{PromptQuery: query, GroupBy: groups})
+				value, err = database.Statistics(historystore.StatisticsQuery{PromptQuery: query, GroupBy: groups, Top: top})
 				return err
 			}); err != nil {
 				return err
@@ -378,6 +423,9 @@ func newHistoryStatsCommand() *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\tsessions=%d\tprompts=%d\toccurrences=%d\n", strings.Join(parts, ","), group.LogicalSessions, group.LogicalPrompts, group.PromptOccurrences)
 			}
+			if value.Other != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "other\tsessions=%d\tprompts=%d\toccurrences=%d\n", value.Other.LogicalSessions, value.Other.LogicalPrompts, value.Other.PromptOccurrences)
+			}
 			writeHistoryWarnings(cmd, value.Warnings)
 			return nil
 		},
@@ -386,6 +434,7 @@ func newHistoryStatsCommand() *cobra.Command {
 	_ = command.Flags().MarkHidden("limit")
 	_ = command.Flags().MarkHidden("cursor")
 	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, repo, cwd, thread-kind, weekday, hour, and/or role")
+	command.Flags().IntVar(&top, "top", 20, "maximum groups to return (1-100)")
 	return command
 }
 
