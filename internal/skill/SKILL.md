@@ -62,7 +62,9 @@ For "what did I work on" or "how did I prompt X":
    dates, run `tokenomnom history index --format json`. When
    `changed_sources_since_index` is nonzero, index when the question needs
    current provider data; an older bounded question may not need the pending
-   files. Surface partial-index errors.
+   files. Read `data.exclusion_counts` for routine exclusions and surface
+   partial-index errors from `data.errors`. Use `history index --verbose` only
+   when bounded path-and-line exclusion details are needed.
 3. Apply bounded provider, date, cwd, repo, branch, source, and thread filters
    before retrieving text.
 4. Use `tokenomnom history search <query> --limit 50 --format json` for known
@@ -103,6 +105,9 @@ thinking, tool-call, or tool-result text.
 
 Every response is one `tokenomnom.report/v1` envelope. Confirm `schema`, read
 the command-specific `data`, and surface every item in `warnings` to the user.
+For `history index`, routine exclusions are counters in
+`data.exclusion_counts`; `data.warnings` contains per-record details only with
+`--verbose`, while `data.errors` remains detailed in both modes.
 Token counts are integers. `cost_usd` values and pricing rates are JSON numbers.
 
 <!-- tokenomnom-skill v{{VERSION}} -->

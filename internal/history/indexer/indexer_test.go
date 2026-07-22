@@ -259,8 +259,19 @@ func TestExtractionDiagnosticsBecomeBoundedWarnings(t *testing.T) {
 	path := env.codexPath("diagnostic.jsonl")
 	writeFile(t, path, codexMeta("diagnostic")+"not-json\n"+codexPrompt("p1", "accepted"))
 	summary := env.index(t, false)
-	if summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") {
+	if summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") ||
+		len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Classification != history.ClassificationUnknown || summary.ExclusionCounts[0].Reason != "malformed JSON" || summary.ExclusionCounts[0].Count != 1 {
 		t.Fatalf("diagnostic summary=%+v", summary)
+	}
+}
+
+func TestExclusionCountsIncludeDiagnosticsBeyondVerboseBound(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("many-diagnostics.jsonl")
+	writeFile(t, path, codexMeta("many-diagnostics")+strings.Repeat("not-json\n", maxIssues+5)+codexPrompt("p1", "accepted"))
+	summary := env.index(t, false)
+	if len(summary.Warnings) != maxIssues || len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Count != maxIssues+5 {
+		t.Fatalf("bounded diagnostic summary=%+v", summary)
 	}
 }
 
@@ -439,6 +450,70 @@ func TestExtractorVersionRebuild(t *testing.T) {
 	afterPrompts, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny})
 	if err != nil || beforeSession.Sessions[0].SessionID != afterSession.Sessions[0].SessionID || beforePrompts.Prompts[0].PromptID != afterPrompts.Prompts[0].PromptID {
 		t.Fatalf("extractor rebuild changed stable IDs: before=%+v/%+v after=%+v/%+v err=%v", beforeSession, beforePrompts, afterSession, afterPrompts, err)
+	}
+}
+
+func TestClassifierRebuildPreservesPromptIDsAndInvalidatesCursor(t *testing.T) {
+	env := newEnvironment(t)
+	path := filepath.Join(env.claudeRoot, "projects", "repo", "classification.jsonl")
+	harnessMessage := "Another Claude session sent a message:\n<teammate-message teammate_id=\"reviewer\" color=\"blue\">review complete</teammate-message>"
+	commandMessage := "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>"
+	writeFile(t, path, claudePrompt("classification", "m1", harnessMessage)+claudePrompt("classification", "m2", commandMessage)+claudePrompt("classification", "m3", "ordinary human prompt"))
+	initial := env.index(t, false)
+	if initial.ReclassifiedPrompts != 2 || initial.PromptKindCounts[history.PromptKindAgentMessage] != 1 || initial.PromptKindCounts[history.PromptKindCommand] != 1 || initial.PromptKindCounts[history.PromptKindHuman] != 1 {
+		t.Fatalf("initial classification summary=%+v", initial)
+	}
+	allKinds := []history.PromptKind{history.PromptKindHuman, history.PromptKindDelegation, history.PromptKindAgentMessage, history.PromptKindCommand, history.PromptKindControl}
+	before, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: allKinds, IncludeText: true, Limit: 10})
+	if err != nil || len(before.Prompts) != 3 {
+		t.Fatalf("initial prompts err=%v page=%+v", err, before)
+	}
+	ids := make(map[string]string, len(before.Prompts))
+	for _, prompt := range before.Prompts {
+		ids[*prompt.Text] = prompt.PromptID
+		if !strings.HasPrefix(prompt.PromptID, "prm_") {
+			t.Fatalf("unstable prompt ID format: %q", prompt.PromptID)
+		}
+	}
+	generation := before.Generation
+
+	raw, err := sql.Open("sqlite", env.database.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`UPDATE prompts SET prompt_kind='human',prompt_kind_version=1,searchable=1`,
+		`UPDATE occurrences SET prompt_kind='human',prompt_kind_version=1,searchable=1`,
+		fmt.Sprintf(`UPDATE source_heads SET extractor_version=%d`, history.ExtractorVersion-1),
+	} {
+		if _, err := raw.Exec(statement); err != nil {
+			raw.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stalePage, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: []history.PromptKind{history.PromptKindHuman}, Limit: 2})
+	if err != nil || stalePage.Page.NextCursor == "" {
+		t.Fatalf("stale cursor fixture err=%v page=%+v", err, stalePage)
+	}
+
+	rebuilt := env.index(t, false)
+	if rebuilt.RewrittenSources != 1 || rebuilt.ReclassifiedPrompts != 2 || rebuilt.PromptKindCounts[history.PromptKindAgentMessage] != 1 || rebuilt.PromptKindCounts[history.PromptKindCommand] != 1 || rebuilt.PromptKindCounts[history.PromptKindHuman] != 1 {
+		t.Fatalf("rebuild classification summary=%+v", rebuilt)
+	}
+	after, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: allKinds, IncludeText: true, Limit: 10})
+	if err != nil || after.Generation <= generation || len(after.Prompts) != 3 {
+		t.Fatalf("rebuilt prompts err=%v page=%+v", err, after)
+	}
+	for _, prompt := range after.Prompts {
+		if ids[*prompt.Text] != prompt.PromptID {
+			t.Fatalf("prompt ID changed for %q: before=%q after=%q", *prompt.Text, ids[*prompt.Text], prompt.PromptID)
+		}
+	}
+	if _, err := env.database.ListPrompts(historystore.PromptQuery{Source: historystore.CatalogSourceAny, PromptKinds: []history.PromptKind{history.PromptKindHuman}, Limit: 2, Cursor: stalePage.Page.NextCursor}); err == nil || !strings.Contains(err.Error(), "generation changed") {
+		t.Fatalf("stale cursor error=%v", err)
 	}
 }
 

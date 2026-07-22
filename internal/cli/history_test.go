@@ -339,6 +339,76 @@ func TestHistoryIndexReportsStableLegacyThreadReclassification(t *testing.T) {
 	}
 }
 
+func TestHistoryIndexQuietDefaultAndVerboseDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude-file")
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "diagnostic.jsonl"), historyCodexFixture("diagnostic", "accepted")+"not-json\n")
+	writeTextFixture(t, claudeDir, "not a directory")
+
+	run := func(verbose bool) jsonHistoryIndexData {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		command := NewRootCommand()
+		command.SilenceUsage = true
+		command.SetOut(&stdout)
+		command.SetErr(&stderr)
+		args := []string{"history", "index", "--source", "provider", "--full", "--format", "json", "--codex-dir", codexDir, "--claude-dir", claudeDir}
+		if verbose {
+			args = append(args, "--verbose")
+		}
+		command.SetArgs(args)
+		if err := command.Execute(); err == nil {
+			t.Fatal("expected partial source error")
+		}
+		var indexed jsonHistoryIndexData
+		if err := json.Unmarshal(decodeEnvelope(t, stdout.String()).Data, &indexed); err != nil {
+			t.Fatal(err)
+		}
+		if indexed.ErrorCount != 1 || len(indexed.Errors) != 1 || len(indexed.ExclusionCounts) != 1 || indexed.ExclusionCounts[0].Reason != "malformed JSON" || indexed.ExclusionCounts[0].Count != 1 {
+			t.Fatalf("index diagnostics = %+v\nstderr=%s", indexed, stderr.String())
+		}
+		return indexed
+	}
+
+	if indexed := run(false); len(indexed.Warnings) != 0 {
+		t.Fatalf("default warnings = %+v", indexed.Warnings)
+	}
+	if indexed := run(true); len(indexed.Warnings) != 1 || !strings.Contains(indexed.Warnings[0].Error, "malformed JSON") {
+		t.Fatalf("verbose warnings = %+v", indexed.Warnings)
+	}
+
+	runPretty := func(verbose bool) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		command := NewRootCommand()
+		command.SilenceUsage = true
+		command.SetOut(&stdout)
+		command.SetErr(&stderr)
+		args := []string{"history", "index", "--source", "provider", "--full", "--codex-dir", codexDir, "--claude-dir", claudeDir}
+		if verbose {
+			args = append(args, "--verbose")
+		}
+		command.SetArgs(args)
+		if err := command.Execute(); err == nil {
+			t.Fatal("expected partial source error")
+		}
+		if !strings.Contains(stdout.String(), "Error: claude:") {
+			t.Fatalf("individual source error missing:\n%s\nstderr=%s", stdout.String(), stderr.String())
+		}
+		return stdout.String()
+	}
+	if output := runPretty(false); strings.Contains(output, "Warning:") {
+		t.Fatalf("default pretty output included details:\n%s", output)
+	}
+	if output := runPretty(true); !strings.Contains(output, "Warning: codex:") {
+		t.Fatalf("verbose pretty output omitted details:\n%s", output)
+	}
+}
+
 func TestHistoryDefaultIndexIncludesProviderAndVaultAndListsOnce(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
