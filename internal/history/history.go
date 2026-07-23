@@ -5,10 +5,10 @@ import "time"
 
 const (
 	// ExtractorVersion changes when normalized history semantics change.
-	ExtractorVersion = 7
+	ExtractorVersion = 8
 	// PromptKindVersion identifies the exact wrapper allowlist used to refine
 	// provider user records without guessing from their prose.
-	PromptKindVersion = 3
+	PromptKindVersion = 4
 	// ProjectRuleVersion identifies the deterministic presentation rule used
 	// to derive project labels from git evidence or a non-temporary cwd.
 	ProjectRuleVersion = 2

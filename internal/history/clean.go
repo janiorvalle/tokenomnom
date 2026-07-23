@@ -3,6 +3,7 @@ package history
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Envelope fixtures follow pinned public producer implementations and
@@ -77,8 +78,13 @@ func completeHarnessTeammateMessage(value string) bool {
 		return false
 	}
 	envelope := strings.TrimPrefix(value, teammateMessagePreamble)
-	if strings.HasSuffix(envelope, "\n\n"+teammateMessageTrailer) {
-		envelope = strings.TrimSuffix(envelope, "\n\n"+teammateMessageTrailer)
+	if strings.HasSuffix(envelope, teammateMessageTrailer) {
+		beforeTrailer := strings.TrimSuffix(envelope, teammateMessageTrailer)
+		// The exact trailer proves harness origin, so the producer-defined
+		// sandwich pairs the first opening tag with the last closing tag.
+		if teammateMessage.MatchString(strings.TrimRightFunc(beforeTrailer, unicode.IsSpace)) {
+			return true
+		}
 	}
 	return completeTeammateMessage(envelope)
 }

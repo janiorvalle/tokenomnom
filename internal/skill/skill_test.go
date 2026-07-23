@@ -49,7 +49,8 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		"coverage.thread_kind.unknown",
 		"unknown relationship",
 		"--group-by month,project",
-		"--group-by month,cwd",
+		"--project-source git",
+		"--min-stratum-size",
 		"cwd-derived projects can still be task folders",
 		"missing-but-preserved sources alone",
 		"unknown share is acceptably small",
@@ -62,6 +63,9 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		if !strings.Contains(contents, fragment) {
 			t.Errorf("embedded skill missing %q", fragment)
 		}
+	}
+	if strings.Contains(contents, "--group-by month,cwd") {
+		t.Error("embedded skill retains the fragmented month,cwd fallback")
 	}
 	document := Document("1.2.3")
 	if got, owned := Version(document); !owned || got != "1.2.3" || !strings.HasSuffix(strings.TrimSpace(string(document)), "<!-- tokenomnom-skill v1.2.3 -->") {

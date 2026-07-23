@@ -337,8 +337,9 @@ into cursors.
 ## History Sample
 
 `tokenomnom history sample [--unit prompt|session] [--strategy
-random|stratified] [--group-by month,project,cwd,repo,thread-kind] [--count N] [--seed
-STRING] [shared filters] [--include-text] --format json`
+random|stratified] [--group-by month,project,cwd,repo,thread-kind]
+[--min-stratum-size N] [--project-source git|cwd|any] [--count N] [--seed
+STRING] [--snippet-length N] [shared filters] [--include-text] --format json`
 
 Prompt samples also accept `--min-length N`, `--one-per-session`, and
 `--all-occurrences`. Minimum length uses cleaned Unicode characters. These
@@ -356,7 +357,8 @@ snippets; complete clean text requires `--include-text`.
 Default prompt items compact provenance to exact occurrence and availability
 counts plus `preferred_location`. Compact availability omits zero-valued source
 kinds; the preferred location contains its kind, opaque source/snapshot ID,
-and vault version when relevant. Default snippets are capped at 64 UTF-8 bytes.
+and vault version when relevant. Default snippets are capped at 140 UTF-8
+bytes; `--snippet-length` accepts 32 through 512.
 Relationship evidence, paths, offsets, and occurrence arrays are omitted.
 `--all-occurrences` restores the bounded full prompt object.
 Sampling deliberately remains user-only in this campaign: it has no `--role`
@@ -373,21 +375,29 @@ selects groups. Project strata include `project_source` so matching git- and
 cwd-derived names remain labeled. Project labels represented by fewer than two
 logical sessions in the index fold into `project: "other"` with
 `project_source: "unknown"`; this changes only presentation strata, not stored
-session project values. Missing month, project, repository, or thread metadata
+session project values. `--min-stratum-size N` additionally folds strata with
+fewer than N eligible units into one `other` remainder before allocation; the
+eligible counts include the other sample filters and one-per-session behavior.
+Values greater than one require stratified sampling with `--group-by`.
+`--project-source git|cwd|any` restricts eligible sessions by provenance, with
+unknown-project sessions included only under the default `any`. Missing month,
+project, repository, or thread metadata
 is the explicit `unknown` group; session month uses its first known timestamp.
 
 `data.items` is always an array. Each item has `unit` and either a `prompt` or
 `session` object; `groups` is present when grouping was requested. Session samples may add `text` only with
 `--include-text`. The response also includes the effective `strategy`, sorted
-`group_by`, returned `count`, effective `seed`, `index_generation`, and
-`coverage`. Sample coverage describes the returned logical sessions, not a
+`group_by`, returned `count`, effective `seed`, `snippet_length`,
+`min_stratum_size`, `project_source`, `index_generation`, and `coverage`.
+Sample coverage describes the returned logical sessions, not a
 corpus-wide aggregate; use `history status` or `history stats` when full index
 coverage is needed. Repository and branch filters add bounded provider-uneven
 warnings without scanning excluded rows.
 
 ## History Stats
 
-`tokenomnom history stats [shared filters] [--group-by provider|project|repo|cwd|thread-kind|weekday|hour|role] [--top N]
+`tokenomnom history stats [shared filters] [--project-source git|cwd|any]
+[--group-by provider|project|repo|cwd|thread-kind|weekday|hour|role] [--top N]
 --format json` returns SQL-computed, text-free aggregates labeled with
 `scope: "searchable_prompt_corpus"`: logical session,
 source-head, snapshot, prompt, and occurrence counts; date coverage and active
@@ -406,6 +416,8 @@ folded into `other`, while observed unknown groups are retained when capacity al
 Weekday/hour grouping remains UTC-normalized; RFC 3339 coverage timestamps use
 the effective presentation timezone described below.
 Coverage and warnings use the same provider-uneven metadata rules as search.
+The returned `project_source` records the effective provenance filter; `git`
+and `cwd` exclude unknown-project sessions, while `any` includes them.
 Filtered stats exclude index errors that cannot be associated with filterable
 session metadata, report their count as `unscoped_errors_excluded`, and add a
 warning instead of mixing unrelated failures into `error_count`.

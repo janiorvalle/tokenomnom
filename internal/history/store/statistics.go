@@ -15,8 +15,9 @@ import (
 // against a fixed SQL expression map.
 type StatisticsQuery struct {
 	PromptQuery
-	GroupBy []string
-	Top     int
+	GroupBy       []string
+	Top           int
+	ProjectSource string
 }
 
 // StatisticsGroup contains text-free aggregates for one dimension tuple.
@@ -54,6 +55,7 @@ type Statistics struct {
 	Coverage                 QueryCoverage        `json:"coverage"`
 	Warnings                 []string             `json:"-"`
 	Generation               int64                `json:"index_generation"`
+	ProjectSource            string               `json:"project_source"`
 }
 
 // StatisticsRoleCount is a text-free aggregate for one searchable role.
@@ -76,6 +78,12 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	}
 	if query.Top < 1 || query.Top > 100 {
 		return Statistics{}, errors.New("history stats top must be between 1 and 100")
+	}
+	if query.ProjectSource == "" {
+		query.ProjectSource = SampleProjectSourceAny
+	}
+	if !validSampleProjectSource(query.ProjectSource) {
+		return Statistics{}, fmt.Errorf("invalid history stats project source %q", query.ProjectSource)
 	}
 	if query.Source == "" {
 		query.Source = CatalogSourceAny
@@ -108,7 +116,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		groupByRole = groupByRole || dimension == "role"
 		groupByProject = groupByProject || dimension == "project"
 	}
-	coverage, warnings, err := s.promptCoverage(query.PromptQuery)
+	coverage, warnings, err := s.promptCoverageForProjectSource(query.PromptQuery, query.ProjectSource)
 	if err != nil {
 		return Statistics{}, err
 	}
@@ -133,7 +141,9 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 		Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
 		Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind,
 	}, true)
+	sessionWhere, sessionArgs = appendProjectSourceFilter(sessionWhere, sessionArgs, "s", query.ProjectSource)
 	promptFilters, promptArgs := promptWhere(query.PromptQuery, true, "p", "s")
+	promptFilters, promptArgs = appendProjectSourceFilter(promptFilters, promptArgs, "s", query.ProjectSource)
 	oversizedFilters := append([]string{"p.oversized=1"}, promptFilters[1:]...)
 	cte := `WITH selected_sessions AS (SELECT s.* FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
 		available_prompts AS (
@@ -174,7 +184,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	args = append(args, promptArgs...)
 	args = append(args, promptArgs...)
 	args = append(args, history.ExtractorVersion, history.ExtractorVersion)
-	value := Statistics{Scope: "searchable_prompt_corpus", Coverage: coverage, Warnings: warnings, Generation: generation, Groups: []StatisticsGroup{}}
+	value := Statistics{Scope: "searchable_prompt_corpus", Coverage: coverage, Warnings: warnings, Generation: generation, Groups: []StatisticsGroup{}, ProjectSource: query.ProjectSource}
 	if err := s.runner.QueryRow(statement, args...).Scan(
 		&value.LogicalSessions, &value.MutableSourceHeads, &value.PreservedSnapshots,
 		&value.LogicalPrompts, &value.PromptOccurrences, &value.ActiveDays,
@@ -187,6 +197,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 	roleQuery := query.PromptQuery
 	roleQuery.Role = "any"
 	roleFilters, roleArgs := promptWhere(roleQuery, true, "p", "s")
+	roleFilters, roleArgs = appendProjectSourceFilter(roleFilters, roleArgs, "s", query.ProjectSource)
 	roleStatement := `WITH selected_sessions AS (SELECT s.* FROM sessions s WHERE ` + strings.Join(sessionWhere, " AND ") + `),
 		available_prompts AS (
 			SELECT p.*,(SELECT COUNT(*) FROM occurrences o JOIN locations l ON l.id=o.location_id WHERE o.prompt_id=p.id AND l.available=1) AS available_occurrences
@@ -209,7 +220,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 			SELECT 1 FROM locations l JOIN preserved_snapshots ps ON ps.id=l.snapshot_id WHERE l.archive=vb.archive))`).Scan(&unscopedErrors); err != nil {
 		return Statistics{}, fmt.Errorf("read unscoped history errors: %w", err)
 	}
-	if statisticsQueryIsUnfiltered(query.PromptQuery) {
+	if statisticsQueryIsUnfiltered(query) {
 		value.ErrorCount += unscopedErrors
 	} else if unscopedErrors > 0 {
 		value.UnscopedErrorsExcluded = unscopedErrors
@@ -226,6 +237,7 @@ func (s *Store) Statistics(query StatisticsQuery) (Statistics, error) {
 			groupQuery.Role = "any"
 		}
 		groupFilters, groupPromptArgs := promptWhere(groupQuery, true, "p", "s")
+		groupFilters, groupPromptArgs = appendProjectSourceFilter(groupFilters, groupPromptArgs, "s", query.ProjectSource)
 		selectedSessionColumns := "s.*"
 		if groupByProject {
 			selectedSessionColumns += `,(SELECT COUNT(*) FROM sessions project_sessions WHERE project_sessions.project=s.project) AS project_session_count`
@@ -373,9 +385,10 @@ func containsStatisticsDimensionValue(groups []StatisticsGroup, dimension, value
 	return false
 }
 
-func statisticsQueryIsUnfiltered(query PromptQuery) bool {
+func statisticsQueryIsUnfiltered(query StatisticsQuery) bool {
 	return query.Provider == "" && query.Since == nil && query.Until == nil && query.CWD == "" && query.Repo == "" && query.Project == "" && query.Branch == "" &&
-		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all") && len(query.PromptKinds) == 0 && !query.ExcludeControl
+		(query.Source == "" || query.Source == CatalogSourceAny) && (query.ThreadKind == "" || query.ThreadKind == "all") && len(query.PromptKinds) == 0 && !query.ExcludeControl &&
+		(query.ProjectSource == "" || query.ProjectSource == SampleProjectSourceAny)
 }
 
 func statisticsDimensions(requested []string) ([]string, []string, error) {

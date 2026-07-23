@@ -771,9 +771,14 @@ func (s *Store) promptProvenanceIDs(promptID int64, table, occurrenceColumn stri
 }
 
 func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, error) {
+	return s.promptCoverageForProjectSource(query, SampleProjectSourceAny)
+}
+
+func (s *Store) promptCoverageForProjectSource(query PromptQuery, projectSource string) (QueryCoverage, []string, error) {
 	base := query
 	base.Since, base.Until = nil, nil
 	where, args := promptWhere(base, true, "p", "s")
+	where, args = appendProjectSourceFilter(where, args, "s", projectSource)
 	var first, last sql.NullString
 	if err := s.runner.QueryRow(`SELECT MIN(`+sqliteTimestampKey("p.timestamp")+`),MAX(`+sqliteTimestampKey("p.timestamp")+`)
 		FROM prompts p JOIN sessions s ON s.id=p.session_id WHERE p.timestamp IS NOT NULL AND p.timestamp<>'' AND `+strings.Join(where, " AND "), args...).Scan(&first, &last); err != nil {
@@ -782,6 +787,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	coverageQuery := query
 	coverageQuery.Repo, coverageQuery.Project, coverageQuery.Branch = "", "", ""
 	coverageWhere, coverageArgs := promptWhere(coverageQuery, false, "p", "s")
+	coverageWhere, coverageArgs = appendProjectSourceFilter(coverageWhere, coverageArgs, "s", projectSource)
 	var coverage QueryCoverage
 	coverage.FirstTimestamp, coverage.LastTimestamp = optionalCatalogString(first), optionalCatalogString(last)
 	coverage.Roles.AssistantIndexed = query.assistantIndexed
@@ -789,6 +795,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	roleQuery := base
 	roleQuery.Role = "any"
 	roleWhere, roleArgs := promptWhere(roleQuery, true, "p", "s")
+	roleWhere, roleArgs = appendProjectSourceFilter(roleWhere, roleArgs, "s", projectSource)
 	var userFirst, userLast, assistantFirst, assistantLast sql.NullString
 	if err := s.runner.QueryRow(`SELECT
 		COUNT(CASE WHEN p.role='user' THEN 1 END),
@@ -819,6 +826,7 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 	}
 	coverageQuery.ThreadKind = "all"
 	coverageWhere, coverageArgs = promptWhere(coverageQuery, false, "p", "s")
+	coverageWhere, coverageArgs = appendProjectSourceFilter(coverageWhere, coverageArgs, "s", projectSource)
 	if err := s.runner.QueryRow(`SELECT
 		COUNT(DISTINCT CASE WHEN s.thread_kind='root' THEN s.id END),
 		COUNT(DISTINCT CASE WHEN s.thread_kind='subagent' THEN s.id END),
@@ -832,6 +840,13 @@ func (s *Store) promptCoverage(query PromptQuery) (QueryCoverage, []string, erro
 		warnings = append(warnings, "user and assistant role coverage differs materially; qualify conclusions using data.coverage.roles")
 	}
 	return coverage, warnings, nil
+}
+
+func appendProjectSourceFilter(where []string, args []any, sessionAlias, projectSource string) ([]string, []any) {
+	if projectSource == "" || projectSource == SampleProjectSourceAny {
+		return where, args
+	}
+	return append(where, sessionAlias+".project_source=?"), append(args, projectSource)
 }
 
 func materiallyDifferentRoleCoverage(coverage RoleQueryCoverage) bool {

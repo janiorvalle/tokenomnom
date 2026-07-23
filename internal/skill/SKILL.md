@@ -38,7 +38,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
 - Prompt enumeration: `tokenomnom history prompts --limit 100 --format json`; the default kind is `human`. Use `--prompt-kind` for complete provider envelopes, and `--include-text` only when complete clean prompts are necessary.
 - Corpus statistics: `tokenomnom history stats --group-by provider --top 20 --format json`; inspect `groups_truncated` and `other`, and never infer conclusions from counts without checking coverage and warnings.
-- Broad corpus analysis: use `tokenomnom history sample --strategy stratified --group-by month,project --count 25 --min-length 40 --one-per-session --format json` only when project coverage is meaningful for the question. `project` is the cross-provider grouping, but cwd-derived projects can still be task folders; use `--group-by month,cwd`, or drop project grouping and keep `--min-length`, when project labels are noisy. `--repo` remains strictly git-proven. Use a different `--seed` only when another deterministic sample is needed.
+- Broad corpus analysis: use `tokenomnom history sample --strategy stratified --group-by month,project --count 25 --min-length 40 --one-per-session --format json` only when project coverage is meaningful for the question. `project` is the cross-provider grouping, but cwd-derived projects can still be task folders; use `--project-source git` or drop project grouping for an ungrouped sample when project labels are noisy. `--min-stratum-size` can fold small eligible strata into the remainder without guessing from names, and `--repo` remains strictly git-proven. Use a different `--seed` only when another deterministic sample is needed.
 
 Provider, model, and explicit date filters are available on report commands.
 
@@ -85,8 +85,9 @@ For "what did I work on" or "how did I prompt X":
 5. For broad corpus questions without known language, use deterministic
    stratified sampling. Use `tokenomnom history sample --group-by month,project
    --count 25 --format json` only when project coverage is meaningful. Because
-   cwd-derived projects can still be task folders, fall back to `--group-by
-   month,cwd` or an ungrouped sample with `--min-length`. The default seed is stable;
+   cwd-derived projects can still be task folders, add `--project-source git`
+   or use an ungrouped sample with `--min-length` when project labels are noisy.
+   Use `--min-stratum-size` when small strata would fragment allocation. The default seed is stable;
    state the strata and
    returned-sample coverage rather than treating the sample as a generated
    topic model. Use status or stats for full-index coverage.

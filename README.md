@@ -114,8 +114,8 @@ tokenomnom history search "proposed approach" --role assistant
 tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history prompts --limit 100
-tokenomnom history stats --group-by provider --top 20
-tokenomnom history sample --group-by month,project --count 25 --min-length 40 --one-per-session
+tokenomnom history stats --project-source git --group-by project --top 20
+tokenomnom history sample --group-by month,project --min-stratum-size 2 --count 25 --min-length 40 --one-per-session
 tokenomnom history status
 tokenomnom history purge
 ```
@@ -152,7 +152,12 @@ otherwise `unknown`; every value is labeled with
 unknown. Grouped statistics and sampling fold project labels seen in fewer
 than two sessions into a visible `other` group without changing stored session
 metadata.
-Use `--project` or `--group-by project` for cross-provider grouping. The
+Use `--project` or `--group-by project` for cross-provider grouping.
+`--project-source git|cwd|any` on stats and sampling restricts the eligible
+corpus by provenance; unknown-project sessions are included only by the default
+`any`. Sampling can additionally fold any eligible stratum smaller than
+`--min-stratum-size` into its visible `other` remainder before stratified
+allocation. Values greater than one require `--group-by`. The
 stricter repository and branch filters remain complete for Codex but partial
 for Claude Code, and repository fields are never inferred from cwd. Root versus
 subagent classification comes from direct provider evidence or versioned
@@ -180,7 +185,8 @@ stratifies when you pass `--group-by month,project,thread-kind`.
 prevents one long conversation from dominating a prompt sample.
 Default prompt samples omit relationship and occurrence arrays while retaining
 exact occurrence counts, nonzero availability counts, and an opaque preferred
-location. Default snippets are capped at 64 UTF-8 bytes.
+location. Default snippets are capped at 140 UTF-8 bytes;
+`--snippet-length N` accepts 32 through 512 bytes.
 `--all-occurrences` restores the bounded full prompt metadata.
 
 On privacy: indexing never runs implicitly from usage reports or normal
