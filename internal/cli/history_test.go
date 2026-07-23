@@ -986,6 +986,41 @@ func TestHistoryRepositoryAndProjectFiltersCoverageAndGrouping(t *testing.T) {
 	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &sample) != nil || len(sample.Items) != 1 || sample.Items[0].Groups["project"] != "other" || sample.Items[0].Groups["project_source"] != "unknown" {
 		t.Fatalf("project sample err=%v value=%+v", err, sample)
 	}
+
+	output, err = executeReport([]string{"history", "stats", "--project-source", "git", "--group-by", "project", "--format", "json"}, codexDir, claudeDir)
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &stats) != nil || stats.ProjectSource != "git" || stats.LogicalPrompts != 1 ||
+		stats.Coverage.Project.Git != 1 || stats.Coverage.Project.CWD != 0 || stats.Coverage.Project.Unknown != 0 {
+		t.Fatalf("git-source stats err=%v value=%+v", err, stats)
+	}
+
+	output, err = executeReport([]string{"history", "sample", "--project-source", "cwd", "--snippet-length", "32", "--min-stratum-size", "2", "--group-by", "project", "--count", "1", "--format", "json"}, codexDir, claudeDir)
+	if err != nil || json.Unmarshal(decodeEnvelope(t, output).Data, &sample) != nil || len(sample.Items) != 1 || sample.ProjectSource != "cwd" ||
+		sample.SnippetLength != 32 || sample.MinStratumSize != 2 || sample.Items[0].Prompt.ProjectSource != history.ProjectSourceCWD {
+		t.Fatalf("cwd-source sample err=%v value=%+v", err, sample)
+	}
+}
+
+func TestHistorySamplingNoiseFlagValidation(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"history", "sample", "--snippet-length", "31"}, want: "--snippet-length must be between 32 and 512"},
+		{args: []string{"history", "sample", "--snippet-length", "513"}, want: "--snippet-length must be between 32 and 512"},
+		{args: []string{"history", "sample", "--min-stratum-size", "0"}, want: "--min-stratum-size must be one or greater"},
+		{args: []string{"history", "sample", "--min-stratum-size", "2"}, want: "requires stratified sampling with --group-by"},
+		{args: []string{"history", "sample", "--group-by", "repo", "--strategy", "random", "--min-stratum-size", "2"}, want: "requires stratified sampling with --group-by"},
+		{args: []string{"history", "sample", "--project-source", "unknown"}, want: "invalid --project-source"},
+		{args: []string{"history", "stats", "--project-source", "unknown"}, want: "invalid --project-source"},
+	}
+	for _, test := range tests {
+		if _, err := executeReport(test.args, codexDir, claudeDir); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("args=%v error=%v, want %q", test.args, err, test.want)
+		}
+	}
 }
 
 func TestHistoryCommandsUseOneEffectiveTimezone(t *testing.T) {

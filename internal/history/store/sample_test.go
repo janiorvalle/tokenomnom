@@ -12,10 +12,14 @@ import (
 )
 
 func TestBoundSampleSnippetPreservesUTF8WithinBudget(t *testing.T) {
-	value := strings.Repeat("é", maxSampleSnippetBytes)
-	bounded := boundSampleSnippet(value)
-	if len(bounded) > maxSampleSnippetBytes || !utf8.ValidString(bounded) {
+	value := strings.Repeat("é", defaultSampleSnippetBytes)
+	bounded := boundSampleSnippet(value, defaultSampleSnippetBytes)
+	if len(bounded) > defaultSampleSnippetBytes || !utf8.ValidString(bounded) {
 		t.Fatalf("bounded snippet bytes=%d valid=%t", len(bounded), utf8.ValidString(bounded))
+	}
+	custom := boundSampleSnippet(strings.Repeat("é", 100), 33)
+	if len(custom) != 32 || !utf8.ValidString(custom) {
+		t.Fatalf("custom bounded snippet bytes=%d valid=%t", len(custom), utf8.ValidString(custom))
 	}
 }
 
@@ -103,6 +107,131 @@ func TestSampleMinLengthAndOnePerSessionComposeDeterministically(t *testing.T) {
 			t.Fatalf("sample item %d first=%+v second=%+v", index, firstRun.Items[index], secondRun.Items[index])
 		}
 		seenSessions[prompt.SessionID] = true
+	}
+}
+
+func TestSampleSnippetLengthDefaultsValidatesAndHonorsOverride(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/snippet-length.jsonl", history.LocationProviderLive)
+	value := prompt("native:snippet-length", "snippet-length", strings.Repeat("é", 300), 1)
+	if _, err := database.ApplySource(extraction("native:snippet-length", "snippet-length", source, value), head(source, "snippet-length", 1000, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	defaultResult, err := database.Sample(SampleQuery{Count: 1})
+	if err != nil || defaultResult.SnippetLength != defaultSampleSnippetBytes || len(defaultResult.Items[0].Prompt.Snippet) != defaultSampleSnippetBytes {
+		t.Fatalf("default snippet result=%+v err=%v", defaultResult, err)
+	}
+	custom, err := database.Sample(SampleQuery{Count: 1, SnippetLength: 33})
+	if err != nil || custom.SnippetLength != 33 || len(custom.Items[0].Prompt.Snippet) != 32 || !utf8.ValidString(custom.Items[0].Prompt.Snippet) {
+		t.Fatalf("custom snippet result=%+v err=%v", custom, err)
+	}
+	expanded, err := database.Sample(SampleQuery{PromptQuery: PromptQuery{AllOccurrences: true}, Count: 1, SnippetLength: 33})
+	if err != nil || len(expanded.Items[0].Prompt.Snippet) != 32 {
+		t.Fatalf("expanded custom snippet result=%+v err=%v", expanded, err)
+	}
+	session, err := database.Sample(SampleQuery{Unit: SampleUnitSession, Count: 1, SnippetLength: 33})
+	if err != nil || len(session.Items[0].Session.Preview) != 32 {
+		t.Fatalf("session custom snippet result=%+v err=%v", session, err)
+	}
+	for _, length := range []int{31, 513} {
+		if _, err := database.Sample(SampleQuery{Count: 1, SnippetLength: length}); err == nil {
+			t.Fatalf("snippet length %d succeeded", length)
+		}
+	}
+	if _, err := database.Sample(SampleQuery{Count: 1, MinStratumSize: 2}); err == nil {
+		t.Fatal("ungrouped minimum stratum size succeeded")
+	}
+	if _, err := database.Sample(SampleQuery{Count: 1, GroupBy: []string{"repo"}, Strategy: SampleStrategyRandom, MinStratumSize: 2}); err == nil {
+		t.Fatal("random minimum stratum size succeeded")
+	}
+}
+
+func TestSampleProjectSourceAndMinimumStratumSizeComposeDeterministically(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	type fixture struct {
+		repo string
+		cwd  string
+		text string
+	}
+	fixtures := []fixture{
+		{repo: "alpha", text: "alpha eligible one"},
+		{repo: "alpha", text: "alpha eligible two"},
+		{repo: "alpha", text: "alpha eligible three"},
+		{repo: "beta", text: "beta eligible"},
+		{repo: "beta", text: "no"},
+		{repo: "gamma", text: "gamma eligible"},
+		{cwd: "/workspace/cwd-only", text: "cwd eligible"},
+		{text: "unknown eligible"},
+	}
+	for index, item := range fixtures {
+		source := sourceRef(fmt.Sprintf("/provider/noise-%d.jsonl", index), history.LocationProviderLive)
+		extract := extraction(fmt.Sprintf("native:noise-%d", index), fmt.Sprintf("noise-%d", index), source,
+			prompt(fmt.Sprintf("native:noise-p-%d", index), fmt.Sprintf("noise-p-%d", index), item.text, 1))
+		extract.Session.RepositoryName = item.repo
+		extract.Session.CWD = item.cwd
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("noise-%d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := SampleQuery{
+		Count: 10, Seed: "noise-controls", GroupBy: []string{"repo"}, MinLength: 10,
+		MinStratumSize: 2, ProjectSource: string(history.ProjectSourceGit),
+	}
+	first, err := database.Sample(query)
+	second, secondErr := database.Sample(query)
+	if err != nil || secondErr != nil || len(first.Items) != 5 || len(second.Items) != 5 {
+		t.Fatalf("noise samples first=%+v second=%+v err=%v/%v", first, second, err, secondErr)
+	}
+	groups := map[string]int{}
+	for index, item := range first.Items {
+		if item.Prompt.ProjectSource != history.ProjectSourceGit || item.Prompt.PromptID != second.Items[index].Prompt.PromptID {
+			t.Fatalf("sample item %d first=%+v second=%+v", index, item, second.Items[index])
+		}
+		groups[item.Groups["repo"]]++
+	}
+	if groups["alpha"] != 3 || groups["other"] != 2 || first.Coverage.Project.Git != 5 || first.Coverage.Project.CWD != 0 || first.Coverage.Project.Unknown != 0 {
+		t.Fatalf("folded groups=%+v coverage=%+v", groups, first.Coverage)
+	}
+	cwd, err := database.Sample(SampleQuery{Count: 10, ProjectSource: string(history.ProjectSourceCWD)})
+	if err != nil || len(cwd.Items) != 1 || cwd.Items[0].Prompt.ProjectSource != history.ProjectSourceCWD {
+		t.Fatalf("cwd-only sample=%+v err=%v", cwd, err)
+	}
+	any, err := database.Sample(SampleQuery{Count: 20, ProjectSource: SampleProjectSourceAny})
+	if err != nil || len(any.Items) != len(fixtures) {
+		t.Fatalf("any-source sample=%+v err=%v", any, err)
+	}
+}
+
+func TestStatisticsProjectSourceFiltersTotalsGroupsAndCoverage(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index, repository := range []string{"alpha", "beta"} {
+		source := sourceRef(fmt.Sprintf("/provider/stats-source-%d.jsonl", index), history.LocationProviderLive)
+		extract := extraction(fmt.Sprintf("native:stats-source-%d", index), fmt.Sprintf("stats-source-%d", index), source,
+			prompt(fmt.Sprintf("native:stats-source-p-%d", index), fmt.Sprintf("stats-source-p-%d", index), "stats source prompt", 1))
+		if repository == "alpha" {
+			extract.Session.RepositoryName = repository
+		} else {
+			extract.Session.CWD = "/workspace/" + repository
+		}
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("stats-source-%d", index), 100, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := database.Statistics(StatisticsQuery{
+		PromptQuery: PromptQuery{Source: CatalogSourceAny}, GroupBy: []string{"project"},
+		ProjectSource: string(history.ProjectSourceGit),
+	})
+	if err != nil || stats.LogicalSessions != 1 || stats.LogicalPrompts != 1 || stats.ProjectSource != string(history.ProjectSourceGit) ||
+		stats.Coverage.Project.Git != 1 || stats.Coverage.Project.CWD != 0 || stats.Coverage.Project.Unknown != 0 {
+		t.Fatalf("git statistics=%+v err=%v", stats, err)
+	}
+	for _, group := range stats.Groups {
+		if group.Values["project_source"] != string(history.ProjectSourceUnknown) && group.Values["project_source"] != string(history.ProjectSourceGit) {
+			t.Fatalf("unexpected project source group=%+v", group)
+		}
 	}
 }
 

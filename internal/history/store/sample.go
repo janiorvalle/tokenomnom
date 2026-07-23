@@ -20,7 +20,12 @@ const (
 
 	SampleStrategyRandom     = "random"
 	SampleStrategyStratified = "stratified"
-	maxSampleSnippetBytes    = 64
+
+	SampleProjectSourceAny = "any"
+
+	defaultSampleSnippetBytes = 140
+	minSampleSnippetBytes     = 32
+	maxSampleSnippetBytes     = 512
 )
 
 // SampleQuery selects a bounded deterministic sample of logical units.
@@ -32,6 +37,9 @@ type SampleQuery struct {
 	Count              int
 	Seed               string
 	MinLength          int
+	MinStratumSize     int
+	SnippetLength      int
+	ProjectSource      string
 	OnePerSession      bool
 	excludedSessionIDs []string
 }
@@ -57,22 +65,26 @@ type SampleItem struct {
 
 // SampleResult is a deterministic, generation-bound sample.
 type SampleResult struct {
-	Items      []SampleItem   `json:"items"`
-	Unit       string         `json:"unit"`
-	Strategy   string         `json:"strategy"`
-	GroupBy    []string       `json:"group_by"`
-	Count      int            `json:"count"`
-	Seed       string         `json:"seed"`
-	Generation int64          `json:"index_generation"`
-	Coverage   SampleCoverage `json:"coverage"`
-	Warnings   []string       `json:"-"`
+	Items          []SampleItem   `json:"items"`
+	Unit           string         `json:"unit"`
+	Strategy       string         `json:"strategy"`
+	GroupBy        []string       `json:"group_by"`
+	Count          int            `json:"count"`
+	Seed           string         `json:"seed"`
+	SnippetLength  int            `json:"snippet_length"`
+	MinStratumSize int            `json:"min_stratum_size"`
+	ProjectSource  string         `json:"project_source"`
+	Generation     int64          `json:"index_generation"`
+	Coverage       SampleCoverage `json:"coverage"`
+	Warnings       []string       `json:"-"`
 }
 
 type sampleGroup struct {
-	values  map[string]string
-	key     string
-	hash    []byte
-	encoded string
+	values          map[string]string
+	key             string
+	hash            []byte
+	encoded         string
+	memberEncodings []string
 }
 
 type sampleState struct {
@@ -486,6 +498,24 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	if query.MinLength < 0 {
 		return SampleResult{}, errors.New("history sample minimum length must be zero or greater")
 	}
+	if query.MinStratumSize == 0 {
+		query.MinStratumSize = 1
+	}
+	if query.MinStratumSize < 1 {
+		return SampleResult{}, errors.New("history sample minimum stratum size must be one or greater")
+	}
+	if query.SnippetLength == 0 {
+		query.SnippetLength = defaultSampleSnippetBytes
+	}
+	if query.SnippetLength < minSampleSnippetBytes || query.SnippetLength > maxSampleSnippetBytes {
+		return SampleResult{}, fmt.Errorf("history sample snippet length must be between %d and %d", minSampleSnippetBytes, maxSampleSnippetBytes)
+	}
+	if query.ProjectSource == "" {
+		query.ProjectSource = SampleProjectSourceAny
+	}
+	if !validSampleProjectSource(query.ProjectSource) {
+		return SampleResult{}, fmt.Errorf("invalid history sample project source %q", query.ProjectSource)
+	}
 	if query.Seed == "" {
 		query.Seed = "tokenomnom"
 	}
@@ -505,6 +535,9 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	}
 	if query.Strategy == SampleStrategyStratified && len(groups) == 0 {
 		return SampleResult{}, errors.New("stratified history sampling requires --group-by")
+	}
+	if query.MinStratumSize > 1 && query.Strategy != SampleStrategyStratified {
+		return SampleResult{}, errors.New("history sample minimum stratum size requires stratified sampling with --group-by")
 	}
 	ready, err := s.Meta("sampling_ready")
 	if err != nil {
@@ -647,9 +680,7 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 				prompt.Text = nil
 			}
 			prompt.sampleCompact = !query.AllOccurrences
-			if prompt.sampleCompact {
-				prompt.Snippet = boundSampleSnippet(prompt.Snippet)
-			}
+			prompt.Snippet = boundSampleSnippet(prompt.Snippet, query.SnippetLength)
 			if len(item.Groups) == 0 && len(query.GroupBy) > 0 {
 				item.Groups = promptSampleGroups(prompt, query.GroupBy)
 			}
@@ -659,6 +690,7 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 			if err != nil {
 				return SampleResult{}, err
 			}
+			session.Preview = boundSampleSnippet(session.Preview, query.SnippetLength)
 			item.Session = &session
 			if len(item.Groups) == 0 && len(query.GroupBy) > 0 {
 				item.Groups = sessionSampleGroups(session, query.GroupBy)
@@ -674,14 +706,15 @@ func (s *Store) Sample(query SampleQuery) (SampleResult, error) {
 	}
 	coverage := sampleCoverage(items)
 	return SampleResult{Items: items, Unit: query.Unit, Strategy: query.Strategy, GroupBy: query.GroupBy,
-		Count: len(items), Seed: query.Seed, Generation: generation, Coverage: coverage, Warnings: sampleWarnings(query)}, nil
+		Count: len(items), Seed: query.Seed, SnippetLength: query.SnippetLength, MinStratumSize: query.MinStratumSize,
+		ProjectSource: query.ProjectSource, Generation: generation, Coverage: coverage, Warnings: sampleWarnings(query)}, nil
 }
 
-func boundSampleSnippet(value string) string {
-	if len(value) <= maxSampleSnippetBytes {
+func boundSampleSnippet(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
 		return value
 	}
-	value = value[:maxSampleSnippetBytes]
+	value = value[:maxBytes]
 	for !utf8.ValidString(value) {
 		value = value[:len(value)-1]
 	}
@@ -832,22 +865,44 @@ func supportedSampleGroupCombination(value string) bool {
 	}
 }
 
+func validSampleProjectSource(value string) bool {
+	return value == SampleProjectSourceAny || value == string(history.ProjectSourceGit) || value == string(history.ProjectSourceCWD)
+}
+
 func (s *Store) sampleGroups(query SampleQuery) ([]sampleGroup, error) {
-	rows, err := s.runner.Query(`SELECT group_values,group_key FROM sample_groups WHERE unit_kind=? AND dimensions=? ORDER BY group_key`,
-		query.Unit, strings.Join(query.GroupBy, ","))
+	if query.MinStratumSize <= 1 && (query.ProjectSource == "" || query.ProjectSource == SampleProjectSourceAny) {
+		return s.indexedSampleGroups(query)
+	}
+	where, whereArgs, from := sampleBaseQuery(query)
+	unitID := "p.id"
+	countExpression := "COUNT(*)"
+	if query.Unit == SampleUnitSession {
+		unitID = "s.id"
+	}
+	if query.OnePerSession {
+		countExpression = "COUNT(DISTINCT s.id)"
+	}
+	from += ` JOIN sample_strata sample_group ON sample_group.unit_kind=? AND sample_group.unit_id=` + unitID + ` AND sample_group.dimensions=?`
+	args := []any{query.Unit, strings.Join(query.GroupBy, ",")}
+	args = append(args, whereArgs...)
+	rows, err := s.runner.Query(`SELECT sample_group.group_values,sample_group.group_key,`+countExpression+`
+		FROM `+from+` WHERE `+strings.Join(where, " AND ")+`
+		GROUP BY sample_group.group_values,sample_group.group_key ORDER BY sample_group.group_key`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list history sample groups: %w", err)
 	}
 	defer rows.Close()
 	result := []sampleGroup{}
+	remainderMembers := []string{}
+	expanded := expandedProjectDimensions(query.GroupBy)
 	for rows.Next() {
 		var encoded string
 		var hash []byte
-		if err := rows.Scan(&encoded, &hash); err != nil {
+		var eligible int
+		if err := rows.Scan(&encoded, &hash, &eligible); err != nil {
 			return nil, fmt.Errorf("scan history sample group: %w", err)
 		}
 		var values []string
-		expanded := expandedProjectDimensions(query.GroupBy)
 		if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(expanded) {
 			return nil, errors.New("invalid indexed history sample group")
 		}
@@ -858,7 +913,67 @@ func (s *Store) sampleGroups(query SampleQuery) ([]sampleGroup, error) {
 			parts[i] = expanded[i] + "=" + value
 		}
 		key := strings.Join(parts, "\x00")
-		result = append(result, sampleGroup{values: mapping, key: key, hash: append([]byte(nil), hash...), encoded: encoded})
+		if query.MinStratumSize > 1 && (eligible < query.MinStratumSize || mapping["project"] == "other") {
+			remainderMembers = append(remainderMembers, encoded)
+			continue
+		}
+		result = append(result, sampleGroup{
+			values: mapping, key: key, hash: append([]byte(nil), hash...), encoded: encoded,
+			memberEncodings: []string{encoded},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(remainderMembers) > 0 {
+		mapping := make(map[string]string, len(expanded))
+		parts := make([]string, len(expanded))
+		for index, dimension := range expanded {
+			value := "other"
+			if dimension == "project_source" {
+				value = string(history.ProjectSourceUnknown)
+			}
+			mapping[dimension] = value
+			parts[index] = dimension + "=" + value
+		}
+		key := strings.Join(parts, "\x00")
+		result = append(result, sampleGroup{
+			values: mapping, key: key, hash: sampleKey(key), memberEncodings: remainderMembers,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].key < result[j].key })
+	return result, nil
+}
+
+func (s *Store) indexedSampleGroups(query SampleQuery) ([]sampleGroup, error) {
+	rows, err := s.runner.Query(`SELECT group_values,group_key FROM sample_groups WHERE unit_kind=? AND dimensions=? ORDER BY group_key`,
+		query.Unit, strings.Join(query.GroupBy, ","))
+	if err != nil {
+		return nil, fmt.Errorf("list indexed history sample groups: %w", err)
+	}
+	defer rows.Close()
+	result := []sampleGroup{}
+	expanded := expandedProjectDimensions(query.GroupBy)
+	for rows.Next() {
+		var encoded string
+		var hash []byte
+		if err := rows.Scan(&encoded, &hash); err != nil {
+			return nil, fmt.Errorf("scan indexed history sample group: %w", err)
+		}
+		var values []string
+		if err := json.Unmarshal([]byte(encoded), &values); err != nil || len(values) != len(expanded) {
+			return nil, errors.New("invalid indexed history sample group")
+		}
+		mapping := make(map[string]string, len(values))
+		parts := make([]string, len(values))
+		for index, value := range values {
+			mapping[expanded[index]] = value
+			parts[index] = expanded[index] + "=" + value
+		}
+		result = append(result, sampleGroup{
+			values: mapping, key: strings.Join(parts, "\x00"), hash: append([]byte(nil), hash...),
+			encoded: encoded, memberEncodings: []string{encoded},
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -892,15 +1007,23 @@ func (s *Store) nextSampleID(query SampleQuery, pivot []byte, state *sampleState
 	if query.Unit == SampleUnitSession {
 		keyColumn, idColumn, sessionColumn = "s.sample_key", "s.public_id", "s.public_id"
 	}
-	if state.group.encoded != "" {
+	if len(state.group.memberEncodings) > 0 {
 		unitID := "p.id"
 		if query.Unit == SampleUnitSession {
 			unitID = "s.id"
 		}
 		from += ` JOIN sample_strata ssg ON ssg.unit_kind=? AND ssg.unit_id=` + unitID
 		joinArgs = append(joinArgs, query.Unit)
-		where = append(where, `ssg.dimensions=?`, `ssg.group_values=?`)
-		whereArgs = append(whereArgs, strings.Join(query.GroupBy, ","), state.group.encoded)
+		where = append(where, `ssg.dimensions=?`)
+		whereArgs = append(whereArgs, strings.Join(query.GroupBy, ","))
+		if len(state.group.memberEncodings) == 1 {
+			where = append(where, `ssg.group_values=?`)
+			whereArgs = append(whereArgs, state.group.memberEncodings[0])
+		} else {
+			encodedMembers, _ := json.Marshal(state.group.memberEncodings)
+			where = append(where, `ssg.group_values IN (SELECT value FROM json_each(?))`)
+			whereArgs = append(whereArgs, string(encodedMembers))
+		}
 		keyColumn = "ssg.sample_key"
 	}
 	for index, filter := range indexedSampleFilters(query) {
@@ -1028,11 +1151,19 @@ func sampleBaseQuery(query SampleQuery) ([]string, []any, string) {
 		catalog := CatalogQuery{Provider: query.Provider, Since: query.Since, Until: query.Until, CWD: query.CWD,
 			Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, ThreadKind: query.ThreadKind}
 		where, args := catalogWhere(catalog, true)
+		if query.ProjectSource != "" && query.ProjectSource != SampleProjectSourceAny {
+			where = append(where, "s.project_source=?")
+			args = append(args, query.ProjectSource)
+		}
 		where = append(where, `EXISTS(SELECT 1 FROM prompts p JOIN occurrences o ON o.prompt_id=p.id JOIN locations l ON l.id=o.location_id
 			WHERE p.session_id=s.id AND p.searchable=1 AND p.role='user' AND p.prompt_kind='human' AND l.available=1)`)
 		return where, args, "sessions s"
 	}
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
+	if query.ProjectSource != "" && query.ProjectSource != SampleProjectSourceAny {
+		where = append(where, "s.project_source=?")
+		args = append(args, query.ProjectSource)
+	}
 	if query.MinLength > 0 {
 		where = append(where, "length(p.clean_text)>=?")
 		args = append(args, query.MinLength)

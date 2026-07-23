@@ -264,8 +264,8 @@ func newHistoryPromptsCommand() *cobra.Command {
 
 func newHistorySampleCommand() *cobra.Command {
 	var flags historyQueryFlags
-	var unit, strategy, groupBy, seed string
-	var count int
+	var unit, strategy, groupBy, seed, projectSource string
+	var count, snippetLength, minStratumSize int
 	var includeText, allOccurrences, onePerSession bool
 	var minLength int
 	command := &cobra.Command{
@@ -294,6 +294,18 @@ func newHistorySampleCommand() *cobra.Command {
 			if minLength < 0 {
 				return errors.New("--min-length must be zero or greater")
 			}
+			if snippetLength < 32 || snippetLength > 512 {
+				return errors.New("--snippet-length must be between 32 and 512")
+			}
+			if minStratumSize < 1 {
+				return errors.New("--min-stratum-size must be one or greater")
+			}
+			if minStratumSize > 1 && (groupBy == "" || strategy == "random") {
+				return errors.New("--min-stratum-size greater than one requires stratified sampling with --group-by")
+			}
+			if projectSource != "any" && projectSource != "git" && projectSource != "cwd" {
+				return fmt.Errorf("invalid --project-source %q (expected git, cwd, or any)", projectSource)
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -310,7 +322,11 @@ func newHistorySampleCommand() *cobra.Command {
 			var result historystore.SampleResult
 			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
 				var err error
-				result, err = database.Sample(historystore.SampleQuery{PromptQuery: query, Unit: unit, Strategy: strategy, GroupBy: groups, Count: count, Seed: seed, MinLength: minLength, OnePerSession: onePerSession})
+				result, err = database.Sample(historystore.SampleQuery{
+					PromptQuery: query, Unit: unit, Strategy: strategy, GroupBy: groups, Count: count, Seed: seed,
+					MinLength: minLength, MinStratumSize: minStratumSize, SnippetLength: snippetLength,
+					ProjectSource: projectSource, OnePerSession: onePerSession,
+				})
 				return err
 			}); err != nil {
 				return err
@@ -364,13 +380,16 @@ func newHistorySampleCommand() *cobra.Command {
 	command.Flags().BoolVar(&includeText, "include-text", false, "include complete clean prompt text")
 	command.Flags().BoolVar(&allOccurrences, "all-occurrences", false, "include bounded full prompt provenance metadata")
 	command.Flags().IntVar(&minLength, "min-length", 0, "minimum cleaned prompt characters")
+	command.Flags().IntVar(&snippetLength, "snippet-length", 140, "maximum sample snippet bytes (32-512)")
+	command.Flags().IntVar(&minStratumSize, "min-stratum-size", 1, "fold smaller eligible strata into the remainder")
+	command.Flags().StringVar(&projectSource, "project-source", "any", "filter by project provenance (git, cwd, or any)")
 	command.Flags().BoolVar(&onePerSession, "one-per-session", false, "sample at most one prompt per session")
 	return command
 }
 
 func newHistoryStatsCommand() *cobra.Command {
 	var flags historyQueryFlags
-	var groupBy string
+	var groupBy, projectSource string
 	var top int
 	command := &cobra.Command{
 		Use:   "stats",
@@ -385,6 +404,9 @@ func newHistoryStatsCommand() *cobra.Command {
 			}
 			if top < 1 || top > 100 {
 				return errors.New("--top must be between 1 and 100")
+			}
+			if projectSource != "any" && projectSource != "git" && projectSource != "cwd" {
+				return fmt.Errorf("invalid --project-source %q (expected git, cwd, or any)", projectSource)
 			}
 			return nil
 		},
@@ -404,7 +426,7 @@ func newHistoryStatsCommand() *cobra.Command {
 			}
 			if err := withHistoryStore(cmd, func(database *historystore.Store) error {
 				var err error
-				value, err = database.Statistics(historystore.StatisticsQuery{PromptQuery: query, GroupBy: groups, Top: top})
+				value, err = database.Statistics(historystore.StatisticsQuery{PromptQuery: query, GroupBy: groups, Top: top, ProjectSource: projectSource})
 				return err
 			}); err != nil {
 				return err
@@ -443,6 +465,7 @@ func newHistoryStatsCommand() *cobra.Command {
 	_ = command.Flags().MarkHidden("cursor")
 	command.Flags().StringVar(&groupBy, "group-by", "", "group by provider, project, repo, cwd, thread-kind, weekday, hour, and/or role")
 	command.Flags().IntVar(&top, "top", 20, "maximum groups to return (1-100)")
+	command.Flags().StringVar(&projectSource, "project-source", "any", "filter by project provenance (git, cwd, or any)")
 	return command
 }
 

@@ -56,15 +56,20 @@ func TestCompactOutputBudgetForTwentyFiveItems(t *testing.T) {
 	defer database.Close()
 	for index := 0; index < 25; index++ {
 		source := sourceRef(fmt.Sprintf("/provider/compact-%02d.jsonl", index), history.LocationProviderLive)
-		value := prompt(fmt.Sprintf("native:p-%02d", index), fmt.Sprintf("p-%02d", index), fmt.Sprintf("compact prompt %02d", index), 1)
+		value := prompt(fmt.Sprintf("native:p-%02d", index), fmt.Sprintf("p-%02d", index), fmt.Sprintf("compact prompt %02d %s", index, strings.Repeat("x", 512)), 1)
 		if _, err := database.ApplySource(extraction(fmt.Sprintf("native:s-%02d", index), fmt.Sprintf("s-%02d", index), source, value), head(source, fmt.Sprintf("hash-%02d", index), 100, 1), ApplyReplace); err != nil {
 			t.Fatal(err)
 		}
 	}
 	result, err := database.Sample(SampleQuery{Count: 25})
 	encoded, marshalErr := json.Marshal(result)
-	if err != nil || marshalErr != nil || len(result.Items) != 25 || len(encoded) > 16<<10 {
+	if err != nil || marshalErr != nil || len(result.Items) != 25 || len(encoded) > 24<<10 {
 		t.Fatalf("compact sample items=%d bytes=%d query_err=%v marshal_err=%v", len(result.Items), len(encoded), err, marshalErr)
+	}
+	for _, item := range result.Items {
+		if item.Prompt == nil || len(item.Prompt.Snippet) != defaultSampleSnippetBytes {
+			t.Fatalf("default snippet=%+v", item.Prompt)
+		}
 	}
 }
 
