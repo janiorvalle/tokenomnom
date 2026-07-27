@@ -9,7 +9,7 @@ import (
 
 func TestEmbeddedSkillContentGuard(t *testing.T) {
 	contents := string(Embedded())
-	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "schedule status", "history status", "history index", "history search", "history list", "history prompts", "history show", "history stats", "history sample"} {
+	for _, command := range []string{"summary", "daily", "monthly", "models", "heatmap", "pricing", "doctor", "sync", "export", "install-skill", "schedule status", "history status", "history index", "history search", "history list", "history prompts", "history show", "history export", "history stats", "history sample"} {
 		if !strings.Contains(contents, "tokenomnom "+command) {
 			t.Errorf("embedded skill does not mention command %q", command)
 		}
@@ -59,6 +59,11 @@ func TestEmbeddedSkillContentGuard(t *testing.T) {
 		"unsupported schema or index failure",
 		"state the searched",
 		"remaining active and",
+		"history export <id> --out PATH --format json",
+		"full plaintext",
+		"--include-tool-output",
+		"--include-thinking",
+		"delegated subagent sessions",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Errorf("embedded skill missing %q", fragment)

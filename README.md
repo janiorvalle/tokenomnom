@@ -113,6 +113,7 @@ tokenomnom history search "worker status" --prompt-kind control
 tokenomnom history search "proposed approach" --role assistant
 tokenomnom history list --root-only
 tokenomnom history show prm_123
+tokenomnom history export ses_123 --out ./session-export/
 tokenomnom history prompts --limit 100
 tokenomnom history stats --project-source git --group-by project --top 20
 tokenomnom history sample --group-by month,project --min-stratum-size 2 --count 25 --min-length 40 --one-per-session
@@ -136,6 +137,35 @@ Search is a literal adjacent-token phrase by default; `--fts-query` explicitly
 enables raw FTS5 syntax. Results are bounded snippets unless you ask for
 `--include-text` or `history show`, and raw retrieval revalidates the exact
 indexed bytes before returning them.
+
+Export a complete session as one artifact when you need to hand it to another
+agent or preserve a readable copy:
+
+```sh
+tokenomnom history export ses_123 --out session.md
+tokenomnom history export prm_123 --out ./exports/
+tokenomnom history export ses_123 --as normalized --out session.jsonl
+tokenomnom history export ses_123 --as raw --out ./raw-session/
+```
+
+The default Markdown export resolves a prompt ID to its owning session and
+includes all recursively related subagent sessions. `--no-subagents` narrows
+the artifact. User and assistant text stays complete; tool calls/results and
+thinking are collapsed unless `--include-tool-output` or `--include-thinking`
+is explicit. Rendering reads and hash-validates the original transcript bytes
+at export time, falls back to a valid vault version, and marks unavailable or
+unrecognized records instead of silently dropping them. `raw` writes one
+byte-exact JSONL file per transcript plus `manifest.json`; `normalized` writes
+provider-neutral JSONL.
+
+Without `--out`, Markdown or normalized content goes to stdout and the export
+report goes to stderr so the artifact stays clean. An existing directory or a
+path ending in a separator receives an automatic
+`<provider>-<first-date>-<session-id>.<ext>` name. Existing files are refused
+unless `--force` is passed. Export is an explicit plaintext release from
+tokenomnom's local state model: it can contain prompts, assistant responses,
+paths, system context, and, when requested, tool output or thinking. Review the
+destination and its access controls. Scheduled maintenance never runs exports.
 
 Complete, versioned provider envelopes classify user-role records as `human`,
 `delegation`, `agent_message`, `command`, `control`, or `unknown`. Human prompts

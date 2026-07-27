@@ -42,15 +42,16 @@ API list-price equivalents, not actual bills.`,
 		Version: version.Version,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			validFormats := "pretty or json"
-			if cmd.Name() == "export" {
+			usageExport := cmd.CommandPath() == "tokenomnom export"
+			if usageExport {
 				validFormats = "csv or json"
 			}
 			value, err := cmd.Flags().GetString("format")
 			if err != nil {
 				return err
 			}
-			if (cmd.Name() == "export" && value != "csv" && value != "json") ||
-				(cmd.Name() != "export" && value != "pretty" && value != "json") {
+			if (usageExport && value != "csv" && value != "json") ||
+				(!usageExport && value != "pretty" && value != "json") {
 				return fmt.Errorf("invalid --format %q (expected %s)", value, validFormats)
 			}
 			if cmd.CommandPath() != "tokenomnom config path" {
