@@ -337,11 +337,21 @@ and an envelope warning.
 `markdown` is the default. Its provenance front matter includes stable and
 native session IDs, provider, time range, project/cwd, thread kind, source
 SHA-256 and live/vault origin, tokenomnom version, and one export timestamp.
-User and assistant text is complete. Tool calls/results collapse to named byte
-count markers unless `--include-tool-output` is set. Thinking collapses to byte
-count markers unless `--include-thinking` is set. System/provider records are
-brief labeled markers and unsupported shapes are explicit
-`[unrecognized record]` markers.
+Body records preserve source file order and are deliberately not re-sorted by
+timestamp. User and assistant text is complete. Tool calls/results collapse to
+named byte count markers unless `--include-tool-output` is set. Thinking
+collapses to byte count markers unless `--include-thinking` is set.
+System/provider records are brief labeled markers and unsupported shapes are
+explicit `[unrecognized record]` markers.
+
+Markdown front matter also records a random `structure_nonce`. When consuming
+an export programmatically, trust only renderer structure ending in the
+matching `{#tok-<nonce>}` suffix; transcript content cannot know that nonce.
+When a message body leaves a backtick or tilde fence unterminated, the exporter
+appends a matching close and a nonce-suffixed
+`[fence auto-closed by exporter]` marker. Explicit raw HTML blocks that require
+a terminator are closed and marked the same way. Use normalized output when
+strict structured parsing is preferable.
 
 `normalized` is one JSONL stream. Each record contains `session_id`,
 `provider`, `role`, `kind`, nullable `timestamp`, optional `text`, optional
@@ -350,6 +360,8 @@ and thinking inclusion policy applies. `raw` writes exact transcript bytes,
 one JSONL file per retrievable session, plus
 `tokenomnom.history-raw-manifest/v1` `manifest.json` with relative paths,
 session/provider IDs, SHA-256 hashes, byte counts, and origin.
+Raw is byte-exact, so `--include-tool-output` and `--include-thinking` are
+rejected with `--as raw`; those flags affect only rendered formats.
 
 Without `--out`, Markdown and normalized content goes to stdout and the command
 report goes to stderr, including when `--format json` is selected. Raw always

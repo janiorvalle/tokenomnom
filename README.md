@@ -154,9 +154,16 @@ the artifact. User and assistant text stays complete; tool calls/results and
 thinking are collapsed unless `--include-tool-output` or `--include-thinking`
 is explicit. Rendering reads and hash-validates the original transcript bytes
 at export time, falls back to a valid vault version, and marks unavailable or
-unrecognized records instead of silently dropping them. `raw` writes one
-byte-exact JSONL file per transcript plus `manifest.json`; `normalized` writes
-provider-neutral JSONL.
+unrecognized records instead of silently dropping them. Body records remain in
+source file order and are deliberately not re-sorted by timestamp. Each
+Markdown export records a random `structure_nonce`; when consuming an export
+programmatically, trust only renderer structure ending in the matching
+`{#tok-<nonce>}` suffix. The exporter auto-closes any message body that leaves
+a Markdown fence or explicit raw HTML block open and marks the appended close.
+`raw` writes one byte-exact JSONL file per transcript plus `manifest.json`;
+`normalized` writes provider-neutral JSONL. Because raw is byte-exact,
+`--include-tool-output` and `--include-thinking` are valid only for rendered
+Markdown or normalized exports.
 
 Without `--out`, Markdown or normalized content goes to stdout and the export
 report goes to stderr so the artifact stays clean. An existing directory or a

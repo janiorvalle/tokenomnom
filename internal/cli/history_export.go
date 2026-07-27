@@ -71,6 +71,9 @@ func newHistoryExportCommand(codexDir, claudeDir *string) *cobra.Command {
 			default:
 				return fmt.Errorf("invalid --as %q (expected markdown, raw, or normalized)", as)
 			}
+			if as == "raw" && (includeToolOutput || includeThinking) {
+				return errors.New("raw is byte-exact; these flags only affect rendered formats")
+			}
 			if as == "raw" && out == "" {
 				return errors.New("raw history export requires --out; use a directory for a session tree")
 			}
@@ -127,6 +130,8 @@ func newHistoryExportCommand(codexDir, claudeDir *string) *cobra.Command {
 					value.warning = "no retrievable exact transcript content"
 					if lastErr != nil {
 						value.warning = lastErr.Error()
+					} else {
+						warnings = append(warnings, fmt.Sprintf("session %s: %s", session.SessionID, value.warning))
 					}
 				}
 				selected = append(selected, value)
@@ -373,7 +378,7 @@ func historyExportDirectoryTarget(path string) bool {
 	if err == nil {
 		return info.IsDir()
 	}
-	return strings.HasSuffix(path, "/") || strings.HasSuffix(path, string(filepath.Separator)) || strings.HasSuffix(path, "\\")
+	return strings.HasSuffix(path, "/") || (os.PathSeparator == '\\' && strings.HasSuffix(path, "\\"))
 }
 
 func historyExportAutoName(provider string, firstTimestamp *string, sessionID, extension string) string {

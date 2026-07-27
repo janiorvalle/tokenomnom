@@ -34,7 +34,9 @@ func TestRenderMarkdownSessionTreeGolden(t *testing.T) {
 	}
 	var output bytes.Buffer
 	if _, err := RenderMarkdown(&output, sessions, Options{
-		ExportedAt: time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC), Version: "v0.4.0",
+		ExportedAt:     time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC),
+		Version:        "v0.4.0",
+		StructureNonce: "0123456789abcdef",
 	}); err != nil {
 		t.Fatal(err)
 	}
