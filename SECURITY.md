@@ -31,6 +31,15 @@ status, doctor, reports, and normal syncs do not create it. `history purge`
 removes all indexed roles and SQLite sidecars, but does not promise forensic
 secure deletion. No role uses model calls, embeddings, or network access.
 
+`history export` is a separate, explicit per-invocation plaintext operation.
+It reads hash-validated provider or vault bytes and can write a complete root
+session plus delegated subagent sessions outside tokenomnom's state directory.
+Exports can contain prompts, assistant responses, local paths, injected
+context, and, when requested, full tool output or thinking. They are not
+redacted or encrypted by tokenomnom and are never created by scheduled
+maintenance. Treat the destination as sensitive and apply appropriate file
+permissions, retention, and sharing controls.
+
 Useful reports include the affected version, concrete impact, and a minimal
 reproduction. Scanner output without an impact path is less useful, but
 uncertain reports are still welcome through the private channel.

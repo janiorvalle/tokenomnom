@@ -3,7 +3,7 @@
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
 `pricing`, `doctor`, `sync`, `export`, `install-skill`, `config show`, every
-`vault` subcommand, every `history` subcommand, and every `schedule` subcommand. The `export` command defaults to CSV;
+`vault` subcommand, every `history` subcommand, and every `schedule` subcommand. The top-level usage `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
 ## Compatibility
@@ -319,6 +319,58 @@ success. Pretty raw mode writes only exact bytes to stdout and warnings to
 stderr.
 Raw JSON is capped at 64 MiB to bound encoding memory; omit `--format json` to
 stream larger exact transcripts directly to stdout.
+
+## History Export
+
+`tokenomnom history export <session-id|prompt-id> [--out PATH]
+[--as markdown|raw|normalized] [--no-subagents] [--include-tool-output]
+[--include-thinking] [--force] --format json`
+
+A `prm_` ID resolves to its owning session. The default scope is that session
+plus its recursively related subagent sessions in deterministic root-first
+order; `--no-subagents` selects only the target. Export is read-only with
+respect to `history.db`: the index supplies session relationships, metadata,
+and preferred exact locations, while rendering parses hash-revalidated raw
+provider or vault bytes. A missing transcript becomes a metadata-only section
+and an envelope warning.
+
+`markdown` is the default. Its provenance front matter includes stable and
+native session IDs, provider, time range, project/cwd, thread kind, source
+SHA-256 and live/vault origin, tokenomnom version, and one export timestamp.
+User and assistant text is complete. Tool calls/results collapse to named byte
+count markers unless `--include-tool-output` is set. Thinking collapses to byte
+count markers unless `--include-thinking` is set. System/provider records are
+brief labeled markers and unsupported shapes are explicit
+`[unrecognized record]` markers.
+
+`normalized` is one JSONL stream. Each record contains `session_id`,
+`provider`, `role`, `kind`, nullable `timestamp`, optional `text`, optional
+`name`, optional native/parent IDs, source `line`, and `bytes`. The same tool
+and thinking inclusion policy applies. `raw` writes exact transcript bytes,
+one JSONL file per retrievable session, plus
+`tokenomnom.history-raw-manifest/v1` `manifest.json` with relative paths,
+session/provider IDs, SHA-256 hashes, byte counts, and origin.
+
+Without `--out`, Markdown and normalized content goes to stdout and the command
+report goes to stderr, including when `--format json` is selected. Raw always
+requires `--out`; a multi-session raw tree requires a directory. An existing
+directory or a path ending in a separator receives automatic
+`<provider>-<first-ts-date>-<session-id>.<ext>` names. A file path writes one
+combined Markdown/normalized artifact or one raw transcript. Existing
+destinations are refused unless `--force` is explicit.
+
+The standard JSON envelope uses `command: "history export"` and never embeds
+transcript text. `data` contains `as`, `root_session_id`, `session_count`,
+`transcript_count`, total `bytes`, non-null `outputs`, and
+`collapsed_tool_records`, `excluded_thinking_records`, and
+`unrecognized_records`. Each output contains `path`, `bytes`, and a non-null
+`session_ids` array. Envelope warnings report failed preferred locations,
+vault fallback, missing content, and bounded tree warnings.
+
+History exports are complete plaintext artifacts with no redaction or
+encryption. Tool output and thinking can contain additional secrets when their
+inclusion flags are used. The command is available only as an explicit
+invocation and is never run by scheduled maintenance.
 
 `tokenomnom history prompts` accepts the shared search filters plus
 `--role user|assistant|any`, `--include-text`, `--all-occurrences`, `--limit`,

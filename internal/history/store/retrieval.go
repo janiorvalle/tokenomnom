@@ -20,6 +20,129 @@ type RawCandidate struct {
 	Size          int64   `json:"size"`
 }
 
+const maxExportTreeDepth = 16
+
+// ExportSession is one session in a deterministic root-first subagent tree.
+type ExportSession struct {
+	CatalogSession
+	ParentSessionID       *string `json:"parent_session_id,omitempty"`
+	ParentNativeMessageID string  `json:"parent_native_message_id,omitempty"`
+	Depth                 int     `json:"depth"`
+}
+
+// ResolveExportSessionID accepts a session ID or a prompt ID and returns the
+// owning stable session ID.
+func (s *Store) ResolveExportSessionID(publicID string) (string, error) {
+	switch {
+	case strings.HasPrefix(publicID, "ses_"):
+		value, err := s.GetSession(publicID)
+		if err != nil {
+			return "", err
+		}
+		return value.SessionID, nil
+	case strings.HasPrefix(publicID, "prm_"):
+		value, err := s.GetPrompt(publicID)
+		if err != nil {
+			return "", err
+		}
+		return value.SessionID, nil
+	default:
+		return "", fmt.Errorf("%q is not a history prompt or session ID", publicID)
+	}
+}
+
+// ExportTree returns a bounded, deterministic root-first subagent tree. Fork
+// relationships are deliberately not included in full-session exports.
+func (s *Store) ExportTree(publicID string, includeSubagents bool) ([]ExportSession, []string, error) {
+	rootID, err := s.ResolveExportSessionID(publicID)
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err := s.GetSession(rootID)
+	if err != nil {
+		return nil, nil, err
+	}
+	result := []ExportSession{{CatalogSession: root}}
+	warnings := []string{}
+	if !includeSubagents {
+		return result, warnings, nil
+	}
+	seen := map[string]bool{root.SessionID: true}
+	var appendChildren func(ExportSession) error
+	appendChildren = func(parent ExportSession) error {
+		if parent.Depth >= maxExportTreeDepth {
+			var count int
+			if err := s.runner.QueryRow(`SELECT COUNT(*) FROM session_relations r
+				WHERE r.parent_session_id=? AND r.relation_kind='subagent'
+				AND EXISTS(SELECT 1 FROM session_relation_supports support WHERE support.relation_id=r.id)`,
+				parent.databaseID).Scan(&count); err != nil {
+				return fmt.Errorf("count bounded history export children: %w", err)
+			}
+			if count > 0 {
+				warnings = append(warnings, fmt.Sprintf("subagent recursion stopped at depth %d under session %s", maxExportTreeDepth, parent.SessionID))
+			}
+			return nil
+		}
+		rows, err := s.runner.Query(`SELECT child.public_id,r.parent_native_message_id
+			FROM session_relations r JOIN sessions child ON child.id=r.child_session_id
+			WHERE r.parent_session_id=? AND r.relation_kind='subagent'
+			AND EXISTS(SELECT 1 FROM session_relation_supports support WHERE support.relation_id=r.id)
+			ORDER BY (`+sqliteTimestampKey("COALESCE(NULLIF(child.first_ts,''),NULLIF(child.last_ts,''),'')")+`='') ASC,
+				`+sqliteTimestampKey("COALESCE(NULLIF(child.first_ts,''),NULLIF(child.last_ts,''),'')")+`,child.public_id`,
+			parent.databaseID)
+		if err != nil {
+			return fmt.Errorf("list history export children: %w", err)
+		}
+		type childReference struct {
+			id              string
+			parentMessageID string
+		}
+		children := []childReference{}
+		for rows.Next() {
+			var child childReference
+			if err := rows.Scan(&child.id, &child.parentMessageID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan history export child: %w", err)
+			}
+			children = append(children, child)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, reference := range children {
+			if seen[reference.id] {
+				warnings = append(warnings, fmt.Sprintf("cyclic or duplicate subagent relationship skipped for session %s", reference.id))
+				continue
+			}
+			value, err := s.GetSession(reference.id)
+			if err != nil {
+				return err
+			}
+			parentID := parent.SessionID
+			child := ExportSession{
+				CatalogSession:        value,
+				ParentSessionID:       &parentID,
+				ParentNativeMessageID: reference.parentMessageID,
+				Depth:                 parent.Depth + 1,
+			}
+			seen[reference.id] = true
+			result = append(result, child)
+			if err := appendChildren(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := appendChildren(result[0]); err != nil {
+		return nil, nil, err
+	}
+	return result, warnings, nil
+}
+
 // GetPrompt resolves a stable prompt ID and returns its full clean text.
 func (s *Store) GetPrompt(publicID string) (PromptResult, error) {
 	return s.getPrompt(publicID, true)

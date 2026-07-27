@@ -32,6 +32,7 @@ func newHistoryCommand(codexDir, claudeDir *string) *cobra.Command {
 	command.AddCommand(newHistoryListCommand())
 	command.AddCommand(newHistorySearchCommand())
 	command.AddCommand(newHistoryShowCommand(codexDir, claudeDir))
+	command.AddCommand(newHistoryExportCommand(codexDir, claudeDir))
 	command.AddCommand(newHistoryPromptsCommand())
 	command.AddCommand(newHistorySampleCommand())
 	command.AddCommand(newHistoryStatsCommand())

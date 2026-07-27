@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1116,6 +1118,229 @@ func TestHistoryCommandsUseOneEffectiveTimezone(t *testing.T) {
 func historyCodexFixture(sessionID, prompt string) string {
 	return `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `","thread_source":"user","source":"cli"}}` + "\n" +
 		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"` + prompt + `"}}` + "\n"
+}
+
+func TestHistoryExportFullSessionTreeDestinationsAndRawBytes(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	rootFixture := `{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"export-root","thread_source":"user","source":"cli","cwd":"/workspace/export"}}` + "\n" +
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"export root prompt"}}` + "\n" +
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call-1","arguments":"{\"cmd\":\"pwd\"}"}}` + "\n"
+	childAFixture := `{"timestamp":"2026-07-20T12:01:00Z","type":"session_meta","payload":{"id":"export-child-a","parent_thread_id":"export-root","source":{"subagent":{"thread_spawn":{"parent_thread_id":"export-root","depth":1}}}}}` + "\n" +
+		`{"timestamp":"2026-07-20T12:01:01Z","type":"event_msg","payload":{"type":"user_message","message":"child a work"}}` + "\n"
+	childBFixture := `{"timestamp":"2026-07-20T12:02:00Z","type":"session_meta","payload":{"id":"export-child-b","parent_thread_id":"export-root","source":{"subagent":{"thread_spawn":{"parent_thread_id":"export-root","depth":1}}}}}` + "\n" +
+		`{"timestamp":"2026-07-20T12:02:01Z","type":"event_msg","payload":{"type":"user_message","message":"child b vault only"}}` + "\n"
+	rootPath := filepath.Join(codexDir, "sessions", "2026", "07", "export-root.jsonl")
+	childAPath := filepath.Join(codexDir, "sessions", "2026", "07", "export-child-a.jsonl")
+	childBPath := filepath.Join(codexDir, "sessions", "2026", "07", "export-child-b.jsonl")
+	writeTextFixture(t, rootPath, rootFixture)
+	writeTextFixture(t, childAPath, childAFixture)
+	writeTextFixture(t, childBPath, childBFixture)
+	if _, err := executeReport([]string{"vault", "archive", "--all"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	noContentPath := filepath.Join(codexDir, "sessions", "2026", "07", "export-no-content.jsonl")
+	writeTextFixture(t, noContentPath, historyCodexFixture("export-no-content", "metadata fallback"))
+	if _, err := executeReport([]string{"history", "index"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(childBPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(noContentPath); err != nil {
+		t.Fatal(err)
+	}
+
+	listOutput, err := executeReport([]string{"history", "list", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog historystore.CatalogPage
+	if err := json.Unmarshal(decodeEnvelope(t, listOutput).Data, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	rootID, childBID, noContentID := "", "", ""
+	beforeGeneration := catalog.Generation
+	for _, session := range catalog.Sessions {
+		switch session.NativeSessionID {
+		case "export-root":
+			rootID = session.SessionID
+		case "export-child-b":
+			childBID = session.SessionID
+		case "export-no-content":
+			noContentID = session.SessionID
+		}
+	}
+	if rootID == "" || childBID == "" || noContentID == "" {
+		t.Fatalf("expected sessions not found: %+v", catalog.Sessions)
+	}
+
+	run := func(args ...string) (string, string, error) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		command := NewRootCommand()
+		command.SetOut(&stdout)
+		command.SetErr(&stderr)
+		command.SetArgs(append(args, "--codex-dir", codexDir, "--claude-dir", claudeDir))
+		err := command.Execute()
+		return stdout.String(), stderr.String(), err
+	}
+	markdown, reportText, err := run("history", "export", rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"# Full session export", "export root prompt", "child a work", "child b vault only", "[tool call: shell", "## Subagent session"} {
+		if !strings.Contains(markdown, fragment) {
+			t.Fatalf("stdout markdown missing %q:\n%s", fragment, markdown)
+		}
+	}
+	if strings.Count(markdown, "## Subagent session") != 2 || !strings.Contains(reportText, "Exported 3 session(s), 3 transcript(s)") || !strings.Contains(reportText, "is unavailable") {
+		t.Fatalf("markdown/report mismatch\nstdout=%s\nstderr=%s", markdown, reportText)
+	}
+
+	singlePath := filepath.Join(root, "export.md")
+	if _, _, err := run("history", "export", rootID, "--out", singlePath); err != nil {
+		t.Fatal(err)
+	}
+	single, err := os.ReadFile(singlePath)
+	if err != nil || !strings.Contains(string(single), "child b vault only") {
+		t.Fatalf("single file err=%v content=%q", err, single)
+	}
+	if _, _, err := run("history", "export", rootID, "--out", singlePath); err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("overwrite error = %v", err)
+	}
+	if _, _, err := run("history", "export", rootID, "--out", singlePath, "--force"); err != nil {
+		t.Fatal(err)
+	}
+
+	autoDir := filepath.Join(root, "auto")
+	if err := os.Mkdir(autoDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run("history", "export", rootID, "--out", autoDir); err != nil {
+		t.Fatal(err)
+	}
+	autoMatches, err := filepath.Glob(filepath.Join(autoDir, "codex-2026-07-20-"+rootID+".md"))
+	if err != nil || len(autoMatches) != 1 {
+		t.Fatalf("auto files=%v err=%v", autoMatches, err)
+	}
+
+	rawDir := filepath.Join(root, "raw")
+	if err := os.Mkdir(rawDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run("history", "export", rootID, "--as", "raw", "--out", rawDir); err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(rawDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest historyRawManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil || len(manifest.Files) != 3 {
+		t.Fatalf("manifest err=%v value=%+v", err, manifest)
+	}
+	wantRaw := map[string]string{"export-root": rootFixture, "export-child-a": childAFixture, "export-child-b": childBFixture}
+	for _, entry := range manifest.Files {
+		content, err := os.ReadFile(filepath.Join(rawDir, entry.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		native := ""
+		for key := range wantRaw {
+			if strings.Contains(string(content), `"id":"`+key+`"`) {
+				native = key
+			}
+		}
+		digest := sha256.Sum256(content)
+		if native == "" || string(content) != wantRaw[native] || hex.EncodeToString(digest[:]) != entry.SHA256 {
+			t.Fatalf("raw entry=%+v native=%q content=%q", entry, native, content)
+		}
+	}
+	if _, _, err := run("history", "export", rootID, "--as", "raw", "--out", filepath.Join(root, "tree.jsonl")); err == nil || !strings.Contains(err.Error(), "requires --out to name a directory") {
+		t.Fatalf("raw tree file error=%v", err)
+	}
+	singleRawPath := filepath.Join(root, "root.jsonl")
+	if _, _, err := run("history", "export", rootID, "--no-subagents", "--as", "raw", "--out", singleRawPath); err != nil {
+		t.Fatal(err)
+	}
+	singleRaw, err := os.ReadFile(singleRawPath)
+	if err != nil || string(singleRaw) != rootFixture {
+		t.Fatalf("single raw err=%v content=%q", err, singleRaw)
+	}
+
+	jsonPath := filepath.Join(root, "normalized.jsonl")
+	jsonReport, _, err := run("history", "export", rootID, "--as", "normalized", "--include-tool-output", "--out", jsonPath, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, jsonReport)
+	var report historyExportReport
+	if err := json.Unmarshal(envelope.Data, &report); err != nil || report.SessionCount != 3 || report.Outputs == nil || strings.Contains(jsonReport, "export root prompt") {
+		t.Fatalf("json report err=%v report=%+v envelope=%s", err, report, jsonReport)
+	}
+	normalized, err := os.ReadFile(jsonPath)
+	if err != nil || !strings.Contains(string(normalized), `"kind":"tool_call"`) || !strings.Contains(string(normalized), `{\"cmd\":\"pwd\"}`) {
+		t.Fatalf("normalized err=%v content=%s", err, normalized)
+	}
+
+	searchOutput, err := executeReport([]string{"history", "search", "export root prompt", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var search historystore.SearchPage
+	if err := json.Unmarshal(decodeEnvelope(t, searchOutput).Data, &search); err != nil || len(search.Hits) != 1 {
+		t.Fatalf("search err=%v page=%+v", err, search)
+	}
+	promptPath := filepath.Join(root, "prompt-target.md")
+	promptReport, _, err := run("history", "export", search.Hits[0].PromptID, "--no-subagents", "--out", promptPath, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var promptTargetReport historyExportReport
+	if err := json.Unmarshal(decodeEnvelope(t, promptReport).Data, &promptTargetReport); err != nil || promptTargetReport.RootSessionID != rootID || promptTargetReport.SessionCount != 1 {
+		t.Fatalf("prompt target report err=%v value=%+v", err, promptTargetReport)
+	}
+
+	noContentMarkdown, noContentWarnings, err := run("history", "export", noContentID, "--no-subagents")
+	if err != nil || !strings.Contains(noContentMarkdown, "[transcript unavailable:") || !strings.Contains(noContentWarnings, "is unavailable") {
+		t.Fatalf("no-content export err=%v\nstdout=%s\nstderr=%s", err, noContentMarkdown, noContentWarnings)
+	}
+	if _, _, err := run("history", "export", noContentID, "--no-subagents", "--as", "raw", "--out", filepath.Join(root, "missing.jsonl")); err == nil || !strings.Contains(err.Error(), "no retrievable exact transcript") {
+		t.Fatalf("no-content raw error=%v", err)
+	}
+
+	afterOutput, err := executeReport([]string{"history", "list", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after historystore.CatalogPage
+	if err := json.Unmarshal(decodeEnvelope(t, afterOutput).Data, &after); err != nil || after.Generation != beforeGeneration {
+		t.Fatalf("history generation changed: before=%d after=%d err=%v", beforeGeneration, after.Generation, err)
+	}
+	if _, _, err := run("history", "export", "ses_00000000000000000000000000000000"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unknown session error=%v", err)
+	}
+	if _, _, err := run("history", "export", rootID, "--as", "raw"); err == nil || !strings.Contains(err.Error(), "requires --out") {
+		t.Fatalf("raw stdout error=%v", err)
+	}
+	archives, err := filepath.Glob(filepath.Join(root, "data", "vault", "codex", "*.tar.zst"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("vault archives=%v err=%v", archives, err)
+	}
+	if err := os.WriteFile(archives[0], []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	brokenMarkdown, brokenWarnings, err := run("history", "export", childBID, "--no-subagents")
+	if err != nil || !strings.Contains(brokenMarkdown, "[transcript unavailable:") || !strings.Contains(brokenWarnings, "unavailable or broken") {
+		t.Fatalf("broken vault export err=%v\nstdout=%s\nstderr=%s", err, brokenMarkdown, brokenWarnings)
+	}
+	if _, _, err := run("history", "export", "bad-id"); err == nil || !strings.Contains(err.Error(), "not a history prompt or session ID") {
+		t.Fatalf("malformed ID error=%v", err)
+	}
 }
 
 func TestHistoryThreadKindTruthTable(t *testing.T) {

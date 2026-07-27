@@ -67,6 +67,53 @@ func TestRelationshipChildBeforeParentResolvesAndInvalidatesCursor(t *testing.T)
 	}
 }
 
+func TestExportTreeRecursesThroughSubagentsAndExcludesForks(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+
+	apply := func(nativeID, parentID string, relation history.RelationKind) ApplyResult {
+		t.Helper()
+		source := sourceRef("/provider/"+nativeID+".jsonl", history.LocationProviderLive)
+		value := extraction("native:"+nativeID, nativeID, source, prompt("native:p", "p", nativeID+" prompt", 1))
+		if parentID != "" {
+			if relation == history.RelationSubagent {
+				value.Session.ThreadKind = history.ThreadSubagent
+			}
+			value.Relationships = []history.Relationship{{
+				Kind: relation, ParentNativeSessionID: parentID, ParentNativeMessageID: "spawn-" + nativeID,
+				ProviderNativeValue: parentID, Evidence: "fixture", Confidence: history.ConfidenceExact,
+				RuleVersion: history.RelationshipRuleVersion,
+			}}
+		}
+		result, err := database.ApplySource(value, head(source, nativeID+"-hash", 10, 1), ApplyReplace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	root := apply("root", "", "")
+	child := apply("child", "root", history.RelationSubagent)
+	grandchild := apply("grandchild", "child", history.RelationSubagent)
+	_ = apply("fork", "root", history.RelationFork)
+
+	tree, warnings, err := database.ExportTree(root.SessionID, true)
+	if err != nil || len(warnings) != 0 || len(tree) != 3 {
+		t.Fatalf("export tree err=%v warnings=%v tree=%+v", err, warnings, tree)
+	}
+	if tree[0].SessionID != root.SessionID || tree[0].Depth != 0 ||
+		tree[1].SessionID != child.SessionID || tree[1].Depth != 1 ||
+		tree[2].SessionID != grandchild.SessionID || tree[2].Depth != 2 ||
+		tree[1].ParentSessionID == nil || *tree[1].ParentSessionID != root.SessionID ||
+		tree[2].ParentSessionID == nil || *tree[2].ParentSessionID != child.SessionID ||
+		tree[1].ParentNativeMessageID != "spawn-child" {
+		t.Fatalf("unexpected export tree: %+v", tree)
+	}
+	onlyRoot, warnings, err := database.ExportTree(root.SessionID, false)
+	if err != nil || len(warnings) != 0 || len(onlyRoot) != 1 || onlyRoot[0].SessionID != root.SessionID {
+		t.Fatalf("root-only export tree err=%v warnings=%v tree=%+v", err, warnings, onlyRoot)
+	}
+}
+
 func TestRelationshipDuplicatePreventionAndUnknownParentVisibility(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()

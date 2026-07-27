@@ -33,6 +33,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 - Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets and compact provenance, then retrieve selected evidence with `history show`. Add `--all-occurrences` only when every bounded location is needed.
+- Whole-session artifact or agent handoff: find a `ses_` or `prm_` ID with list/search, then use `tokenomnom history export <id> --out PATH --format json`. The default Markdown includes delegated subagent sessions; use `--no-subagents` only when the target alone is intended. Disclose that exports are full plaintext, and that `--include-tool-output` or `--include-thinking` can expose additional secrets.
 - Agent proposal/claim search: first check `doctor.data.history.index_assistant_enabled` and `assistant_indexed`, then use `history search "literal phrase" --role assistant --format json`; report the not-indexed warning honestly.
 - User-initiated transcript search: check `coverage.thread_kind.unknown` first. Use `--root-only` only when the unknown share is acceptably small for the question; otherwise search all thread kinds and inspect thread evidence and relationships.
 - Delegated-work search: add `--thread-kind subagent`; keep the default/all view when root and delegated work both matter.
@@ -100,6 +101,11 @@ For "what did I work on" or "how did I prompt X":
 7. Retrieve only selected evidence with `tokenomnom history show <prompt-id>
    --format json`, `history show <session-id> --prompts --limit 100 --format
    json`, or explicit `history show <session-id> --raw --format json`.
+   When the user needs the whole session as a file or wants to feed it to
+   another agent, use `tokenomnom history export <session-id|prompt-id> --out
+   PATH --format json` instead. It includes delegated subagents by default.
+   State that the artifact is full plaintext; tool output and thinking are
+   included only with their explicit flags and can contain secrets.
 8. Read `data.coverage` and surface every envelope warning. Date requests can
    extend outside indexed coverage. `project` mixes git-proven repository names
    and cwd-derived final path segments; temp-root cwds stay unknown, but other
