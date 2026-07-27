@@ -347,10 +347,15 @@ explicit `[unrecognized record]` markers.
 Markdown front matter also records a random `structure_nonce`. When consuming
 an export programmatically, trust only renderer structure ending in the
 matching `{#tok-<nonce>}` suffix; transcript content cannot know that nonce.
-When a message body leaves a backtick or tilde fence unterminated, the exporter
-appends a matching close and a nonce-suffixed
+The authoritative nonce is in the front-matter block beginning on line 1 of
+the artifact. Any later `---` block is transcript content and must not be
+treated as metadata. Included tool and thinking fences have nonce-suffixed
+boundary markers. When a message body leaves a backtick or tilde fence
+unterminated, the exporter appends a matching close and a nonce-suffixed
 `[fence auto-closed by exporter]` marker. Explicit raw HTML blocks that require
-a terminator are closed and marked the same way. Use normalized output when
+a terminator are closed and marked the same way. Pathologically large or
+deeply blockquoted message bodies instead receive a nonce-suffixed
+`[auto-close skipped: oversized content]` marker. Use normalized output when
 strict structured parsing is preferable.
 
 `normalized` is one JSONL stream. Each record contains `session_id`,
@@ -373,7 +378,8 @@ destinations are refused unless `--force` is explicit.
 
 The standard JSON envelope uses `command: "history export"` and never embeds
 transcript text. `data` contains `as`, `root_session_id`, `session_count`,
-`transcript_count`, total `bytes`, non-null `outputs`, and
+`structure_nonce` (non-empty for Markdown), `transcript_count`, total `bytes`,
+non-null `outputs`, and
 `collapsed_tool_records`, `excluded_thinking_records`, and
 `unrecognized_records`. Each output contains `path`, `bytes`, and a non-null
 `session_ids` array. Envelope warnings report failed preferred locations,

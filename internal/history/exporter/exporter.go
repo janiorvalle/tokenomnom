@@ -31,6 +31,10 @@ const (
 	KindSystem       Kind = "system"
 	KindMetadata     Kind = "metadata"
 	KindUnrecognized Kind = "unrecognized"
+
+	maxMarkdownAutoCloseBytes      = 1 << 20
+	maxMarkdownBlockquoteDepth     = 128
+	autoCloseSkippedOversizedLabel = "auto-close skipped: oversized content"
 )
 
 // Record is the provider-neutral full-transcript schema used by normalized
@@ -242,7 +246,7 @@ func applyVolumePolicy(record *Record, options Options, counts *Counts) {
 func writeMarkdownRecord(writer io.Writer, record Record, options Options, structure string, counts *Counts) error {
 	switch record.Kind {
 	case KindMessage:
-		fmt.Fprintf(writer, "\n### %s%s%s\n\n", titleRole(record.Role), timestampSuffix(record.Timestamp), structure)
+		fmt.Fprintf(writer, "\n### %s%s%s\n\n", oneLine(titleRole(record.Role)), timestampSuffix(record.Timestamp), structure)
 		if record.Text != nil {
 			if err := writeMessageBody(writer, *record.Text, structure); err != nil {
 				return err
@@ -258,7 +262,7 @@ func writeMarkdownRecord(writer io.Writer, record Record, options Options, struc
 			counts.CollapsedToolRecords++
 			return nil
 		}
-		writeFenced(writer, record.Text)
+		writeFenced(writer, record.Text, structure)
 	case KindThinking:
 		if !options.IncludeThinking {
 			fmt.Fprintf(writer, "\n[thinking omitted: %d bytes]%s%s\n", record.Bytes, timestampSuffix(record.Timestamp), structure)
@@ -266,7 +270,7 @@ func writeMarkdownRecord(writer io.Writer, record Record, options Options, struc
 			return nil
 		}
 		fmt.Fprintf(writer, "\n[thinking]%s%s\n", timestampSuffix(record.Timestamp), structure)
-		writeFenced(writer, record.Text)
+		writeFenced(writer, record.Text, structure)
 	case KindSystem, KindMetadata:
 		fmt.Fprintf(writer, "\n[%s record: %s]%s%s\n", record.Kind, oneLine(fallback(record.Name, "provider metadata")), timestampSuffix(record.Timestamp), structure)
 	case KindUnrecognized:
@@ -295,7 +299,11 @@ func writeMessageBody(writer io.Writer, value, structure string) error {
 			return err
 		}
 	}
-	closeLine, label := markdownBlockAutoClose(value, structure)
+	closeLine, label, skipped := markdownBlockAutoClose(value, structure)
+	if skipped {
+		_, err := fmt.Fprintf(writer, "[%s]%s\n", autoCloseSkippedOversizedLabel, structure)
+		return err
+	}
 	if closeLine != "" {
 		if _, err := fmt.Fprintf(writer, "%s\n[%s auto-closed by exporter]%s\n", closeLine, label, structure); err != nil {
 			return err
@@ -304,17 +312,12 @@ func writeMessageBody(writer io.Writer, value, structure string) error {
 	return nil
 }
 
-func unterminatedMarkdownFence(value string) string {
-	closeLine, label := markdownBlockAutoClose(value, "test-structure")
-	if label != "fence" {
-		return ""
-	}
-	return closeLine
-}
-
 var markdownStructureParser = goldmark.DefaultParser()
 
-func markdownBlockAutoClose(value, structure string) (string, string) {
+func markdownBlockAutoClose(value, structure string) (string, string, bool) {
+	if len(value) > maxMarkdownAutoCloseBytes || markdownBlockquotePrefixTooDeep(value) {
+		return "", "", true
+	}
 	marker := "tokenomnom-" + strings.Trim(structure, " {#}") + "-message-boundary"
 	source := append([]byte(nil), value...)
 	source = append(source, '\n', '\n')
@@ -329,7 +332,7 @@ func markdownBlockAutoClose(value, structure string) (string, string) {
 		}
 		switch typed := node.(type) {
 		case *goldast.Heading:
-			if string(typed.Text(source)) == marker {
+			if bytes.Equal(typed.Lines().Value(source), []byte(marker)) {
 				visible = true
 			}
 		case *goldast.FencedCodeBlock:
@@ -344,15 +347,42 @@ func markdownBlockAutoClose(value, structure string) (string, string) {
 		return goldast.WalkContinue, nil
 	})
 	if visible {
-		return "", ""
+		return "", "", false
 	}
 	if swallowedFence != nil {
-		return fencedBlockClose(source, swallowedFence), "fence"
+		return fencedBlockClose(source, swallowedFence), "fence", false
 	}
 	if swallowedHTML != nil && !swallowedHTML.HasClosure() {
-		return htmlBlockClose(source, swallowedHTML), "HTML block"
+		return htmlBlockClose(source, swallowedHTML), "HTML block", false
 	}
-	return "", ""
+	return "", "", false
+}
+
+func markdownBlockquotePrefixTooDeep(value string) bool {
+	depth := 0
+	atLineStart := true
+	for index := 0; index < len(value); index++ {
+		switch value[index] {
+		case '\n', '\r':
+			depth = 0
+			atLineStart = true
+		case ' ', '\t':
+			if !atLineStart {
+				continue
+			}
+		case '>':
+			if !atLineStart {
+				continue
+			}
+			depth++
+			if depth > maxMarkdownBlockquoteDepth {
+				return true
+			}
+		default:
+			atLineStart = false
+		}
+	}
+	return false
 }
 
 func fencedBlockClose(source []byte, block *goldast.FencedCodeBlock) string {
@@ -457,6 +487,11 @@ func exportStructureNonce(value string) (string, error) {
 	return value, nil
 }
 
+// NewStructureNonce returns a fresh nonce for a Markdown export and its report.
+func NewStructureNonce() (string, error) {
+	return exportStructureNonce("")
+}
+
 func structureSuffix(nonce string) string {
 	return " {#tok-" + nonce + "}"
 }
@@ -474,7 +509,7 @@ func markdownCodeSpan(value string) string {
 	return delimiter + padding + value + padding + delimiter
 }
 
-func writeFenced(writer io.Writer, text *string) {
+func writeFenced(writer io.Writer, text *string, structure string) {
 	value := ""
 	if text != nil {
 		value = *text
@@ -483,11 +518,13 @@ func writeFenced(writer io.Writer, text *string) {
 	for strings.Contains(value, fence) {
 		fence += "`"
 	}
-	fmt.Fprintf(writer, "\n%s\n%s", fence, value)
+	// CommonMark closing fences cannot contain text, so authenticate the
+	// adjacent delimiter markers without making the fenced block invalid.
+	fmt.Fprintf(writer, "\n[fence delimiter: open]%s\n%s\n%s", structure, fence, value)
 	if !strings.HasSuffix(value, "\n") {
 		fmt.Fprintln(writer)
 	}
-	fmt.Fprintf(writer, "%s\n", fence)
+	fmt.Fprintf(writer, "%s\n[fence delimiter: close]%s\n", fence, structure)
 }
 
 func record(sessionID string, provider history.Provider, role history.Role, kind Kind, timestamp, text, name, nativeID, parentID string, line int64) Record {

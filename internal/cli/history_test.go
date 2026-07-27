@@ -1301,8 +1301,19 @@ func TestHistoryExportFullSessionTreeDestinationsAndRawBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var promptTargetReport historyExportReport
-	if err := json.Unmarshal(decodeEnvelope(t, promptReport).Data, &promptTargetReport); err != nil || promptTargetReport.RootSessionID != rootID || promptTargetReport.SessionCount != 1 {
+	if err := json.Unmarshal(decodeEnvelope(t, promptReport).Data, &promptTargetReport); err != nil ||
+		promptTargetReport.RootSessionID != rootID || promptTargetReport.SessionCount != 1 ||
+		promptTargetReport.StructureNonce == "" {
 		t.Fatalf("prompt target report err=%v value=%+v", err, promptTargetReport)
+	}
+	promptArtifact, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerEnd := strings.Index(string(promptArtifact), "\n---\n")
+	if headerEnd < 0 ||
+		!strings.Contains(string(promptArtifact[:headerEnd]), `structure_nonce: "`+promptTargetReport.StructureNonce+`"`) {
+		t.Fatalf("report nonce does not match line-1 artifact front matter: report=%+v\n%s", promptTargetReport, promptArtifact)
 	}
 
 	noContentMarkdown, noContentWarnings, err := run("history", "export", noContentID, "--no-subagents")

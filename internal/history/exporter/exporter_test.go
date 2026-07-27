@@ -76,6 +76,14 @@ func TestRenderMarkdownCollapsesVolumeAndMarksUnknownRecords(t *testing.T) {
 	if !strings.Contains(output.String(), "workspace") || !strings.Contains(output.String(), "private thought") || strings.Count(output.String(), "```") < 4 {
 		t.Fatalf("restored Markdown blocks missing:\n%s", output.String())
 	}
+	for _, marker := range []string{
+		"[fence delimiter: open] {#tok-0123456789abcdef}",
+		"[fence delimiter: close] {#tok-0123456789abcdef}",
+	} {
+		if !strings.Contains(output.String(), marker) {
+			t.Fatalf("restored Markdown blocks missing authenticated marker %q:\n%s", marker, output.String())
+		}
+	}
 	if counts != (Counts{UnrecognizedRecords: 1}) {
 		t.Fatalf("restored counts = %+v", counts)
 	}
@@ -192,6 +200,12 @@ func TestRenderMarkdownDistinguishesForgedStructureAndClosesMessageFence(t *test
 		!strings.Contains(text, `\n## Root session `+"`ses_metadata_forged`") {
 		t.Fatalf("multiline provenance was not safely encoded:\n%s", text)
 	}
+	if got := documentedStructureNonce(text); got != "0123456789abcdef" {
+		t.Fatalf("documented line-1 front-matter rule found nonce %q:\n%s", got, text)
+	}
+	if got := documentedStructureNonce("transcript prefix\n" + text); got != "" {
+		t.Fatalf("documented rule trusted non-line-1 front matter: %q", got)
+	}
 }
 
 func TestUnterminatedMarkdownFenceTracksDelimiterAndLength(t *testing.T) {
@@ -231,6 +245,35 @@ func TestUnterminatedMarkdownFenceTracksDelimiterAndLength(t *testing.T) {
 	}
 }
 
+func unterminatedMarkdownFence(value string) string {
+	closeLine, label, skipped := markdownBlockAutoClose(value, "test-structure")
+	if skipped || label != "fence" {
+		return ""
+	}
+	return closeLine
+}
+
+func TestWriteMessageBodyBoundsPathologicalBlockquoteParsing(t *testing.T) {
+	for name, body := range map[string]string{
+		"deep prefix": strings.Repeat("> ", maxMarkdownBlockquoteDepth+1) + "payload",
+		"2.4 MB":      strings.Repeat("> ", 1_200_000),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var output bytes.Buffer
+			started := time.Now()
+			if err := writeMessageBody(&output, body, " {#tok-0123456789abcdef}"); err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("pathological message render took %s", elapsed)
+			}
+			if !strings.Contains(output.String(), "[auto-close skipped: oversized content] {#tok-0123456789abcdef}") {
+				t.Fatalf("pathological message missing authenticated skip marker")
+			}
+		})
+	}
+}
+
 func TestRenderMarkdownAutoClosesRawHTMLBeforeFollowingTurn(t *testing.T) {
 	raw := strings.Join([]string{
 		`{"timestamp":"2026-07-20T12:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"<!-- unclosed comment"}}`,
@@ -257,9 +300,9 @@ func TestRenderMarkdownAutoClosesRawHTMLBeforeFollowingTurn(t *testing.T) {
 }
 
 func TestMarkdownBlockAutoCloseUsesOpeningTypeOneHTMLTag(t *testing.T) {
-	closeLine, label := markdownBlockAutoClose("<textarea><script>", " {#tok-0123456789abcdef}")
-	if closeLine != "</textarea>" || label != "HTML block" {
-		t.Fatalf("markdownBlockAutoClose() = %q, %q", closeLine, label)
+	closeLine, label, skipped := markdownBlockAutoClose("<textarea><script>", " {#tok-0123456789abcdef}")
+	if closeLine != "</textarea>" || label != "HTML block" || skipped {
+		t.Fatalf("markdownBlockAutoClose() = %q, %q, skipped=%t", closeLine, label, skipped)
 	}
 }
 
@@ -278,6 +321,41 @@ func TestWriteMarkdownRecordKeepsMetadataNameOnTrustedLine(t *testing.T) {
 		!strings.Contains(text, "[metadata record: ignored] [unrecognized record] - 2026-07-20T12:00:00Z"+suffix) {
 		t.Fatalf("metadata name escaped the trusted structural line:\n%s", text)
 	}
+}
+
+func TestWriteMarkdownRecordKeepsRoleOnTrustedLine(t *testing.T) {
+	var output bytes.Buffer
+	text := "body"
+	record := Record{
+		Kind: KindMessage, Role: history.Role("assistant\n## forged"), Text: &text,
+	}
+	suffix := " {#tok-0123456789abcdef}"
+	if err := writeMarkdownRecord(&output, record, Options{}, suffix, &Counts{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "\n## forged"+suffix) ||
+		!strings.Contains(output.String(), "### Assistant ## forged"+suffix) {
+		t.Fatalf("role escaped the trusted structural line:\n%s", output.String())
+	}
+}
+
+func documentedStructureNonce(markdown string) string {
+	if !strings.HasPrefix(markdown, "---\n") {
+		return ""
+	}
+	nonce := ""
+	for _, line := range strings.Split(strings.TrimPrefix(markdown, "---\n"), "\n") {
+		if line == "---" {
+			return nonce
+		}
+		if strings.HasPrefix(line, "structure_nonce: ") {
+			if nonce != "" {
+				return ""
+			}
+			nonce = strings.Trim(strings.TrimPrefix(line, "structure_nonce: "), `"`)
+		}
+	}
+	return ""
 }
 
 func mustJSON(t *testing.T, value string) []byte {

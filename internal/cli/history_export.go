@@ -26,6 +26,7 @@ type historyExportOutput struct {
 type historyExportReport struct {
 	As                   string                `json:"as"`
 	RootSessionID        string                `json:"root_session_id"`
+	StructureNonce       string                `json:"structure_nonce"`
 	SessionCount         int                   `json:"session_count"`
 	TranscriptCount      int                   `json:"transcript_count"`
 	Bytes                int64                 `json:"bytes"`
@@ -155,6 +156,14 @@ func newHistoryExportCommand(codexDir, claudeDir *string) *cobra.Command {
 				options := exporter.Options{
 					IncludeToolOutput: includeToolOutput, IncludeThinking: includeThinking,
 					ExportedAt: exportedAt, Version: version.Version,
+				}
+				if as == "markdown" {
+					nonce, nonceErr := exporter.NewStructureNonce()
+					if nonceErr != nil {
+						return nonceErr
+					}
+					options.StructureNonce = nonce
+					report.StructureNonce = nonce
 				}
 				err = writeRenderedHistoryExport(cmd, out, as, sessions, options, force, &report)
 			}
