@@ -1301,8 +1301,19 @@ func TestHistoryExportFullSessionTreeDestinationsAndRawBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var promptTargetReport historyExportReport
-	if err := json.Unmarshal(decodeEnvelope(t, promptReport).Data, &promptTargetReport); err != nil || promptTargetReport.RootSessionID != rootID || promptTargetReport.SessionCount != 1 {
+	if err := json.Unmarshal(decodeEnvelope(t, promptReport).Data, &promptTargetReport); err != nil ||
+		promptTargetReport.RootSessionID != rootID || promptTargetReport.SessionCount != 1 ||
+		promptTargetReport.StructureNonce == "" {
 		t.Fatalf("prompt target report err=%v value=%+v", err, promptTargetReport)
+	}
+	promptArtifact, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerEnd := strings.Index(string(promptArtifact), "\n---\n")
+	if headerEnd < 0 ||
+		!strings.Contains(string(promptArtifact[:headerEnd]), `structure_nonce: "`+promptTargetReport.StructureNonce+`"`) {
+		t.Fatalf("report nonce does not match line-1 artifact front matter: report=%+v\n%s", promptTargetReport, promptArtifact)
 	}
 
 	noContentMarkdown, noContentWarnings, err := run("history", "export", noContentID, "--no-subagents")
@@ -1327,6 +1338,36 @@ func TestHistoryExportFullSessionTreeDestinationsAndRawBytes(t *testing.T) {
 	if _, _, err := run("history", "export", rootID, "--as", "raw"); err == nil || !strings.Contains(err.Error(), "requires --out") {
 		t.Fatalf("raw stdout error=%v", err)
 	}
+	for _, flag := range []string{"--include-tool-output", "--include-thinking"} {
+		if _, _, err := run("history", "export", rootID, "--as", "raw", "--out", filepath.Join(root, "flagged-raw"), flag); err == nil ||
+			!strings.Contains(err.Error(), "raw is byte-exact; these flags only affect rendered formats") {
+			t.Fatalf("raw %s error=%v", flag, err)
+		}
+	}
+	database, err := sql.Open("sqlite", filepath.Join(root, "state", historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE locations SET available=0 WHERE source_head_id IN (
+		SELECT sh.id FROM source_heads sh JOIN sessions s ON s.id=sh.session_id WHERE s.public_id=?
+	)`, noContentID); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	allUnavailablePath := filepath.Join(root, "all-unavailable.md")
+	allUnavailableReport, _, err := run("history", "export", noContentID, "--no-subagents", "--out", allUnavailablePath, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allUnavailableEnvelope := decodeEnvelope(t, allUnavailableReport)
+	if !slices.ContainsFunc(allUnavailableEnvelope.Warnings, func(warning string) bool {
+		return strings.Contains(warning, "no retrievable exact transcript content")
+	}) {
+		t.Fatalf("all-unavailable warnings=%+v", allUnavailableEnvelope.Warnings)
+	}
 	archives, err := filepath.Glob(filepath.Join(root, "data", "vault", "codex", "*.tar.zst"))
 	if err != nil || len(archives) != 1 {
 		t.Fatalf("vault archives=%v err=%v", archives, err)
@@ -1340,6 +1381,16 @@ func TestHistoryExportFullSessionTreeDestinationsAndRawBytes(t *testing.T) {
 	}
 	if _, _, err := run("history", "export", "bad-id"); err == nil || !strings.Contains(err.Error(), "not a history prompt or session ID") {
 		t.Fatalf("malformed ID error=%v", err)
+	}
+}
+
+func TestHistoryExportDirectoryTargetUsesPlatformSeparators(t *testing.T) {
+	if !historyExportDirectoryTarget("exports/") {
+		t.Fatal("forward slash must mark a directory on every platform")
+	}
+	gotBackslash := historyExportDirectoryTarget(`exports\`)
+	if wantBackslash := os.PathSeparator == '\\'; gotBackslash != wantBackslash {
+		t.Fatalf("backslash directory marker=%t, want %t on path separator %q", gotBackslash, wantBackslash, os.PathSeparator)
 	}
 }
 

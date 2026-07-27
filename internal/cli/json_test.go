@@ -265,7 +265,7 @@ func TestAgentAPIDocMentionsEveryCommand(t *testing.T) {
 			t.Errorf("agent API documentation does not mention %q", command)
 		}
 	}
-	for _, fragment := range []string{"history export <session-id|prompt-id>", "collapsed_tool_records", "excluded_thinking_records", "tokenomnom.history-raw-manifest/v1"} {
+	for _, fragment := range []string{"history export <session-id|prompt-id>", "structure_nonce", "front-matter block beginning on line 1", "collapsed_tool_records", "excluded_thinking_records", "tokenomnom.history-raw-manifest/v1"} {
 		if !strings.Contains(string(contents), fragment) {
 			t.Errorf("agent API documentation does not mention %q", fragment)
 		}

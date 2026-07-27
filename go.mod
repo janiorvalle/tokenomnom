@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/klauspost/compress v1.19.0
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/goldmark v1.8.4
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.54.0
