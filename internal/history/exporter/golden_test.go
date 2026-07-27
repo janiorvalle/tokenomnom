@@ -42,6 +42,7 @@ func TestRenderMarkdownSessionTreeGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	if !bytes.Equal(output.Bytes(), want) {
 		t.Fatalf("markdown golden mismatch\n--- got ---\n%s\n--- want ---\n%s", output.Bytes(), want)
 	}
