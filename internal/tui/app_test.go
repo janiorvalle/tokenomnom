@@ -51,12 +51,70 @@ func TestUpdateNavigationFiltersAndHelp(t *testing.T) {
 func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	model := loadedTestModel()
 	model = updateKeyForTest(t, model, "left")
-	if model.request.DailyOffset != -7 {
-		t.Fatalf("daily offset = %d", model.request.DailyOffset)
+	if model.request.DailyCursor != 1 {
+		t.Fatalf("daily cursor after left = %d", model.request.DailyCursor)
+	}
+	model = updateKeyForTest(t, model, "right")
+	if model.request.DailyCursor != 0 {
+		t.Fatalf("daily cursor after right = %d", model.request.DailyCursor)
+	}
+	model.request.DailyCursor = 1_000_000
+	request := model.request
+	currentSnapshot := model.snapshot
+	updated, command := model.Update(loadedMessage(model, request, Snapshot{Views: currentSnapshot.Views, DailyCursor: 2, DailyWindowStart: 2, DailyDetailOffset: 3, DailyDetailMaxOffset: 5}))
+	model = updated.(Model)
+	if model.request.DailyCursor != 2 || model.request.DailyWindowStart != 2 || model.request.DailyDetailOffset != 3 {
+		t.Fatalf("daily state was not normalized by the loaded snapshot: %+v", model.request)
+	}
+	model.request.DailyCursor = 1_000_000
+	model.request.DailyDetailOffset = 1_000_000
+	model.syncing = true
+	model.syncGeneration = model.loadGeneration
+	model.syncInFlight = true
+	syncRequest := model.request
+	syncRequest.Sync = true
+	updated, command = model.Update(loadedMessage(model, syncRequest, Snapshot{Views: currentSnapshot.Views, DailyCursor: 4, DailyWindowStart: 3, DailyDetailOffset: 5, DailyDetailMaxOffset: 5}))
+	model = updated.(Model)
+	if command != nil || model.syncing || model.request.DailyCursor != 4 || model.request.DailyWindowStart != 3 || model.request.DailyDetailOffset != 5 {
+		t.Fatalf("sync daily state was not normalized: request=%+v syncing=%v command=%v", model.request, model.syncing, command != nil)
+	}
+	staleRequest := model.request
+	staleRequest.DailyCursor = 1
+	updated, command = model.Update(loadedMessage(model, staleRequest, Snapshot{Views: [4]string{"stale"}}))
+	model = updated.(Model)
+	if command != nil || model.snapshot.Views[0] != currentSnapshot.Views[0] || model.request.DailyCursor != 4 {
+		t.Fatalf("stale daily load was applied: request=%+v snapshot=%+v command=%v", model.request, model.snapshot, command != nil)
+	}
+	model.syncing = true
+	model.syncGeneration = model.loadGeneration
+	model.syncInFlight = true
+	staleSyncRequest := model.request
+	staleSyncRequest.DailyCursor = 1
+	staleSyncRequest.Sync = true
+	updated, command = model.Update(loadedMessage(model, staleSyncRequest, Snapshot{Views: [4]string{"stale sync"}}))
+	model = updated.(Model)
+	if command == nil || model.syncing || !model.loading || model.snapshot.Views[0] != currentSnapshot.Views[0] {
+		t.Fatalf("stale sync was not handed back to the current request: request=%+v snapshot=%+v syncing=%v loading=%v command=%v", model.request, model.snapshot, model.syncing, model.loading, command != nil)
+	}
+	model.request.DailyDetailOffset = 1
+	model = updateKeyForTest(t, model, "down")
+	if model.request.DailyDetailOffset != 2 {
+		t.Fatalf("daily detail offset after down = %d", model.request.DailyDetailOffset)
+	}
+	model = updateKeyForTest(t, model, "up")
+	if model.request.DailyDetailOffset != 1 {
+		t.Fatalf("daily detail offset after up = %d", model.request.DailyDetailOffset)
+	}
+	model.request.DailyDetailOffset = 2
+	model.snapshot.DailyDetailMaxOffset = 2
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	if command != nil || model.request.DailyDetailOffset != 2 {
+		t.Fatalf("daily detail moved beyond the loaded viewport: offset=%d command=%v", model.request.DailyDetailOffset, command != nil)
 	}
 	model.router.SelectIndex(int(LedgerTab))
 	previousRequest := model.request
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	model = updated.(Model)
 	if command != nil || model.request != previousRequest {
 		t.Fatalf("ledger horizontal navigation changed state: request=%+v command=%v", model.request, command != nil)
@@ -86,22 +144,112 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	}
 }
 
+func TestSyncRefreshInvalidatesPreSyncLoads(t *testing.T) {
+	model := loadedTestModel()
+	model.syncing = true
+	syncRequest := model.request
+	syncRequest.Sync = true
+	syncCommand := model.loadCmd(syncRequest)
+	if syncCommand == nil {
+		t.Fatal("sync command was not created")
+	}
+	activeSyncGeneration := model.syncGeneration
+	model = updateKeyForTest(t, model, "p")
+	preSyncRequest := model.request
+	preSyncGeneration := model.loadGeneration
+	updated, command := model.Update(loadedMsg{
+		request:    syncRequest,
+		generation: activeSyncGeneration,
+		snapshot:   Snapshot{Views: [4]string{"synced"}},
+	})
+	model = updated.(Model)
+	if command == nil || model.loadGeneration == preSyncGeneration || model.syncing {
+		t.Fatalf("sync handoff did not create a new load: generation=%d previous=%d syncing=%v command=%v", model.loadGeneration, preSyncGeneration, model.syncing, command != nil)
+	}
+	postSyncGeneration := model.loadGeneration
+	updated, _ = model.Update(loadedMsg{
+		request:    preSyncRequest,
+		generation: preSyncGeneration,
+		snapshot:   Snapshot{Views: [4]string{"stale pre-sync"}},
+	})
+	model = updated.(Model)
+	if model.snapshot.Views[0] == "stale pre-sync" {
+		t.Fatal("pre-sync load overwrote the post-sync reload")
+	}
+	updated, _ = model.Update(loadedMsg{
+		request:    preSyncRequest,
+		generation: postSyncGeneration,
+		snapshot:   Snapshot{Views: [4]string{"fresh post-sync"}},
+	})
+	model = updated.(Model)
+	if model.snapshot.Views[0] != "fresh post-sync" {
+		t.Fatalf("post-sync reload was not applied: %q", model.snapshot.Views[0])
+	}
+}
+
+func TestSyncSurvivesInterveningLoadError(t *testing.T) {
+	model := loadedTestModel()
+	model.syncing = true
+	syncRequest := model.request
+	syncRequest.Sync = true
+	model.loadCmd(syncRequest)
+	activeSyncGeneration := model.syncGeneration
+
+	currentRequest := model.request
+	currentGeneration := model.loadGeneration
+	model.loadCmd(currentRequest)
+	updated, command := model.Update(loadedMsg{
+		request:    currentRequest,
+		generation: currentGeneration + 1,
+		err:        errors.New("current load failed"),
+	})
+	model = updated.(Model)
+	if command != nil || !model.syncInFlight || !model.syncing {
+		t.Fatalf("intervening load error canceled sync: syncing=%v inFlight=%v command=%v", model.syncing, model.syncInFlight, command != nil)
+	}
+
+	updated, command = model.Update(loadedMsg{
+		request:    syncRequest,
+		generation: activeSyncGeneration,
+		snapshot:   Snapshot{Views: [4]string{"synced"}},
+	})
+	model = updated.(Model)
+	if command == nil || model.syncInFlight || model.syncing || !model.loading {
+		t.Fatalf("successful sync did not hand off after load error: syncing=%v inFlight=%v loading=%v command=%v", model.syncing, model.syncInFlight, model.loading, command != nil)
+	}
+	handoffRequest := model.request
+	handoffGeneration := model.loadGeneration
+	updated, command = model.Update(loadedMsg{
+		request:    handoffRequest,
+		generation: handoffGeneration,
+		err:        errors.New("post-sync reload failed"),
+	})
+	model = updated.(Model)
+	if command != nil || model.syncCompletionPending {
+		t.Fatalf("failed post-sync reload leaked completion state: pending=%v command=%v", model.syncCompletionPending, command != nil)
+	}
+}
+
 func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
-	updated, command := model.Update(loadedMsg{snapshot: Snapshot{Empty: true, FilesScanned: 12}})
+	updated, command := model.Update(loadedMessage(model, model.request, Snapshot{Empty: true, FilesScanned: 12}))
 	model = updated.(Model)
 	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · 12 files scanned") {
 		t.Fatalf("empty initial transition = %+v, command %v", model, command != nil)
 	}
 
 	wanted := Snapshot{Views: [4]string{"daily", "monthly", "models", "heatmap"}}
-	updated, _ = model.Update(loadedMsg{request: Request{Sync: true}, snapshot: wanted})
+	syncRequest := model.request
+	syncRequest.Sync = true
+	updated, _ = model.Update(loadedMessage(model, syncRequest, wanted))
 	model = updated.(Model)
 	if model.loading || model.syncing || model.snapshot.Views[0] != "daily" || !strings.Contains(model.status, "synced") {
 		t.Fatalf("loaded transition = %+v", model)
 	}
 
-	updated, _ = model.Update(loadedMsg{request: Request{Sync: true}, err: errors.New("sync failed")})
+	syncRequest = model.request
+	syncRequest.Sync = true
+	updated, _ = model.Update(loadedErrorMessage(model, syncRequest, errors.New("sync failed")))
 	model = updated.(Model)
 	if model.warning != "sync failed" || model.snapshot.Views[0] != "daily" || !strings.Contains(model.View(), "sync failed") {
 		t.Fatalf("failure transition = %+v", model)
@@ -552,12 +700,14 @@ func TestSkillOfferEligibilityAndInertKeys(t *testing.T) {
 func TestSkillOfferCheckWaitsForInitialData(t *testing.T) {
 	offer := SkillOffer{Check: func() (SkillOfferCheck, error) { return SkillOfferCheck{}, nil }}
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, offer)
-	updated, _ := model.Update(loadedMsg{snapshot: Snapshot{Empty: true}})
+	updated, _ := model.Update(loadedMessage(model, model.request, Snapshot{Empty: true}))
 	model = updated.(Model)
 	if model.offerChecked {
 		t.Fatal("empty first-run store checked offer before initial sync")
 	}
-	updated, command := model.Update(loadedMsg{request: Request{Sync: true}, snapshot: Snapshot{}})
+	syncRequest := model.request
+	syncRequest.Sync = true
+	updated, command := model.Update(loadedMessage(model, syncRequest, Snapshot{}))
 	model = updated.(Model)
 	if !model.offerChecked || command == nil {
 		t.Fatalf("offer was not checked after initial sync: checked=%v command=%v", model.offerChecked, command != nil)
@@ -565,7 +715,7 @@ func TestSkillOfferCheckWaitsForInitialData(t *testing.T) {
 
 	populatedOffer := SkillOffer{Check: func() (SkillOfferCheck, error) { return SkillOfferCheck{HasRoots: true}, nil }}
 	model = New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, populatedOffer)
-	updated, command = model.Update(loadedMsg{snapshot: Snapshot{Empty: false}})
+	updated, command = model.Update(loadedMessage(model, model.request, Snapshot{Empty: false}))
 	model = updated.(Model)
 	if !model.offerChecked || !model.pendingSync || command == nil {
 		t.Fatalf("populated store startup = checked %v, pending sync %v, command %v", model.offerChecked, model.pendingSync, command != nil)
@@ -623,6 +773,14 @@ func loadedTestModel() Model {
 	ledgerRow := tuipages.Row{Key: "2026", Label: "2026", Codex: tuipages.ProviderTotals{Tokens: 100, PricedTokens: 100}}
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{ledgerRow}, Total: ledgerRow}
 	return model
+}
+
+func loadedMessage(model Model, request Request, snapshot Snapshot) loadedMsg {
+	return loadedMsg{request: request, generation: model.loadGeneration, snapshot: snapshot}
+}
+
+func loadedErrorMessage(model Model, request Request, err error) loadedMsg {
+	return loadedMsg{request: request, generation: model.loadGeneration, err: err}
 }
 
 func offerTestModel(install func() ([]string, error), record func(SkillOfferChoice) error) Model {

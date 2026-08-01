@@ -46,7 +46,7 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 		}
 	}
 	viewFragments := map[int][]string{
-		int(tui.DailyTab):   {"cost/day", "DATE"},
+		int(tui.DailyTab):   {"cost/day", "DAY DETAIL", "PROVIDER SPLIT", "TOP MODELS BY"},
 		int(tui.ModelsTab):  {"PROVIDER", "MODEL"},
 		int(tui.HeatmapTab): {"Less", "active days"},
 	}
@@ -409,6 +409,108 @@ func TestQuest115AfterSnapshot(t *testing.T) {
 func renderDashboardLedger(snapshot tui.Snapshot, request tui.Request, render theme.Context) string {
 	render.Width = tui.ContentWidth(request.Width)
 	return tuipages.Render(render, snapshot.Ledger, request.Ledger, request.Height)
+}
+
+func TestQuest108AfterSnapshot(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	render := styledRenderContext(120)
+	wide, err := dashboardSnapshot(database, tui.Request{DailyCursor: 1, Range: tui.RangeAll, Width: 120, Height: 35}, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily := wide.Views[tui.DailyTab]
+	for _, fragment := range []string{"DAY DETAIL", "2026-02-01", "PROVIDER SPLIT", "TOP MODELS BY COST", "^"} {
+		if !strings.Contains(daily, fragment) {
+			t.Errorf("wide daily view missing %q:\n%s", fragment, daily)
+		}
+	}
+	if strings.Contains(daily, "DATE") {
+		t.Fatalf("daily detail retained the redundant date table:\n%s", daily)
+	}
+
+	narrow, err := dashboardSnapshot(database, tui.Request{DailyCursor: 1, Range: tui.RangeAll, Width: 100, Height: 35}, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wideLines := len(strings.Split(strings.TrimRight(daily, "\n"), "\n"))
+	narrowDaily := narrow.Views[tui.DailyTab]
+	narrowLines := len(strings.Split(strings.TrimRight(narrowDaily, "\n"), "\n"))
+	if narrowLines <= wideLines || !strings.Contains(narrowDaily, "PROVIDER SPLIT") {
+		t.Fatalf("narrow daily view did not collapse below chart (wide=%d narrow=%d):\n%s", wideLines, narrowLines, narrowDaily)
+	}
+	t.Logf("wide daily cockpit:\n%s\n\nnarrow daily cockpit:\n%s", daily, narrowDaily)
+}
+
+func TestDashboardDailyShortViewportAndUnpricedMode(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	short, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 60, Height: 18}, styledRenderContext(60), time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortDaily := short.Views[tui.DailyTab]
+	for _, fragment := range []string{"DAY DETAIL", "PROVIDER SPLIT", "↓ more below"} {
+		if !strings.Contains(shortDaily, fragment) {
+			t.Errorf("short daily view missing %q:\n%s", fragment, shortDaily)
+		}
+	}
+	if short.DailyDetailMaxOffset == 0 {
+		t.Fatalf("short daily view reported no detail overflow:\n%s", shortDaily)
+	}
+
+	unpriced, err := dashboardSnapshot(database, tui.Request{DailyCursor: 0, Range: tui.RangeAll, Width: 120, Height: 35}, styledRenderContext(120), time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpricedDaily := unpriced.Views[tui.DailyTab]
+	for _, fragment := range []string{"PROVIDER SPLIT · TOKENS", "TOP MODELS BY TOKENS", "UNPRICED DAY · TOKEN SHARES"} {
+		if !strings.Contains(unpricedDaily, fragment) {
+			t.Errorf("unpriced daily view missing %q:\n%s", fragment, unpricedDaily)
+		}
+	}
+}
+
+func TestDailyWindowMovesOnlyWhenCursorExits(t *testing.T) {
+	rows := []store.DailyRow{
+		{Date: "one"}, {Date: "two"}, {Date: "three"}, {Date: "four"}, {Date: "five"},
+	}
+	if got := normalizedDailyWindowStart(rows, 4, 3, 0); got != 2 {
+		t.Fatalf("initial window start = %d, want 2", got)
+	}
+	if got := normalizedDailyWindowStart(rows, 3, 3, 2); got != 2 {
+		t.Fatalf("window moved while cursor was visible: start=%d", got)
+	}
+	if got := normalizedDailyWindowStart(rows, 1, 3, 2); got != 1 {
+		t.Fatalf("window did not follow cursor past the left edge: start=%d", got)
+	}
+	window := windowDailyRows(rows, 2, 3)
+	if len(window) != 3 || window[0].Date != "three" || window[2].Date != "five" {
+		t.Fatalf("daily window = %#v", window)
+	}
+	if got := dailyDetailRenderWidth(tui.ContentWidth(100)); got != tui.ContentWidth(100) {
+		t.Fatalf("stacked detail width = %d, want %d", got, tui.ContentWidth(100))
+	}
+}
+
+func TestDailyDetailWindowKeepsContentAtTinyHeights(t *testing.T) {
+	render := styledRenderContext(20)
+	for _, height := range []int{1, 2} {
+		view, _, _ := renderDailyDetailWindow(render, "one\ntwo\nthree", 20, height, 1)
+		if strings.Contains(view, "more") || !strings.Contains(view, "two") {
+			t.Fatalf("detail window at height %d hid content: %q", height, view)
+		}
+	}
 }
 
 func TestBareStyledInvocationLaunchesDashboard(t *testing.T) {
