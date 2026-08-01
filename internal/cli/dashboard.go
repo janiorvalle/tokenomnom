@@ -13,6 +13,7 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
@@ -213,17 +214,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 
 	render.Width = tui.ContentWidth(request.Width)
 	snapshot := tui.Snapshot{Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
-	topModel, topProvider := "—", ""
-	if len(models) > 0 {
-		topModel = models[0].Model
-		topProvider = string(models[0].Provider)
-	}
-	snapshot.Cards = [4]tui.Card{
-		{Label: "TOTAL COST", Value: formatCost(costs.Grand), Kind: tui.CardMoney},
-		{Label: "TOTAL TOKENS", Value: formatNumber(totals.Total)},
-		{Label: "ACTIVE DAYS", Value: formatNumber(int64(totals.ActiveDays))},
-		{Label: "TOP MODEL", Value: topModel, Kind: tui.CardModel, Provider: topProvider},
-	}
+	snapshot.Summary = dashboardSummary(totals, costs)
 	snapshot.Views[tui.DailyTab], err = dashboardDailyView(database, filter, costs, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -238,6 +229,43 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		return tui.Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func dashboardSummary(totals store.TotalsResult, costs reportCosts) tui.Summary {
+	average, peak := "—", "—"
+	if totals.ActiveDays > 0 && costs.Grand.PricedTokens > 0 {
+		average = formatUSD(costs.Grand.Total / pricing.Money(totals.ActiveDays))
+		if peakCost, ok := peakDailyCost(costs.ByDate); ok {
+			peak = formatUSD(peakCost)
+		}
+	}
+	return tui.Summary{Metrics: [5]tui.SummaryMetric{
+		{Label: "TOTAL", Value: formatCost(costs.Grand), Kind: tui.MetricMoney},
+		{Label: "TOKENS", Value: formatNumber(totals.Total)},
+		{Label: "ACTIVE DAYS", Value: formatNumber(int64(totals.ActiveDays))},
+		{Label: "AVG/DAY", Value: average, Kind: tui.MetricMoney},
+		{Label: "PEAK", Value: peak, Kind: tui.MetricMoney},
+	}}
+}
+
+func peakDailyCost(byDate map[string]aggregateCost) (pricing.Money, bool) {
+	dates := make([]string, 0, len(byDate))
+	for date := range byDate {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	var peak pricing.Money
+	found := false
+	for _, date := range dates {
+		cost := byDate[date]
+		if cost.PricedTokens == 0 {
+			continue
+		}
+		if !found || cost.Total > peak {
+			peak, found = cost.Total, true
+		}
+	}
+	return peak, found
 }
 
 func dashboardFilter(request tui.Request, now time.Time) store.Filter {
@@ -358,7 +386,7 @@ func dashboardRowCapacity(height int) int {
 	if height <= 0 {
 		return 8
 	}
-	return max(3, min(10, height-20))
+	return max(3, min(10, tui.ContentHeight(height)-10))
 }
 
 func windowDailyRows(rows []store.DailyRow, offset, capacity int) []store.DailyRow {

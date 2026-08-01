@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"strings"
@@ -107,11 +108,43 @@ func TestEveryViewRendersStructure(t *testing.T) {
 	for tab := Tab(0); tab < tabCount; tab++ {
 		model.tab = tab
 		view := model.View()
-		for _, fragment := range []string{"TOTAL COST", tabNames[tab], model.snapshot.Views[tab], "API list-price equivalents"} {
+		for _, fragment := range []string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK", tabNames[tab], model.snapshot.Views[tab], "API list-price equivalents"} {
 			if !strings.Contains(view, fragment) {
 				t.Errorf("%s view missing %q:\n%s", tabNames[tab], fragment, view)
 			}
 		}
+	}
+}
+
+func TestCockpitFillsTheWindow(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{100, 30}, {160, 40}} {
+		model := loadedTestModel()
+		model.request.Width, model.request.Height = size.width, size.height
+		lines := strings.Split(model.View(), "\n")
+		if len(lines) != size.height {
+			t.Fatalf("size %dx%d rendered %d lines", size.width, size.height, len(lines))
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("size %dx%d line %d has width %d:\n%s", size.width, size.height, index+1, width, model.View())
+			}
+		}
+
+		terminal, dark := true, true
+		model.render = theme.Resolve(theme.ResolveOptions{
+			Output: &bytes.Buffer{}, ForceTerminal: &terminal, Width: size.width,
+			ForceColor: true, Dark: &dark, LookupEnv: func(string) (string, bool) { return "", false },
+		})
+		styledLines := strings.Split(model.View(), "\n")
+		for index, line := range styledLines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("styled size %dx%d line %d has width %d", size.width, size.height, index+1, width)
+			}
+		}
+	}
+
+	if ContentWidth(160) <= ContentWidth(100) {
+		t.Fatalf("content width does not grow with the terminal: 100=%d 160=%d", ContentWidth(100), ContentWidth(160))
 	}
 }
 
@@ -307,12 +340,13 @@ func loadedTestModel() Model {
 	model.request.Width, model.request.Height = 100, 30
 	model.loading, model.loaded = false, true
 	model.snapshot = Snapshot{
-		Cards: [4]Card{
-			{Label: "TOTAL COST", Value: "$1.00", Kind: CardMoney},
-			{Label: "TOTAL TOKENS", Value: "100"},
+		Summary: Summary{Metrics: [5]SummaryMetric{
+			{Label: "TOTAL", Value: "$1.00", Kind: MetricMoney},
+			{Label: "TOKENS", Value: "100"},
 			{Label: "ACTIVE DAYS", Value: "2"},
-			{Label: "TOP MODEL", Value: "model", Kind: CardModel, Provider: "codex"},
-		},
+			{Label: "AVG/DAY", Value: "$0.50", Kind: MetricMoney},
+			{Label: "PEAK", Value: "$1.00", Kind: MetricMoney},
+		}},
 		Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"},
 	}
 	return model

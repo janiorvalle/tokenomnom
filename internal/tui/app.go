@@ -74,39 +74,29 @@ type Request struct {
 	Sync          bool
 }
 
-// CardKind selects the value treatment for one header card.
-type CardKind uint8
+// MetricKind selects the value treatment for one summary metric.
+type MetricKind uint8
 
 const (
-	CardPlain CardKind = iota
-	CardMoney
-	CardModel
+	MetricPlain MetricKind = iota
+	MetricMoney
 )
 
-// Card is one header value.
-type Card struct {
-	Label    string
-	Value    string
-	Kind     CardKind
-	Provider string // provider hue for CardModel values
+// SummaryMetric is one value in the one-line dashboard summary strip.
+type SummaryMetric struct {
+	Label string
+	Value string
+	Kind  MetricKind
 }
 
-// contentMaxWidth bounds the dashboard column: wide enough for a full-year
-// heatmap at two-column cells, narrow enough to stay scannable on wide
-// terminals instead of smearing content across them.
-const contentMaxWidth = 112
-
-// ContentWidth returns the bounded column width for a terminal width.
-func ContentWidth(width int) int {
-	if width <= 0 {
-		return contentMaxWidth
-	}
-	return max(minimumWidth-4, min(width-2, contentMaxWidth))
+// Summary contains the five values that orient every dashboard view.
+type Summary struct {
+	Metrics [5]SummaryMetric
 }
 
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
-	Cards        [4]Card
+	Summary      Summary
 	Views        [4]string
 	Empty        bool
 	FilesScanned int
@@ -490,26 +480,112 @@ func (m Model) View() string {
 		line := fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
 		return m.place(line)
 	}
-	body := m.snapshot.Views[m.tab]
-	if !strings.HasSuffix(body, "\n") {
-		body += "\n"
-	}
-	column := m.cardsView() + m.tabsView() + body
-	footer := m.footerView()
-	return m.compose(column, footer)
+	return m.cockpitView()
 }
 
-// compose pins the footer to the bottom edge and centers the bounded column.
-func (m Model) compose(column, footer string) string {
-	width := max(m.request.Width, minimumWidth)
-	if m.request.Height > 0 {
-		filler := m.request.Height - lipgloss.Height(column) - lipgloss.Height(footer)
-		if filler > 0 {
-			column += strings.Repeat("\n", filler)
+func (m Model) cockpitView() string {
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	content := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.railView(layout),
+		strings.Repeat(" ", gridGap),
+		m.contentView(layout),
+	)
+	view := strings.Join([]string{
+		m.topBarView(layout),
+		m.summaryView(layout),
+		content,
+		m.footerView(layout),
+	}, "\n")
+	return frameBlock(view, layout)
+}
+
+func (m Model) topBarView(layout cockpitLayout) string {
+	active := tabNames[min(int(m.tab), len(tabNames)-1)]
+	left := m.render.Palette.Header().Render("tokenomnom") +
+		m.render.Palette.Subtle().Render("  /  ") +
+		m.render.Palette.Emphasis().Render(strings.ToUpper(active))
+	right := m.render.Palette.Subtle().Render("LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String()))
+	space := max(2, layout.innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
+	return fitLine(left+strings.Repeat(" ", space)+right, layout.innerWidth)
+}
+
+func (m Model) summaryView(layout cockpitLayout) string {
+	labels := [...]string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK"}
+	parts := make([]string, 0, len(labels))
+	separator := m.render.Palette.Subtle().Render("  ·  ")
+	for index, label := range labels {
+		metric := m.snapshot.Summary.Metrics[index]
+		if metric.Label == "" {
+			metric.Label = label
 		}
+		if metric.Value == "" {
+			metric.Value = "—"
+		}
+		parts = append(parts, m.render.Palette.Subtle().Render(metric.Label+" ")+m.summaryValueStyle(metric).Render(metric.Value))
 	}
-	view := column + footer
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, lipgloss.NewStyle().Width(ContentWidth(m.request.Width)).Render(view))
+	return fitLine(strings.Join(parts, separator), layout.innerWidth)
+}
+
+func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
+	if metric.Kind == MetricMoney {
+		return m.render.Palette.Money().Bold(true)
+	}
+	return m.render.Palette.Emphasis().Bold(true)
+}
+
+func (m Model) railView(layout cockpitLayout) string {
+	rows := []string{m.render.Palette.Header().Render("VIEWS"), ""}
+	for tab := Tab(0); tab < tabCount; tab++ {
+		label := fmt.Sprintf("%d  %s", tab+1, tabNames[tab])
+		style := m.render.Palette.Subtle()
+		if tab == m.tab {
+			label = "› " + label
+			style = m.render.Palette.Emphasis().Bold(true)
+		}
+		rows = append(rows, style.Render(label))
+	}
+	rows = append(rows, "", m.render.Palette.Header().Render("FILTERS"))
+	rows = append(rows,
+		m.render.Palette.Subtle().Render("provider"),
+		m.filterProviderView(),
+		m.render.Palette.Subtle().Render("range"),
+		m.filterRangeView(),
+	)
+
+	innerWidth := max(1, layout.railWidth-1)
+	content := fitBlock(strings.Join(rows, "\n"), innerWidth, layout.bodyHeight)
+	lines := strings.Split(content, "\n")
+	divider := m.render.Palette.Border().Render("│")
+	for index := range lines {
+		lines[index] += divider
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) filterProviderView() string {
+	value := m.request.Provider.String()
+	if m.request.Provider == AllProviders {
+		return m.render.Palette.Subtle().Render("  " + value)
+	}
+	return m.render.Palette.Provider(value, 0).Bold(true).Render("  " + value)
+}
+
+func (m Model) filterRangeView() string {
+	value := m.request.Range.String()
+	style := m.render.Palette.Subtle()
+	if m.request.Range != Range30Days {
+		style = m.render.Palette.Emphasis().Bold(true)
+	}
+	return style.Render("  " + value)
+}
+
+func (m Model) contentView(layout cockpitLayout) string {
+	body := ""
+	if int(m.tab) < len(m.snapshot.Views) {
+		body = m.snapshot.Views[m.tab]
+	}
+	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
+	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)
 }
 
 // place centers transient states (loading, too-small) in the full window.
@@ -622,74 +698,12 @@ func splitTextWidth(value string, width int) (string, string) {
 	return string(runes[:end]), string(runes[end:])
 }
 
-const cardGap = 2
-
-func (m Model) cardsView() string {
-	content := ContentWidth(m.request.Width)
-	width := max(14, (content-(len(m.snapshot.Cards)-1)*cardGap)/len(m.snapshot.Cards))
-	parts := make([]string, 0, len(m.snapshot.Cards))
-	for index, card := range m.snapshot.Cards {
-		inner := width - 4 // border + padding
-		value := truncate(card.Value, inner)
-		label := m.render.Palette.Subtle().Render(truncate(card.Label, inner))
-		body := label + "\n" + m.cardValueStyle(card).Render(value)
-		style := m.render.Palette.Border().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(m.render.Palette.BorderColor()).
-			Padding(0, 1).Width(width - 2)
-		if index < len(m.snapshot.Cards)-1 {
-			style = style.MarginRight(cardGap)
-		}
-		parts = append(parts, style.Render(body))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "\n" + m.filtersView() + "\n\n"
-}
-
-func (m Model) cardValueStyle(card Card) lipgloss.Style {
-	switch card.Kind {
-	case CardMoney:
-		return m.render.Palette.Money().Bold(true)
-	case CardModel:
-		if card.Provider != "" {
-			return m.render.Palette.Provider(card.Provider, 0).Bold(true)
-		}
-	}
-	return m.render.Palette.Header()
-}
-
-// filtersView dims default filter values and lifts active ones.
-func (m Model) filtersView() string {
-	provider := m.render.Palette.Subtle().Render(m.request.Provider.String())
-	if m.request.Provider != AllProviders {
-		provider = m.render.Palette.Provider(m.request.Provider.String(), 0).Bold(true).Render(m.request.Provider.String())
-	}
-	dateRange := m.render.Palette.Subtle().Render(m.request.Range.String())
-	if m.request.Range != RangeAll && m.request.Range != Range30Days {
-		dateRange = m.render.Palette.Emphasis().Render(m.request.Range.String())
-	}
-	subtle := m.render.Palette.Subtle()
-	return subtle.Render("provider ") + provider + subtle.Render("  ·  range ") + dateRange
-}
-
-func (m Model) tabsView() string {
-	parts := make([]string, 0, tabCount)
-	for tab := Tab(0); tab < tabCount; tab++ {
-		style := m.render.Palette.Subtle().Padding(0, 1)
-		if tab == m.tab {
-			style = m.render.Palette.Emphasis().Underline(true).Bold(true).Padding(0, 1)
-		}
-		parts = append(parts, style.Render(tabNames[tab]))
-	}
-	rule := m.render.Palette.Border().Render(strings.Repeat("─", ContentWidth(m.request.Width)))
-	return strings.Join(parts, " ") + "\n" + rule + "\n\n"
-}
-
 var footerHints = [...][2]string{
 	{"tab", "views"}, {"p", "provider"}, {"r", "range"},
 	{"R", "refresh"}, {"?", "help"}, {"q", "quit"},
 }
 
-func (m Model) footerView() string {
+func (m Model) footerView(layout cockpitLayout) string {
 	subtle := m.render.Palette.Subtle()
 	parts := make([]string, 0, len(footerHints))
 	for _, hint := range footerHints {
@@ -699,12 +713,16 @@ func (m Model) footerView() string {
 	status := m.statusView()
 	switch {
 	case status == "":
-	case lipgloss.Width(line)+lipgloss.Width(status)+3 <= ContentWidth(m.request.Width):
+	case lipgloss.Width(line)+lipgloss.Width(status)+3 <= layout.innerWidth:
 		line += subtle.Render(" · ") + status
 	default:
-		line = status + "\n" + line
+		line = status + subtle.Render("  ") + line
 	}
-	return "\n" + line + "\n" + subtle.Render("API list-price equivalents, not actual bills") + "\n"
+	return strings.Join([]string{
+		m.render.Palette.Border().Render(strings.Repeat("─", layout.innerWidth)),
+		fitLine(line, layout.innerWidth),
+		fitLine(subtle.Render("API list-price equivalents, not actual bills"), layout.innerWidth),
+	}, "\n")
 }
 
 func (m Model) statusView() string {

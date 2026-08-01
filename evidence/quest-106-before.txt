@@ -1,0 +1,29 @@
+
+     ╭─────────────────────╮  ╭─────────────────────╮  ╭─────────────────────╮  ╭─────────────────────╮
+     │ TOTAL COST          │  │ TOTAL TOKENS        │  │ ACTIVE DAYS         │  │ TOP MODEL           │
+     │ $1.00               │  │ 100                 │  │ 2                   │  │ model               │
+     ╰─────────────────────╯  ╰─────────────────────╯  ╰─────────────────────╯  ╰─────────────────────╯
+     provider all  ·  range 30d
+
+      Daily   Monthly   Models   Heatmap
+     ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+     daily body
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+     tab views · p provider · r range · R refresh · ? help · q quit
+     API list-price equivalents, not actual bills
