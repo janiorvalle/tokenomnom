@@ -16,10 +16,12 @@ import (
 // Raw transcript locations deliberately stay in the history store layer; the
 // page only needs stable metadata and the first-prompt preview.
 type SessionPageData struct {
-	Sessions       []historystore.CatalogSession
-	Projects       []ProjectOption
-	HasMore        bool
-	NextCursor     string
+	Sessions   []historystore.CatalogSession
+	Projects   []ProjectOption
+	HasMore    bool
+	NextCursor string
+	// Pending distinguishes an in-flight catalog load from an absent index.
+	Pending        bool
 	IndexAvailable bool
 	Warning        string
 	Location       *time.Location
@@ -68,6 +70,10 @@ func RenderSessions(render theme.Context, data SessionPageData, state SessionVie
 	lines = append(lines, render.Palette.Subtle().Render(truncate(filterLine, width)), "")
 	if data.Warning != "" {
 		lines = append(lines, render.Palette.Warning().Render(truncate(data.Warning, width)), "")
+	}
+	if data.Pending {
+		lines = append(lines, render.Palette.Subtle().Render(truncate("Loading sessions…", width)))
+		return strings.Join(lines, "\n")
 	}
 	if !data.IndexAvailable {
 		lines = append(lines,

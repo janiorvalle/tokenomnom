@@ -95,12 +95,14 @@ type Request struct {
 	Action               string
 	LoadID               uint64
 	PageLoadToken        string
-	HistoryQuery         string
-	HistorySelect        int
-	HistorySessionID     string
-	HistoryExportID      string
-	HistoryExportToken   string
-	FullSync             bool
+	// Initial marks the store-only load used to make the first dashboard frame.
+	Initial            bool
+	HistoryQuery       string
+	HistorySelect      int
+	HistorySessionID   string
+	HistoryExportID    string
+	HistoryExportToken string
+	FullSync           bool
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -305,7 +307,7 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 		render: render, loader: loader, offer: offer, spinner: spin,
 		router:  newRouter(pages...),
 		palette: newPalette(render.Palette.Emphasis()),
-		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Ledger: tuipages.State{Cursor: -1}},
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Initial: true, Ledger: tuipages.State{Cursor: -1}},
 		loading: true, dashboardLoadBusy: true, started: time.Now(),
 		pageLoadTokens: make(map[PageID]string),
 	}
@@ -342,9 +344,11 @@ func (m *Model) startDashboardLoad(request Request) tea.Cmd {
 	} else if request.Sync {
 		m.clearPendingActionOutcome()
 	}
+	request.Initial = false
 	m.loadID++
 	request.LoadID = m.loadID
 	m.request.LoadID = request.LoadID
+	m.request.Initial = false
 	m.dashboardLoadBusy = true
 	return m.loadCmd(request)
 }
@@ -660,6 +664,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
+		if initial {
+			m.request.Initial = false
+		}
 		m.snapshot = msg.snapshot
 		if requestMatches {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
@@ -800,6 +807,8 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	right.LoadID = 0
 	left.PageLoadToken = ""
 	right.PageLoadToken = ""
+	left.Initial = false
+	right.Initial = false
 	left.HistoryQuery = ""
 	right.HistoryQuery = ""
 	left.HistorySelect = 0
