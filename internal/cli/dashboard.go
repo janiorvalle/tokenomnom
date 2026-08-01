@@ -460,6 +460,10 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	ledgerFilter := filter
 	ledgerFilter.Since = ""
 	ledgerFilter.Until = ""
+	ledgerTotals, err := database.Totals(ledgerFilter)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
 	ledgerCosts, err := loadReportCosts(database, ledgerFilter, nil)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -476,7 +480,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	snapshot.Empty = len(snapshot.Ledger.Rows) == 0 && totals.Total == 0
+	snapshot.Empty = ledgerTotals.Total == 0
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {

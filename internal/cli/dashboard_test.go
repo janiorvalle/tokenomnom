@@ -360,6 +360,36 @@ func TestDashboardLedgerUsesFullHistoryOutsideDashboardRange(t *testing.T) {
 	}
 }
 
+func TestDashboardLedgerEmptyAnchorDoesNotHideExistingUsage(t *testing.T) {
+	root := t.TempDir()
+	database, err := store.Open(filepath.Join(root, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Transaction(func(tx *store.Tx) error {
+		return tx.ApplyUsage(store.Usage{
+			Date: "2020-01-15", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 10,
+		}, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := dashboardSnapshot(database, tui.Request{
+		Range: tui.Range30Days, Width: 120, Height: 30,
+		Ledger: tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2019, Cursor: -1},
+	}, styledRenderContext(120), time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Ledger.Rows) != 0 {
+		t.Fatalf("empty ledger anchor produced rows = %+v", snapshot.Ledger.Rows)
+	}
+	if snapshot.Empty {
+		t.Fatal("existing full-history usage was marked empty for an empty ledger anchor")
+	}
+}
+
 func TestQuest115AfterSnapshot(t *testing.T) {
 	stateDir, _, _ := seedReportStore(t)
 	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))

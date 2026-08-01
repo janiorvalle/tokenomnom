@@ -96,7 +96,9 @@ func (ledgerPage) Section() PageSection { return SpendSection }
 func (ledgerPage) Title() string        { return "Ledger" }
 
 func (ledgerPage) View(context PageContext) string {
-	return tuipages.Render(context.Render, context.Snapshot.Ledger, context.Request.Ledger, context.Request.Height)
+	render := context.Render
+	render.Width = context.Width
+	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
 }
 
 func (ledgerPage) Update(request Request, _ string) (Request, bool) {

@@ -3,11 +3,11 @@
 === RUN   TestDashboardLedgerUsesFullHistoryOutsideDashboardRange
 --- PASS: TestDashboardLedgerUsesFullHistoryOutsideDashboardRange (0.00s)
 === RUN   TestQuest115AfterSnapshot
-    dashboard_test.go:376:
+    dashboard_test.go:406:
         [38;2;156;163;175mALL YEARS[0m
         [1;38;2;243;243;246mPERIOD[0m          [1;38;2;243;243;246mCODEX[0m     [1;38;2;243;243;246mCLAUDE[0m      [1;38;2;243;243;246mTOTAL[0m      [1;38;2;243;243;246mDELTA[0m  [1;38;2;243;243;246mACTIVITY[0m
         [1;38;2;165;179;252m› 2026[0m         [1;38;2;251;191;36m~$0.18[0m          [38;2;110;231;183m—[0m     [1;38;2;251;191;36m~$0.18[0m          [38;2;156;163;175m—[0m  [38;2;94;234;211m█████████████████[0m[38;2;253;186;116m▓[0m
         [1;38;2;243;243;246mTOTAL[0m          [1;38;2;251;191;36m~$0.18[0m          [38;2;110;231;183m—[0m     [1;38;2;251;191;36m~$0.18[0m             [38;2;94;234;211m█████████████████[0m[38;2;253;186;116m▓[0m
 --- PASS: TestQuest115AfterSnapshot (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.030s
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.028s
