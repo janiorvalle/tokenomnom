@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,12 +14,15 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	"github.com/janiorvalle/tokenomnom/internal/vault"
 	"github.com/janiorvalle/tokenomnom/internal/version"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
@@ -113,6 +117,8 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 }
 
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
+	var ambient dashboardAmbientCache
+
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -172,13 +178,115 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
 		snapshot.Warning = backupWarning
-		if err == nil && !request.Sync {
-			for _, root := range roots {
-				files, _ := discover.ListSourceFiles(root)
-				snapshot.FilesScanned += len(files)
-			}
+		if err != nil {
+			return snapshot, err
 		}
+		snapshot.StatusBar, snapshot.FilesScanned = ambient.snapshot(request, func() (tui.StatusBar, int) {
+			filesScanned := syncSummary.FilesScanned
+			if !request.Sync {
+				filesScanned = countDashboardFiles(roots)
+			}
+			return dashboardStatusBar(cmd, database, stateDir, home, roots), filesScanned
+		})
 		return snapshot, err
+	}
+}
+
+// dashboardAmbientCache keeps facts that change on sync out of keypress loads.
+// The mutex also serializes overlapping Bubble Tea commands during a refresh.
+type dashboardAmbientCache struct {
+	mu           sync.Mutex
+	status       tui.StatusBar
+	filesScanned int
+	initialized  bool
+}
+
+func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func() (tui.StatusBar, int)) (tui.StatusBar, int) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync {
+		return cache.status, cache.filesScanned
+	}
+	cache.status, cache.filesScanned = refresh()
+	cache.initialized = true
+	return cache.status, cache.filesScanned
+}
+
+func countDashboardFiles(roots []discover.Root) int {
+	count := 0
+	for _, root := range roots {
+		files, _ := discover.ListSourceFiles(root)
+		count += len(files)
+	}
+	return count
+}
+
+func dashboardStatusBar(cmd *cobra.Command, database *store.Store, stateDir, home string, roots []discover.Root) tui.StatusBar {
+	history := dashboardHistoryStatus(cmd, filepath.Join(stateDir, historystore.DatabaseName), roots)
+	vaultStatus := dashboardVaultStatus(cmd, database, home, roots)
+	return tui.StatusBar{History: history.Status, Vault: vaultStatus, Sessions: history.Sessions}
+}
+
+type dashboardHistorySnapshot struct {
+	Status   tui.HistoryStatus
+	Sessions int
+}
+
+func dashboardHistoryStatus(cmd *cobra.Command, path string, roots []discover.Root) dashboardHistorySnapshot {
+	health, err := inspectHistoryHealth(path)
+	if err != nil {
+		return dashboardHistorySnapshot{Status: tui.HistoryStatus{Hint: "unavailable"}}
+	}
+	if !health.Exists {
+		return dashboardHistorySnapshot{Status: tui.HistoryStatus{Hint: "not indexed"}}
+	}
+
+	drift := historyfreshness.Probe(path, configuredHistoryRoots(cmd, roots), nil)
+	status := tui.HistoryStatus{Exists: true}
+	switch {
+	case health.InspectionError != "" || health.ErrorSources > 0 || health.LastRunErrorCount > 0 || len(drift.Warnings) > 0:
+		status.Hint = "needs attention"
+	case health.LastIndexUnix == 0:
+		status.Hint = "pending"
+	case health.StaleSources > 0 || drift.SettledChangedSources > 0:
+		status.Hint = "stale"
+	default:
+		status.Fresh = true
+	}
+	return dashboardHistorySnapshot{Status: status, Sessions: health.Sessions}
+}
+
+func dashboardVaultStatus(cmd *cobra.Command, database *store.Store, home string, roots []discover.Root) tui.VaultStatus {
+	cfg := appconfig.FromContext(cmd.Context()).Config
+	dir, err := configuredVaultDir(cfg, home)
+	if err != nil {
+		return tui.VaultStatus{Hint: "unavailable"}
+	}
+	providers := make([]discover.Provider, 0, len(cfg.Vault.Providers))
+	for _, provider := range cfg.Vault.Providers {
+		providers = append(providers, discover.Provider(provider))
+	}
+	minAge, err := time.ParseDuration(cfg.Vault.MinAge)
+	if err != nil {
+		return tui.VaultStatus{Hint: "unavailable"}
+	}
+	instance, err := vault.New(vault.Options{Dir: dir, Store: database, Roots: roots, Providers: providers, MinAge: minAge})
+	if err != nil {
+		return tui.VaultStatus{Hint: "unavailable"}
+	}
+	readiness, err := instance.Readiness()
+	if err != nil {
+		return tui.VaultStatus{Hint: "unavailable"}
+	}
+	if !readiness.Initialized {
+		return tui.VaultStatus{Hint: "not initialized"}
+	}
+	return tui.VaultStatus{
+		Exists:           true,
+		Files:            readiness.Status.Files,
+		RawBytes:         readiness.Status.RawBytes,
+		StoredBytes:      readiness.Status.StoredBytes,
+		CompressionRatio: readiness.Status.Ratio,
 	}
 }
 

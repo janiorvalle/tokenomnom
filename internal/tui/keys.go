@@ -117,38 +117,13 @@ func (m Model) footerHintsView(width int) string {
 	return strings.Join(compact, subtle.Render(" · "))
 }
 
-func (m Model) footerStatusView(status string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if lipgloss.Width(status) <= width {
-		return status
-	}
-	if width == 1 {
-		return m.render.Palette.Subtle().Render("…")
-	}
-	return fitLine(status, width-1) + m.render.Palette.Subtle().Render("…")
-}
-
 func (m Model) footerView(layout cockpitLayout) string {
 	subtle := m.render.Palette.Subtle()
 	hints := m.footerHintsView(layout.innerWidth)
-	line := hints
-	disclaimer := subtle.Render("API list-price equivalents, not actual bills")
-	status := m.statusView()
-	const separatorWidth = 2
-	remaining := layout.innerWidth - lipgloss.Width(hints) - separatorWidth
-	if status != "" && remaining >= lipgloss.Width(status) {
-		line += subtle.Render("  ") + m.footerStatusView(status, remaining)
-	} else if status != "" {
-		// Keep the command row intact; a status that cannot fit beside it takes
-		// the disclaimer row instead of being hidden behind the line width.
-		disclaimer = m.footerStatusView(status, layout.innerWidth)
-	}
 	return strings.Join([]string{
 		m.render.Palette.Border().Render(strings.Repeat("─", layout.innerWidth)),
-		fitLine(line, layout.innerWidth),
-		fitLine(disclaimer, layout.innerWidth),
+		fitLine(hints, layout.innerWidth),
+		fitLine(subtle.Render("API list-price equivalents, not actual bills"), layout.innerWidth),
 	}, "\n")
 }
 

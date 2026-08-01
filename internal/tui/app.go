@@ -96,6 +96,7 @@ type Summary struct {
 type Snapshot struct {
 	Summary      Summary
 	Views        [4]string
+	StatusBar    StatusBar
 	Empty        bool
 	FilesScanned int
 	SyncDuration time.Duration
@@ -167,6 +168,7 @@ type Model struct {
 	help         bool
 	loading      bool
 	syncing      bool
+	syncFresh    bool
 	loaded       bool
 	started      time.Time
 	status       string
@@ -273,7 +275,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, command
 	case loadedMsg:
 		if msg.err != nil {
-			m.loading, m.syncing = false, false
+			m.loading, m.syncing, m.syncFresh = false, false, false
 			m.warning = msg.err.Error()
 			return m, nil
 		}
@@ -284,6 +286,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
 			m.syncing = false
+			m.syncFresh = true
 			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
 			return m, m.maybeCheckSkillOffer()
 		}
@@ -466,6 +469,7 @@ func (m Model) cockpitView() string {
 		m.topBarView(layout),
 		m.summaryView(layout),
 		content,
+		m.statusBarView(layout),
 		m.footerView(layout),
 	}, "\n")
 	return frameBlock(view, layout)
@@ -625,24 +629,6 @@ func splitTextWidth(value string, width int) (string, string) {
 		end++
 	}
 	return string(runes[:end]), string(runes[end:])
-}
-
-func (m Model) statusView() string {
-	if m.warning != "" {
-		return m.render.Palette.Warning().Render(m.warning)
-	}
-	status := ""
-	if m.status != "" {
-		status = m.render.Palette.Success().Render(m.status)
-	}
-	if m.syncing {
-		syncing := m.spinner.View() + m.render.Palette.Subtle().Render(" syncing")
-		if status == "" {
-			return syncing
-		}
-		return status + m.render.Palette.Subtle().Render(" · ") + syncing
-	}
-	return status
 }
 
 func truncate(value string, width int) string {

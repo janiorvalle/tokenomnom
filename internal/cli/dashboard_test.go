@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
+	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
@@ -51,6 +56,104 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	}
 	if codex.Summary.Metrics[1].Value != "206,100" || strings.Contains(codex.Views[tui.ModelsTab], "Claude") {
 		t.Fatalf("provider filter did not apply: summary=%+v\n%s", codex.Summary.Metrics, codex.Views[tui.ModelsTab])
+	}
+}
+
+func TestDashboardStatusBarHintsMissingOptionalStores(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(appconfig.WithContext(context.Background(), appconfig.Loaded{Config: appconfig.Defaults()}))
+	status := dashboardStatusBar(cmd, database, stateDir, root, []discover.Root{
+		{Provider: discover.ProviderCodex, Path: filepath.Join(root, "codex")},
+		{Provider: discover.ProviderClaude, Path: filepath.Join(root, "claude")},
+	})
+	if status.History.Exists || status.History.Hint != "not indexed" || status.Sessions != 0 {
+		t.Fatalf("missing history status = %+v", status.History)
+	}
+	if status.Vault.Exists || status.Vault.Hint != "not initialized" {
+		t.Fatalf("missing vault status = %+v", status.Vault)
+	}
+}
+
+func TestDashboardStatusBarReportsFreshIndexedHistory(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "status.jsonl"), historyCodexFixture("status", "status prompt"))
+	if _, err := executeReport([]string{"history", "index", "--source", "provider"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	cmd := &cobra.Command{}
+	cmd.SetContext(appconfig.WithContext(context.Background(), appconfig.Loaded{Config: appconfig.Defaults()}))
+	status := dashboardStatusBar(cmd, database, stateDir, root, []discover.Root{
+		{Provider: discover.ProviderCodex, Path: codexDir, Exists: true},
+		{Provider: discover.ProviderClaude, Path: claudeDir},
+	})
+	if !status.History.Exists || !status.History.Fresh || status.History.Hint != "" || status.Sessions != 1 {
+		t.Fatalf("fresh history status = %+v sessions=%d", status.History, status.Sessions)
+	}
+
+	historyDatabase, err := sql.Open("sqlite", filepath.Join(stateDir, historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := historyDatabase.Exec(`UPDATE source_heads SET extractor_version = 0`); err != nil {
+		historyDatabase.Close()
+		t.Fatal(err)
+	}
+	if err := historyDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status = dashboardStatusBar(cmd, database, stateDir, root, []discover.Root{
+		{Provider: discover.ProviderCodex, Path: codexDir, Exists: true},
+		{Provider: discover.ProviderClaude, Path: claudeDir},
+	})
+	if status.History.Fresh || status.History.Hint != "stale" {
+		t.Fatalf("stale health status = %+v", status.History)
+	}
+}
+
+func TestDashboardAmbientCacheRefreshesOnlyForSyncLoads(t *testing.T) {
+	cache := dashboardAmbientCache{}
+	calls := 0
+	refresh := func() (tui.StatusBar, int) {
+		calls++
+		return tui.StatusBar{Sessions: calls}, calls
+	}
+
+	status, files := cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 1 || files != 1 || calls != 1 {
+		t.Fatalf("initial ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 1 || files != 1 || calls != 1 {
+		t.Fatalf("cached ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{Sync: true}, refresh)
+	if status.Sessions != 2 || files != 2 || calls != 2 {
+		t.Fatalf("sync ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 2 || files != 2 || calls != 2 {
+		t.Fatalf("post-sync cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
 	}
 }
 
