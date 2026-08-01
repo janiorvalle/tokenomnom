@@ -96,7 +96,7 @@ func sessionDetailLines(render theme.Context, session historystore.CatalogSessio
 		render.Palette.Header().Render("FIRST PROMPT"),
 	}
 	if len(options.notices) > 0 {
-		lines = append(lines[:3], append([]string{""}, renderNotices(render, options.notices, width)...)...)
+		lines = append(lines[:3], renderNotices(render, options.notices, width)...)
 		lines = append(lines, "", render.Palette.Header().Render("FIRST PROMPT"))
 	}
 	preview := cleanText(session.Preview)

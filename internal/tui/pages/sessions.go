@@ -187,20 +187,6 @@ func padLeft(value string, width int) string {
 	return strings.Repeat(" ", max(0, width-lipgloss.Width(value))) + value
 }
 
-func truncate(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if lipgloss.Width(value) <= width {
-		return value
-	}
-	runes := []rune(value)
-	for len(runes) > 0 && lipgloss.Width(string(runes)+"…") > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes) + "…"
-}
-
 func clampIndex(index, length int) int {
 	if length == 0 {
 		return 0

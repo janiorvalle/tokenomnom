@@ -53,11 +53,26 @@ func (coordinator *historyExportCoordinator) run(sessionID string, export func()
 
 func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.HistorySearchPage {
 	var cache dashboardHistorySearchCache
+	var freshness dashboardHistoryFreshnessCache
 	exportCoordinator := historyExportCoordinator{inFlight: make(map[string]struct{})}
 	return tui.NewHistorySearchPage(tui.HistorySearchOptions{
 		Load: func(request tui.Request) (pages.HistorySearchData, error) {
 			return cache.snapshot(request, func() (pages.HistorySearchData, error) {
-				return loadHistorySearchPage(cmd, request, codexDir, claudeDir)
+				if !request.Sync && request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
+					return loadHistorySearchPageWithFreshness(cmd, request, codexDir, claudeDir, nil, true)
+				}
+				warnings := freshness.snapshot(request.Sync, func() []string {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return []string{"History freshness could not be checked; run `tokenomnom history status` for details."}
+					}
+					path, err := historyDatabasePath(home)
+					if err != nil {
+						return []string{"History freshness could not be checked; run `tokenomnom history status` for details."}
+					}
+					return historySearchFreshnessWarnings(cmd, path, codexDir, claudeDir, home)
+				})
+				return loadHistorySearchPageWithFreshness(cmd, request, codexDir, claudeDir, warnings, true)
 			})
 		},
 		Export: func(request tui.Request) (string, error) {
@@ -69,6 +84,10 @@ func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.H
 }
 
 func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string) (pages.HistorySearchData, error) {
+	return loadHistorySearchPageWithFreshness(cmd, request, codexDir, claudeDir, nil, false)
+}
+
+func loadHistorySearchPageWithFreshness(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string, freshnessWarnings []string, freshnessChecked bool) (pages.HistorySearchData, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return pages.HistorySearchData{}, fmt.Errorf("find user home directory: %w", err)
@@ -87,7 +106,9 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, cl
 	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
 		return pages.HistorySearchData{}, nil
 	}
-	freshnessWarnings := historySearchFreshnessWarnings(cmd, path, codexDir, claudeDir, home)
+	if !freshnessChecked {
+		freshnessWarnings = historySearchFreshnessWarnings(cmd, path, codexDir, claudeDir, home)
+	}
 	database, err := historystore.OpenReadOnly(path)
 	if err != nil {
 		return pages.HistorySearchData{}, err
@@ -213,7 +234,22 @@ func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, clau
 
 func historyExportDirectoryName(sessionID string) string {
 	digest := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(digest[:])
+	prefix := strings.Map(func(value rune) rune {
+		switch {
+		case value >= 'a' && value <= 'z', value >= 'A' && value <= 'Z', value >= '0' && value <= '9', value == '_', value == '-':
+			return value
+		default:
+			return '-'
+		}
+	}, sessionID)
+	prefix = strings.Trim(prefix, "-")
+	if prefix == "" {
+		prefix = "session"
+	}
+	if len(prefix) > 32 {
+		prefix = strings.TrimRight(prefix[:32], "-")
+	}
+	return prefix + "-" + hex.EncodeToString(digest[:])[:12]
 }
 
 func historyPageDate(value *string) string {

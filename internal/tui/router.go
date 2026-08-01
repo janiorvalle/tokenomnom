@@ -150,8 +150,7 @@ func (ledgerPage) NeedsReload(context PageContext, request Request) bool {
 	// the dashboard, including expanded-session data.
 	before, after := context.Request.Ledger, request.Ledger
 	return before.Zoom != after.Zoom || before.Year != after.Year || before.Month != after.Month || before.ExpandedDay != after.ExpandedDay ||
-		before.SessionPageCursor != after.SessionPageCursor ||
-		before.ExpandedDay == "" && before.Cursor != after.Cursor
+		before.SessionPageCursor != after.SessionPageCursor
 }
 
 func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
@@ -229,6 +228,9 @@ type dailyPage struct {
 }
 
 func (dailyPage) Update(context PageContext, key string) (Request, bool) {
+	if key == "left" && context.Request.DailyCursor >= max(0, context.Snapshot.DailyCursorMax) {
+		return context.Request, false
+	}
 	if key == "down" && context.Request.DailyDetailOffset >= max(0, context.Snapshot.DailyDetailMaxOffset) {
 		return context.Request, false
 	}
