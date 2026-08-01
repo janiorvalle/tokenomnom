@@ -195,6 +195,21 @@ func TestHistorySearchStatusLinesTruncateToPane(t *testing.T) {
 	}
 }
 
+func TestHistorySearchInputTruncatesWithCursorVisible(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 60, Height: 18, HistoryQuery: "a very long search phrase that should stay inside the pane"}
+	page.query, page.inputMode = request.HistoryQuery, true
+	view := page.View(pageContext(request))
+	for index, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > ContentWidth(request.Width) {
+			t.Fatalf("line %d width=%d exceeds pane=%d:\n%s", index+1, width, ContentWidth(request.Width), view)
+		}
+	}
+	if !strings.Contains(view, "…that should stay inside the pane█") {
+		t.Fatalf("search input did not preserve its tail and cursor:\n%s", view)
+	}
+}
+
 func TestHistorySearchSelectedHighlightKeepsBoldSuffix(t *testing.T) {
 	terminal, dark := true, true
 	render := theme.Resolve(theme.ResolveOptions{

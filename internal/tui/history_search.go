@@ -533,11 +533,12 @@ func (p *HistorySearchPage) resetSearch() {
 }
 
 func (p *HistorySearchPage) searchView(width int, context PageContext) string {
+	query := truncateSearchInput(oneLine(p.query), max(0, width-lipgloss.Width("SEARCH /█")))
 	lines := []string{
 		context.Render.Palette.Header().Render("FIND IN HISTORY"),
 		context.Render.Palette.Subtle().Render(truncateText("Search your indexed prompts by exact phrase.", width)),
 		"",
-		context.Render.Palette.Subtle().Render("SEARCH ") + context.Render.Palette.Emphasis().Render("/"+oneLine(p.query)+"█"),
+		context.Render.Palette.Subtle().Render("SEARCH ") + context.Render.Palette.Emphasis().Render("/"+query+"█"),
 		context.Render.Palette.Border().Render(strings.Repeat("─", min(width, 40))),
 	}
 	switch {
@@ -821,6 +822,28 @@ func truncateText(value string, width int) string {
 		runes = runes[:len(runes)-1]
 	}
 	return string(runes) + "…"
+}
+
+func truncateSearchInput(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	remaining := max(0, width-lipgloss.Width("…"))
+	runes := []rune(value)
+	start := len(runes)
+	currentWidth := 0
+	for start > 0 {
+		runeWidth := lipgloss.Width(string(runes[start-1]))
+		if currentWidth+runeWidth > remaining {
+			break
+		}
+		start--
+		currentWidth += runeWidth
+	}
+	return "…" + string(runes[start:])
 }
 
 var _ InteractivePage = (*HistorySearchPage)(nil)
