@@ -35,6 +35,8 @@ var keyRegistry = [...]KeyBinding{
 	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
 	{Display: "← / →", Keys: []string{"left", "right"}, Description: "move in active page", Action: keyActionPageCommand},
 	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to page edge", Action: keyActionPageCommand},
+	{Display: "h / l", Keys: []string{"h", "l"}, Description: "zoom ledger period", Action: keyActionPageCommand},
+	{Display: "j / k", Keys: []string{"j", "k"}, Description: "move ledger row", Action: keyActionPageCommand},
 	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "move in active page", Action: keyActionPageCommand},
 	{Display: "enter", Keys: []string{"enter"}, Description: "open selected item", Action: keyActionPageCommand},
 	{Display: "esc", Keys: []string{"esc"}, Description: "back to list", Action: keyActionPageCommand},
@@ -131,20 +133,19 @@ func (m Model) footerView(layout cockpitLayout) string {
 }
 
 func (m Model) helpView() string {
+	entries := m.helpEntries()
 	keyWidth := 0
-	for _, binding := range keyRegistry {
-		display := keyBindingDisplay(binding, len(m.router.Pages()))
-		keyWidth = max(keyWidth, lipgloss.Width(display))
+	for _, entry := range entries {
+		keyWidth = max(keyWidth, lipgloss.Width(entry.display))
 	}
 	var body strings.Builder
 	body.WriteString(m.render.Palette.Header().Render("Keys"))
 	body.WriteString("\n\n")
-	for _, binding := range keyRegistry {
-		display := keyBindingDisplay(binding, len(m.router.Pages()))
-		key := display + strings.Repeat(" ", keyWidth-lipgloss.Width(display))
+	for _, entry := range entries {
+		key := entry.display + strings.Repeat(" ", keyWidth-lipgloss.Width(entry.display))
 		body.WriteString(m.render.Palette.Emphasis().Render(key))
 		body.WriteString("   ")
-		body.WriteString(m.render.Palette.Subtle().Render(binding.Description))
+		body.WriteString(m.render.Palette.Subtle().Render(entry.description))
 		body.WriteByte('\n')
 	}
 	modal := lipgloss.NewStyle().
@@ -152,4 +153,40 @@ func (m Model) helpView() string {
 		BorderForeground(m.render.Palette.BorderColor()).
 		Padding(0, 2).Render(strings.TrimRight(body.String(), "\n"))
 	return m.place(modal)
+}
+
+type helpEntry struct {
+	display     string
+	description string
+}
+
+func (m Model) helpEntries() []helpEntry {
+	entries := make([]helpEntry, 0, len(keyRegistry))
+	for _, binding := range keyRegistry {
+		entries = append(entries, helpEntry{
+			display:     keyBindingDisplay(binding, len(m.router.Pages())),
+			description: binding.Description,
+		})
+	}
+	if len(entries)+4 <= max(m.request.Height, minimumHeight) {
+		return entries
+	}
+
+	compact := make([]helpEntry, 0, len(entries)-2)
+	for index := 0; index < len(entries); index++ {
+		if index+1 < len(entries) && (entries[index].display == "h / l" && entries[index+1].display == "j / k" || entries[index].display == "enter" && entries[index+1].display == "esc") {
+			description := "open / back"
+			if entries[index].display == "h / l" {
+				description = "ledger zoom / row"
+			}
+			compact = append(compact, helpEntry{
+				display:     entries[index].display + " · " + entries[index+1].display,
+				description: description,
+			})
+			index++
+			continue
+		}
+		compact = append(compact, entries[index])
+	}
+	return compact
 }

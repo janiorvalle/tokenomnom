@@ -25,11 +25,15 @@ type Tab uint8
 
 const (
 	DailyTab Tab = iota
-	MonthlyTab
+	LedgerTab
 	ModelsTab
 	HeatmapTab
 	tabCount
 )
+
+// MonthlyTab is retained as an index alias for callers that still refer to
+// the pre-ledger dashboard layout.
+const MonthlyTab = LedgerTab
 
 // Provider is the dashboard-wide provider filter.
 type Provider uint8
@@ -65,7 +69,7 @@ type Request struct {
 	Width                int
 	Height               int
 	DailyOffset          int
-	MonthlyOffset        int
+	Ledger               tuipages.State
 	ModelOffset          int
 	ModelSort            int
 	HeatmapOffset        int
@@ -107,6 +111,7 @@ type Snapshot struct {
 	Views        [4]string
 	Sessions     tuipages.SessionPageData
 	StatusBar    StatusBar
+	Ledger       tuipages.Data
 	Empty        bool
 	FilesScanned int
 	SyncDuration time.Duration
@@ -202,7 +207,7 @@ func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, prov
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
 		router:  newRouter(),
-		request: Request{Provider: provider, Range: Range30Days, Width: render.Width},
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
 		loading: true, started: time.Now(),
 	}
 }
@@ -394,13 +399,7 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Render: m.render, Snapshot: m.snapshot, Request: m.request,
 			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
 		}
-		var request Request
-		var changed bool
-		if contextual, ok := page.(contextualPage); ok {
-			request, changed = contextual.UpdateContext(context, value)
-		} else {
-			request, changed = page.Update(m.request, value)
-		}
+		request, changed := m.updatePage(context, page, value)
 		if !changed {
 			return m, nil
 		}
@@ -408,6 +407,13 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd(m.request)
 	}
 	return m, nil
+}
+
+func (m Model) updatePage(context PageContext, page Page, key string) (Request, bool) {
+	if contextual, ok := page.(contextualPage); ok {
+		return contextual.UpdateContext(context, key)
+	}
+	return page.Update(context.Request, key)
 }
 
 func (m *Model) navigatePages(key string) bool {

@@ -13,11 +13,14 @@ type PageID string
 
 const (
 	DailyPageID    PageID = "daily"
-	MonthlyPageID  PageID = "monthly"
+	LedgerPageID   PageID = "ledger"
 	ModelsPageID   PageID = "models"
 	HeatmapPageID  PageID = "heatmap"
 	SessionsPageID PageID = "sessions"
 )
+
+// MonthlyPageID is retained for callers that still use the old page name.
+const MonthlyPageID PageID = LedgerPageID
 
 // PageSection is a navigation group in the sidebar.
 type PageSection string
@@ -86,6 +89,34 @@ func (p snapshotPage) Update(request Request, key string) (Request, bool) {
 	return p.keyHandler(request, key)
 }
 
+type ledgerPage struct{}
+
+func (ledgerPage) ID() PageID           { return LedgerPageID }
+func (ledgerPage) Section() PageSection { return SpendSection }
+func (ledgerPage) Title() string        { return "Ledger" }
+
+func (ledgerPage) View(context PageContext) string {
+	render := context.Render
+	render.Width = context.Width
+	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
+}
+
+func (ledgerPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
+}
+
+func (ledgerPage) UpdateContext(context PageContext, key string) (Request, bool) {
+	if key == "left" || key == "right" {
+		return context.Request, false
+	}
+	state, changed := tuipages.Update(context.Request.Ledger, context.Snapshot.Ledger, key)
+	if !changed {
+		return context.Request, false
+	}
+	context.Request.Ledger = state
+	return context.Request, true
+}
+
 // PageRouter keeps page order and selection separate from the dashboard
 // state machine. Registration order is also the order used by tab navigation.
 type PageRouter struct {
@@ -101,7 +132,7 @@ type pageGroup struct {
 func newRouter() PageRouter {
 	return newPageRouter(
 		snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage},
-		snapshotPage{id: MonthlyPageID, section: SpendSection, title: "Monthly", viewIndex: int(MonthlyTab), keyHandler: updateMonthlyPage},
+		ledgerPage{},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
 		sessionsPage{},
@@ -389,23 +420,6 @@ func updateDailyPage(request Request, key string) (Request, bool) {
 		return request, false
 	}
 	return request, previous != request.DailyOffset
-}
-
-func updateMonthlyPage(request Request, key string) (Request, bool) {
-	previous := request.MonthlyOffset
-	switch key {
-	case "left":
-		request.MonthlyOffset--
-	case "right":
-		request.MonthlyOffset++
-	case "home":
-		request.MonthlyOffset = -1000000
-	case "end":
-		request.MonthlyOffset = 0
-	default:
-		return request, false
-	}
-	return request, previous != request.MonthlyOffset
 }
 
 func updateModelsPage(request Request, key string) (Request, bool) {

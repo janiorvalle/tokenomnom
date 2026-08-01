@@ -19,7 +19,7 @@ import (
 func TestUpdateNavigationFiltersAndHelp(t *testing.T) {
 	model := loadedTestModel()
 	model = updateKeyForTest(t, model, "tab")
-	if model.router.ActiveIndex() != int(MonthlyTab) {
+	if model.router.ActiveIndex() != int(LedgerTab) {
 		t.Fatalf("active page index = %d", model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "4")
@@ -54,10 +54,12 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	if model.request.DailyOffset != -7 {
 		t.Fatalf("daily offset = %d", model.request.DailyOffset)
 	}
-	model.router.SelectIndex(int(MonthlyTab))
-	model = updateKeyForTest(t, model, "left")
-	if model.request.MonthlyOffset != -1 {
-		t.Fatalf("monthly offset = %d", model.request.MonthlyOffset)
+	model.router.SelectIndex(int(LedgerTab))
+	previousRequest := model.request
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	if command != nil || model.request != previousRequest {
+		t.Fatalf("ledger horizontal navigation changed state: request=%+v command=%v", model.request, command != nil)
 	}
 	model.router.SelectIndex(int(ModelsTab))
 	model = updateKeyForTest(t, model, "s")
@@ -72,7 +74,7 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 		t.Fatalf("heatmap navigation = %+v", model.request)
 	}
 
-	updated, command := model.Update(tea.WindowSizeMsg{Width: 50, Height: 10})
+	updated, command = model.Update(tea.WindowSizeMsg{Width: 50, Height: 10})
 	model = updated.(Model)
 	if command != nil || !strings.Contains(model.View(), "terminal too small") {
 		t.Fatalf("small terminal state = command %v, view %q", command != nil, model.View())
@@ -345,6 +347,55 @@ func TestSessionsPageShowsIndexHintWhenHistoryIsAbsent(t *testing.T) {
 	}
 }
 
+func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{
+		{Key: "2026", Label: "2026"},
+		{Key: "2025", Label: "2025"},
+	}}
+	model.router.SelectIndex(int(LedgerTab))
+	model.snapshot.Views[LedgerTab] = "stale ledger view"
+	if strings.Contains(model.View(), "stale ledger view") {
+		t.Fatal("ledger view used the stale pre-rendered snapshot view")
+	}
+
+	updated, command := model.Update(keyMsg("l"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomMonth || model.request.Ledger.Year != 2026 {
+		t.Fatalf("ledger year zoom = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomMonth, Year: 2026, Rows: []tuipages.Row{
+		{Key: "2026-07", Label: "Jul 2026"},
+		{Key: "2026-06", Label: "Jun 2026"},
+	}}
+	updated, command = model.Update(keyMsg("l"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomDay || model.request.Ledger.Month != "2026-07" {
+		t.Fatalf("ledger month zoom = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{
+		{Key: "2026-07-14", Label: "Jul 14"},
+		{Key: "2026-07-13", Label: "Jul 13"},
+	}}
+	updated, command = model.Update(keyMsg("j"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 1 {
+		t.Fatalf("ledger j selection = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+	updated, command = model.Update(keyMsg("home"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 0 {
+		t.Fatalf("ledger home selection = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+	updated, command = model.Update(keyMsg("end"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 1 {
+		t.Fatalf("ledger end selection = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+}
+
 func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
 	model := loadedTestModel()
 	model.request.Width, model.request.Height = 60, 18
@@ -567,8 +618,10 @@ func loadedTestModel() Model {
 			{Value: "$0.50", Kind: MetricMoney},
 			{Value: "$1.00", Kind: MetricMoney},
 		}},
-		Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"},
+		Views: [4]string{"daily body", "", "models body", "heatmap body"},
 	}
+	ledgerRow := tuipages.Row{Key: "2026", Label: "2026", Codex: tuipages.ProviderTotals{Tokens: 100, PricedTokens: 100}}
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{ledgerRow}, Total: ledgerRow}
 	return model
 }
 
