@@ -317,7 +317,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
-		if msg.request == m.request {
+		if sameRequestIgnoringSync(msg.request, m.request) {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
 			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
 		}

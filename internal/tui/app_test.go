@@ -66,11 +66,21 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	if model.request.DailyCursor != 2 || model.request.DailyDetailOffset != 3 {
 		t.Fatalf("daily state was not normalized by the loaded snapshot: %+v", model.request)
 	}
+	model.request.DailyCursor = 1_000_000
+	model.request.DailyDetailOffset = 1_000_000
+	model.syncing = true
+	syncRequest := model.request
+	syncRequest.Sync = true
+	updated, command = model.Update(loadedMsg{request: syncRequest, snapshot: Snapshot{Views: currentSnapshot.Views, DailyCursor: 4, DailyDetailOffset: 5}})
+	model = updated.(Model)
+	if command != nil || model.syncing || model.request.DailyCursor != 4 || model.request.DailyDetailOffset != 5 {
+		t.Fatalf("sync daily state was not normalized: request=%+v syncing=%v command=%v", model.request, model.syncing, command != nil)
+	}
 	staleRequest := model.request
 	staleRequest.DailyCursor = 1
 	updated, command = model.Update(loadedMsg{request: staleRequest, snapshot: Snapshot{Views: [4]string{"stale"}}})
 	model = updated.(Model)
-	if command != nil || model.snapshot.Views[0] != currentSnapshot.Views[0] || model.request.DailyCursor != 2 {
+	if command != nil || model.snapshot.Views[0] != currentSnapshot.Views[0] || model.request.DailyCursor != 4 {
 		t.Fatalf("stale daily load was applied: request=%+v snapshot=%+v command=%v", model.request, model.snapshot, command != nil)
 	}
 	model.syncing = true
