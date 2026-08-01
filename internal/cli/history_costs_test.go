@@ -128,3 +128,20 @@ func TestAggregateHistoryUsageKeepsUnknownDateTokens(t *testing.T) {
 		t.Fatalf("warnings=%+v", warnings)
 	}
 }
+
+func TestHistoryUsageEventsForWindowWarnsAboutExcludedUnknownDates(t *testing.T) {
+	since := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	until := since.Add(24*time.Hour - time.Nanosecond)
+	events, warnings := historyUsageEventsForWindow([]ingest.UsageEvent{
+		{Timestamp: since.Add(12 * time.Hour), Input: 100, Output: 20},
+		{Timestamp: since.AddDate(0, 0, 1), Input: 200, Output: 30},
+		{Input: 7, Output: 3},
+	}, since, until)
+
+	if len(events) != 1 || events[0].Input != 100 || events[0].Output != 20 {
+		t.Fatalf("events=%+v", events)
+	}
+	if len(warnings) != 1 || warnings[0] != "1 token-usage record had no timestamp; 10 tokens are excluded from day-scoped totals" {
+		t.Fatalf("warnings=%+v", warnings)
+	}
+}

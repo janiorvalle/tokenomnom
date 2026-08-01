@@ -688,6 +688,12 @@ func (m *Model) resetSessionNavigation() {
 	m.request.SessionReturnToEnd = false
 	m.request.SessionDetailID = ""
 	m.request.SessionDetailOffset = 0
+	m.request.Ledger.SessionCursor = 0
+	m.request.Ledger.SessionPageCursor = ""
+	m.request.Ledger.SessionCursorStack = ""
+	m.request.Ledger.SessionSelectLast = false
+	m.request.Ledger.DetailID = ""
+	m.request.Ledger.DetailOffset = 0
 }
 
 func (m Model) page(id PageID) Page {

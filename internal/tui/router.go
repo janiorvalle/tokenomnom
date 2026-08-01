@@ -145,11 +145,21 @@ func (ledgerPage) View(context PageContext) string {
 	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
 }
 
-func (ledgerPage) NeedsReload(PageContext, Request) bool { return true }
+func (ledgerPage) NeedsReload(context PageContext, request Request) bool {
+	// Provider and range bindings bypass this page predicate and always reload
+	// the dashboard, including expanded-session data.
+	before, after := context.Request.Ledger, request.Ledger
+	return before.Zoom != after.Zoom || before.Year != after.Year || before.Month != after.Month || before.ExpandedDay != after.ExpandedDay ||
+		before.SessionPageCursor != after.SessionPageCursor ||
+		before.ExpandedDay == "" && before.Cursor != after.Cursor
+}
 
 func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
 	if key == "left" || key == "right" {
 		return context.Request, false
+	}
+	if context.Request.Ledger.DetailID != "" && (key == "up" || key == "down" || key == "home" || key == "end") {
+		return updateLedgerDetailOffset(context, key)
 	}
 	state, changed := tuipages.Update(context.Request.Ledger, context.Snapshot.Ledger, key)
 	if !changed {
@@ -157,6 +167,38 @@ func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
 	}
 	context.Request.Ledger = state
 	return context.Request, true
+}
+
+func updateLedgerDetailOffset(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	var selected *historystore.CatalogSession
+	for index := range context.Snapshot.Ledger.Sessions {
+		session := &context.Snapshot.Ledger.Sessions[index]
+		if session.SessionID == request.Ledger.DetailID {
+			selected = &session.CatalogSession
+			break
+		}
+	}
+	if selected == nil || context.Width <= 0 || context.Height <= 0 {
+		return request, false
+	}
+	maxOffset := tuipages.LedgerSessionDetailMaxOffset(context.Render, *selected, context.Width, context.Height, context.Snapshot.Ledger.Location)
+	next := request.Ledger.DetailOffset
+	switch key {
+	case "up":
+		next = max(0, next-1)
+	case "down":
+		next = min(maxOffset, next+1)
+	case "home":
+		next = 0
+	case "end":
+		next = maxOffset
+	}
+	if next == request.Ledger.DetailOffset {
+		return request, false
+	}
+	request.Ledger.DetailOffset = next
+	return request, true
 }
 
 // PageRouter keeps page order and selection separate from the dashboard
