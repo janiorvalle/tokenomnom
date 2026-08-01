@@ -97,8 +97,8 @@ func (p *HistorySearchPage) BeginLoad(request Request) {
 	p.detail = nil
 	p.notIndexed = false
 	p.errorText = ""
-	if !p.exporting || request.HistoryExportID != p.exportID || request.HistoryExportToken != p.exportAttemptID {
-		p.clearExport()
+	if !p.exporting {
+		p.clearExportReceipt()
 	}
 }
 
@@ -368,7 +368,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 			p.errorText = "Select a search result before exporting."
 			return result
 		}
-		p.exporting, p.exportText, p.errorText = true, "", ""
+		p.exporting, p.exportText, p.exportErrorText, p.errorText = true, "", "", ""
 		p.exportID = target
 		p.exportAttempt++
 		p.exportAttemptID = strconv.FormatUint(p.exportAttempt, 10)
@@ -482,12 +482,9 @@ func (p *HistorySearchPage) exportTarget(request Request) string {
 	return p.hits[selected].SessionID
 }
 
-func (p *HistorySearchPage) clearExport() {
-	p.exporting = false
+func (p *HistorySearchPage) clearExportReceipt() {
 	p.exportErrorText = ""
 	p.exportText = ""
-	p.exportID = ""
-	p.exportAttemptID = ""
 }
 
 func (p *HistorySearchPage) updateSelectionExport(request *Request, selectedIndex int) {
@@ -498,7 +495,9 @@ func (p *HistorySearchPage) updateSelectionExport(request *Request, selectedInde
 	}
 	request.HistoryExportID = ""
 	request.HistoryExportToken = ""
-	p.clearExport()
+	if !p.exporting {
+		p.clearExportReceipt()
+	}
 }
 
 func (p *HistorySearchPage) updateExportForSession(request *Request, sessionID string) {
@@ -509,7 +508,9 @@ func (p *HistorySearchPage) updateExportForSession(request *Request, sessionID s
 	}
 	request.HistoryExportID = ""
 	request.HistoryExportToken = ""
-	p.clearExport()
+	if !p.exporting {
+		p.clearExportReceipt()
+	}
 }
 
 func (p *HistorySearchPage) beginSearch(query string) {
@@ -526,10 +527,7 @@ func (p *HistorySearchPage) resetSearch() {
 	p.searched = false
 	p.loading = false
 	p.errorText = ""
-	p.exportErrorText = ""
-	p.exportText = ""
-	p.exporting = false
-	p.exportID = ""
+	p.clearExportReceipt()
 }
 
 func (p *HistorySearchPage) searchView(width int, context PageContext) string {

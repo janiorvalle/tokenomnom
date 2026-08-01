@@ -352,6 +352,32 @@ func TestHistorySearchPagePreservesInFlightExportForRepeatedSession(t *testing.T
 	}
 }
 
+func TestHistorySearchPagePreservesInFlightExportAcrossSelectionChange(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30}
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{
+		{SessionID: "ses_1", Snippet: "first"},
+		{SessionID: "ses_2", Snippet: "second"},
+	}}}, nil)
+	first := page.HandleKey(request, keyMsg("e"))
+	if !first.Changed || first.Request.HistoryExportID != "ses_1" {
+		t.Fatalf("export start = %+v", first)
+	}
+	moved := page.HandleKey(first.Request, tea.KeyMsg{Type: tea.KeyDown})
+	if moved.Request.HistoryExportID != "" || moved.Request.HistoryExportToken != "" {
+		t.Fatalf("different selection retained active export request: %+v", moved.Request)
+	}
+	back := page.HandleKey(moved.Request, tea.KeyMsg{Type: tea.KeyUp})
+	retry := page.HandleKey(back.Request, keyMsg("e"))
+	if retry.Changed || retry.Action != PageActionNone {
+		t.Fatalf("same-session retry was scheduled while export was in flight: %+v", retry)
+	}
+	page.ApplyExport(first.Request, "/tmp/original", nil)
+	if !strings.Contains(page.View(pageContext(back.Request)), "Exported to /tmp/original") {
+		t.Fatal("in-flight export receipt was lost after changing selection")
+	}
+}
+
 func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 100, Height: 30}

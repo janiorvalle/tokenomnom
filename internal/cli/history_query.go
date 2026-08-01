@@ -147,7 +147,7 @@ func loadHistorySessionPage(database *historystore.Store, sessionID string, loca
 		return pages.HistorySearchData{}, err
 	}
 	prompts, err := database.SessionPrompts(sessionID, historystore.PromptQuery{
-		Role: "user", Source: historystore.CatalogSourceAny, IncludeText: true,
+		Role: "user", Source: historystore.CatalogSourceAny,
 	})
 	if err != nil {
 		return pages.HistorySearchData{}, err
