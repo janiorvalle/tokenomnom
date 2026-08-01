@@ -101,8 +101,9 @@ func TestCommandPaletteBlocksRefreshWhileActionRuns(t *testing.T) {
 	if command != nil || !model.commandBusy || model.syncing {
 		t.Fatalf("refresh was not ignored while command ran: command=%v busy=%v syncing=%v", command != nil, model.commandBusy, model.syncing)
 	}
-	if !strings.Contains(model.statusView(), "working") {
-		t.Fatalf("busy status disappeared after ignored refresh: %q", model.statusView())
+	status := model.statusBarView(newCockpitLayout(model.request.Width, model.request.Height))
+	if !strings.Contains(status, "working") {
+		t.Fatalf("busy status disappeared after ignored refresh: %q", status)
 	}
 	updated, command = model.Update(keyMsg("q"))
 	if command == nil {
