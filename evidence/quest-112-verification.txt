@@ -3,7 +3,7 @@ Quest 112 verification
 
 Branch: codex/quest-112-sessions-page
 
-Automated checks (2026-08-01):
+Automated checks (2026-08-01, after PR review fixes):
 - `gofmt` and `git diff --check`: passed.
 - `go build -buildvcs=false ./...`: exit 0.
 - `go vet ./...`: exit 0.
@@ -17,6 +17,14 @@ Automated checks (2026-08-01):
   tests, GoReleaser config/snapshot validation, and the install smoke test;
   the smoke test ended with matching `tokenomnom version` and `nomnom version`
   output for the snapshot commit.
+
+Review follow-up:
+- Removed the discarded 500-row catalog read from every history load.
+- Added `dashboardSessionCache`, keyed by provider, date range, project filter,
+  and cursor; selection/detail movement now reuses the loaded page while sync,
+  pagination, and filter changes refresh it.
+- `TestDashboardSessionCacheRefreshesWhenQueryChanges` passed, including the
+  sync refresh boundary; autoreview found no accepted/actionable findings.
 
 Stored history receipt from the fixture index:
 - session_id: `ses_a4c7d0c737ac989e0f07bf5c56e4288d`

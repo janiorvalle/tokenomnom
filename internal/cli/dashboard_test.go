@@ -20,6 +20,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
@@ -155,6 +156,46 @@ func TestDashboardAmbientCacheRefreshesOnlyForSyncLoads(t *testing.T) {
 	status, files = cache.snapshot(tui.Request{}, refresh)
 	if status.Sessions != 2 || files != 2 || calls != 2 {
 		t.Fatalf("post-sync cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+}
+
+func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
+	cache := dashboardSessionCache{}
+	calls := 0
+	refresh := func() tuipages.SessionPageData {
+		calls++
+		return tuipages.SessionPageData{Warning: []string{"", "one", "two", "three", "four"}[calls]}
+	}
+	request := tui.Request{Provider: tui.CodexProvider, Range: tui.Range30Days}
+
+	data := cache.snapshot(request, refresh)
+	if data.Warning != "one" || calls != 1 {
+		t.Fatalf("initial session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionOffset = 1
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "one" || calls != 1 {
+		t.Fatalf("selection-only session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionCursor = "next"
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "two" || calls != 2 {
+		t.Fatalf("cursor session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionProject, request.SessionProjectActive = "tokenomnom", true
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "three" || calls != 3 {
+		t.Fatalf("project-filter session snapshot = %+v calls=%d", data, calls)
+	}
+	request.Sync = true
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "four" || calls != 4 {
+		t.Fatalf("sync session snapshot = %+v calls=%d", data, calls)
+	}
+	request.Sync = false
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "four" || calls != 4 {
+		t.Fatalf("post-sync session snapshot = %+v calls=%d", data, calls)
 	}
 }
 

@@ -120,6 +120,7 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
 	var ambient dashboardAmbientCache
+	var sessions dashboardSessionCache
 
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
@@ -179,7 +180,9 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			}
 		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
-		snapshot.Sessions = loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
+		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
+			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
+		})
 		warnings := []string{}
 		if backupWarning != "" {
 			warnings = append(warnings, backupWarning)
@@ -203,8 +206,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 }
 
 const (
-	dashboardHistoryPageSize    = 100
-	dashboardHistoryProjectSize = 500
+	dashboardHistoryPageSize = 100
 )
 
 func loadDashboardHistory(path string, request tui.Request, location *time.Location) tuipages.SessionPageData {
@@ -225,11 +227,6 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	baseQuery := historystore.CatalogQuery{
 		Provider: historyProvider(request.Provider),
 		Since:    since, Until: until, Source: historystore.CatalogSourceAny,
-		Limit: dashboardHistoryProjectSize,
-	}
-	all, err := database.ListCatalog(baseQuery)
-	if err != nil {
-		return tuipages.SessionPageData{Warning: "History sessions could not be read; run tokenomnom history index to rebuild it."}
 	}
 	query := baseQuery
 	query.Project = request.SessionProject
@@ -240,8 +237,6 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	if err != nil {
 		return tuipages.SessionPageData{Warning: "History sessions could not be read; press R to retry or run tokenomnom history index."}
 	}
-	warnings := append([]string{}, all.Warnings...)
-	warnings = append(warnings, page.Warnings...)
 	projects, err := database.ListCatalogProjects(baseQuery)
 	if err != nil {
 		return tuipages.SessionPageData{Warning: "History project filters could not be read; press R to retry or run tokenomnom history index."}
@@ -249,7 +244,7 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	return tuipages.SessionPageData{
 		Sessions: page.Sessions, Projects: tuipages.ProjectOptionsFromKeys(projects),
 		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
-		Warning: strings.Join(uniqueStrings(warnings), "; "), Location: location,
+		Warning: strings.Join(uniqueStrings(page.Warnings), "; "), Location: location,
 	}
 }
 
@@ -317,6 +312,43 @@ func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func()
 	cache.status, cache.filesScanned = refresh()
 	cache.initialized = true
 	return cache.status, cache.filesScanned
+}
+
+// dashboardSessionCache keeps history I/O out of loads that only change a
+// report page or a selection. Sync is a refresh boundary: it bypasses the
+// cached query and replaces it so the next keypress sees freshly indexed data.
+type dashboardSessionCache struct {
+	mu          sync.Mutex
+	key         dashboardSessionCacheKey
+	data        tuipages.SessionPageData
+	initialized bool
+}
+
+type dashboardSessionCacheKey struct {
+	provider      tui.Provider
+	dateRange     tui.Range
+	project       string
+	projectActive bool
+	cursor        string
+}
+
+func (cache *dashboardSessionCache) snapshot(request tui.Request, refresh func() tuipages.SessionPageData) tuipages.SessionPageData {
+	key := dashboardSessionCacheKey{
+		provider:      request.Provider,
+		dateRange:     request.Range,
+		project:       request.SessionProject,
+		projectActive: request.SessionProjectActive,
+		cursor:        request.SessionCursor,
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync && cache.key == key {
+		return cache.data
+	}
+	cache.data = refresh()
+	cache.key = key
+	cache.initialized = true
+	return cache.data
 }
 
 func countDashboardFiles(roots []discover.Root) int {
