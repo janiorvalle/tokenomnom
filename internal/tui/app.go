@@ -526,6 +526,8 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	right.HistorySelect = 0
 	left.HistorySessionID = ""
 	right.HistorySessionID = ""
+	left.SessionDetailOffset = 0
+	right.SessionDetailOffset = 0
 	left.HistoryExportID = ""
 	right.HistoryExportID = ""
 	left.HistoryExportToken = ""

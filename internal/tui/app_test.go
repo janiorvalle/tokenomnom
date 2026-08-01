@@ -187,6 +187,15 @@ func TestSyncRefreshInvalidatesPreSyncLoads(t *testing.T) {
 	}
 }
 
+func TestDashboardRequestMatchIgnoresHistoryDetailOffset(t *testing.T) {
+	left := Request{Width: 100, Height: 30, SessionDetailOffset: 0}
+	right := left
+	right.SessionDetailOffset = 7
+	if !sameRequestIgnoringSync(left, right) {
+		t.Fatal("history detail scrolling invalidated the dashboard request match")
+	}
+}
+
 func TestSyncSurvivesInterveningLoadError(t *testing.T) {
 	model := loadedTestModel()
 	model.syncing = true
