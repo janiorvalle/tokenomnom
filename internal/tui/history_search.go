@@ -122,8 +122,11 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	case "up":
 		if p.sessionID != "" {
 			result.Handled = true
-			if result.Request.SessionDetailOffset > 0 {
-				result.Request.SessionDetailOffset--
+			maxOffset := p.detailMaxOffset(request)
+			currentOffset := min(max(result.Request.SessionDetailOffset, 0), maxOffset)
+			nextOffset := max(0, currentOffset-1)
+			if nextOffset != result.Request.SessionDetailOffset {
+				result.Request.SessionDetailOffset = nextOffset
 				result.Changed = true
 			}
 			return result
@@ -144,8 +147,13 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	case "down":
 		if p.sessionID != "" {
 			result.Handled = true
-			result.Request.SessionDetailOffset++
-			result.Changed = true
+			maxOffset := p.detailMaxOffset(request)
+			currentOffset := min(max(result.Request.SessionDetailOffset, 0), maxOffset)
+			nextOffset := min(maxOffset, currentOffset+1)
+			if nextOffset != result.Request.SessionDetailOffset {
+				result.Request.SessionDetailOffset = nextOffset
+				result.Changed = true
+			}
 			return result
 		}
 		if key.Type == tea.KeyRunes {
@@ -186,8 +194,8 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	case "end":
 		if p.sessionID != "" {
 			result.Handled = true
-			result.Request.SessionDetailOffset = int(^uint(0) >> 1)
-			result.Changed = true
+			result.Request.SessionDetailOffset = p.detailMaxOffset(request)
+			result.Changed = result.Request.SessionDetailOffset != request.SessionDetailOffset
 			return result
 		}
 		if key.Type == tea.KeyRunes {
@@ -576,6 +584,15 @@ func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 			context.Render.Palette.Subtle().Render("esc back to search  e export"),
 		}, "\n")
 	}
+	notices := p.detailNotices()
+	height := context.Height
+	if height <= 0 {
+		height = ContentHeight(context.Request.Height)
+	}
+	return tuipages.RenderHistorySearchSessionDetail(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, notices)
+}
+
+func (p *HistorySearchPage) detailNotices() []string {
 	notices := make([]string, 0, 4)
 	notices = append(notices, "esc back to search  e export")
 	if p.exportText != "" {
@@ -587,11 +604,16 @@ func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 	if len(p.warnings) > 0 {
 		notices = append(notices, "Index note: "+p.warnings[0])
 	}
-	height := context.Height
-	if height <= 0 {
-		height = ContentHeight(context.Request.Height)
+	return notices
+}
+
+func (p *HistorySearchPage) detailMaxOffset(request Request) int {
+	if p.detail == nil {
+		return 0
 	}
-	return tuipages.RenderHistorySearchSessionDetail(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, notices)
+	width, height := ContentWidth(request.Width), ContentHeight(request.Height)
+	render := theme.Context{Mode: theme.Plain, Width: width, Palette: theme.NewPalette(nil)}
+	return tuipages.HistorySearchSessionDetailMaxOffset(render, *p.detail, width, height, p.detailNotices())
 }
 
 func appendPageStatus(lines []string, render theme.Context, warnings []string, exporting bool, exported string) []string {

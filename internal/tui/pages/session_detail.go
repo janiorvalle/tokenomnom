@@ -31,19 +31,13 @@ func RenderSessionDetail(render theme.Context, session historystore.CatalogSessi
 // RenderHistorySearchSessionDetail reuses the shared session-detail viewport
 // and metadata layout while adding the prompt list returned by a search.
 func RenderHistorySearchSessionDetail(render theme.Context, detail SessionDetail, width, height, offset int, notices []string) string {
-	first, last := detail.FirstDate, detail.LastDate
-	session := historystore.CatalogSession{
-		SessionID: detail.SessionID, Provider: historyProvider(detail.Provider), Project: detail.Project,
-		ProjectSource: projectSource(detail.ProjectSource), FirstTimestamp: &first, LastTimestamp: &last,
-		Preview: detail.Preview, LogicalPromptCount: detail.PromptCount, OccurrenceCount: detail.OccurrenceCount,
-	}
-	return renderSessionDetail(render, session, width, height, nil, offset, sessionDetailRenderOptions{
-		showPrompts:     true,
-		prompts:         detail.Prompts,
-		promptsHaveMore: detail.HasMore,
-		footer:          "esc back to search",
-		notices:         notices,
-	})
+	return renderSessionDetail(render, historySearchCatalogSession(detail), width, height, nil, offset, historySearchDetailOptions(detail, notices))
+}
+
+// HistorySearchSessionDetailMaxOffset reports the final scroll position for a
+// history-search detail view using the same wrapped content as its renderer.
+func HistorySearchSessionDetailMaxOffset(render theme.Context, detail SessionDetail, width, height int, notices []string) int {
+	return max(0, len(sessionDetailLines(render, historySearchCatalogSession(detail), width, nil, historySearchDetailOptions(detail, notices)))-max(1, height))
 }
 
 // SessionDetailMaxOffset reports the final scroll position for a detail view.
@@ -56,6 +50,22 @@ func SessionDetailMaxOffset(render theme.Context, session historystore.CatalogSe
 func renderSessionDetail(render theme.Context, session historystore.CatalogSession, width, height int, location *time.Location, offset int, options sessionDetailRenderOptions) string {
 	lines := sessionDetailLines(render, session, width, location, options)
 	return strings.Join(detailViewport(render, lines, width, height, offset), "\n")
+}
+
+func historySearchCatalogSession(detail SessionDetail) historystore.CatalogSession {
+	first, last := detail.FirstDate, detail.LastDate
+	return historystore.CatalogSession{
+		SessionID: detail.SessionID, Provider: historyProvider(detail.Provider), Project: detail.Project,
+		ProjectSource: projectSource(detail.ProjectSource), FirstTimestamp: &first, LastTimestamp: &last,
+		Preview: detail.Preview, LogicalPromptCount: detail.PromptCount, OccurrenceCount: detail.OccurrenceCount,
+	}
+}
+
+func historySearchDetailOptions(detail SessionDetail, notices []string) sessionDetailRenderOptions {
+	return sessionDetailRenderOptions{
+		showPrompts: true, prompts: detail.Prompts, promptsHaveMore: detail.HasMore,
+		footer: "esc back to search", notices: notices,
+	}
 }
 
 func sessionDetailLines(render theme.Context, session historystore.CatalogSession, width int, location *time.Location, options sessionDetailRenderOptions) []string {

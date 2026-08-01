@@ -387,12 +387,34 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if !ok || len(batch) != 2 {
 		t.Fatalf("page refresh commands = %T %v, want two commands", message, batch)
 	}
+	dashboardLoaded := false
 	for _, refreshCommand := range batch {
-		updated, _ = model.Update(refreshCommand())
+		message := refreshCommand()
+		updated, _ = model.Update(message)
 		model = updated.(Model)
+		if _, ok := message.(loadedMsg); ok {
+			dashboardLoaded = true
+		}
+		if _, ok := message.(pageLoadedMsg); ok && !dashboardLoaded && !model.syncing {
+			t.Fatal("page load cleared global refresh state before dashboard load completed")
+		}
 	}
 	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
 		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
+	}
+	updated, command = model.Update(keyMsg("p"))
+	model = updated.(Model)
+	message = command()
+	batch, ok = message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("provider change commands = %T %v, want two commands", message, batch)
+	}
+	for _, providerCommand := range batch {
+		updated, _ = model.Update(providerCommand())
+		model = updated.(Model)
+	}
+	if page.loads != 3 || page.loadedRequest.Provider != CodexProvider {
+		t.Fatalf("provider change loads=%d request=%+v", page.loads, page.loadedRequest)
 	}
 }
 

@@ -386,7 +386,6 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pageLoadTokens[msg.id] != msg.request.PageLoadToken {
 			return m, nil
 		}
-		m.syncing = false
 		if page := m.page(msg.id); page != nil {
 			if loader, ok := page.(PageLoader); ok {
 				loader.Apply(msg.request, msg.data, msg.err)
@@ -594,30 +593,20 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		m.request.DailyWindowStart = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
-		command := m.loadCmd(m.request)
-		return m, command
+		return m.loadDashboardAndActivePage(m.request)
 	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
 		m.request.DailyCursor = 0
 		m.request.DailyWindowStart = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
-		command := m.loadCmd(m.request)
-		return m, command
+		return m.loadDashboardAndActivePage(m.request)
 	case keyActionRefresh:
 		m.syncing = true
 		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
-		command := m.loadCmd(request)
-		if page := m.activePage(); page != nil {
-			if loader, ok := page.(PageLoader); ok {
-				var pageCommand tea.Cmd
-				m, pageCommand = m.startPageLoad(loader, request)
-				return m, tea.Batch(command, pageCommand)
-			}
-		}
-		return m, command
+		return m.loadDashboardAndActivePage(request)
 	case keyActionPageCommand:
 		page := m.activePage()
 		if page == nil {
@@ -638,6 +627,17 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		return m, m.loadCmd(m.request)
 	}
 	return m, nil
+}
+
+func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
+	if page := m.activePage(); page != nil {
+		if loader, ok := page.(PageLoader); ok {
+			var pageCommand tea.Cmd
+			m, pageCommand = m.startPageLoad(loader, request)
+			return m, tea.Batch(m.loadCmd(request), pageCommand)
+		}
+	}
+	return m, m.loadCmd(request)
 }
 
 func (m *Model) navigatePages(key string) bool {

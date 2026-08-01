@@ -321,6 +321,30 @@ func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 	}
 }
 
+func TestHistorySearchDetailEndStopsAtBottom(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 60, Height: 18}
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_long", Snippet: "prompt"}}}}, nil)
+	request = page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter}).Request
+	detail := &SessionDetail{SessionID: "ses_long", Provider: "codex", Project: "tokenomnom", Preview: "first prompt"}
+	for index := 0; index < 30; index++ {
+		detail.Prompts = append(detail.Prompts, SessionPrompt{Date: "2026-08-01", Snippet: "prompt with enough text to make the detail view scroll"})
+	}
+	page.Apply(request, HistorySearchData{Session: detail}, nil)
+	end := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnd})
+	if !end.Handled || !end.Changed || end.Request.SessionDetailOffset <= 0 {
+		t.Fatalf("end offset = %+v", end)
+	}
+	down := page.HandleKey(end.Request, tea.KeyMsg{Type: tea.KeyDown})
+	if !down.Handled || down.Changed || down.Request.SessionDetailOffset != end.Request.SessionDetailOffset {
+		t.Fatalf("down past detail end = %+v", down)
+	}
+	up := page.HandleKey(end.Request, tea.KeyMsg{Type: tea.KeyUp})
+	if !up.Handled || !up.Changed || up.Request.SessionDetailOffset != end.Request.SessionDetailOffset-1 {
+		t.Fatalf("up from detail end = %+v", up)
+	}
+}
+
 func TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 100, Height: 30}

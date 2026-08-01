@@ -81,9 +81,13 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, cl
 	if strings.TrimSpace(request.HistoryQuery) == "" {
 		return data, nil
 	}
+	since, until := dashboardHistoryWindow(request.Range, location, time.Now())
 	result, err := database.Search(historystore.SearchQuery{
-		PromptQuery: historystore.PromptQuery{Role: "user", Source: historystore.CatalogSourceAny, Limit: 50},
-		Query:       request.HistoryQuery,
+		PromptQuery: historystore.PromptQuery{
+			Provider: historyProvider(request.Provider), Role: "user", Source: historystore.CatalogSourceAny,
+			Since: since, Until: until, Limit: 50,
+		},
+		Query: request.HistoryQuery,
 	})
 	if err != nil {
 		return pages.HistorySearchData{}, err

@@ -341,10 +341,15 @@ type dashboardHistorySearchCache struct {
 type dashboardHistorySearchCacheKey struct {
 	query     string
 	sessionID string
+	provider  tui.Provider
+	dateRange tui.Range
 }
 
 func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh func() (tuipages.HistorySearchData, error)) (tuipages.HistorySearchData, error) {
-	key := dashboardHistorySearchCacheKey{query: request.HistoryQuery, sessionID: request.HistorySessionID}
+	key := dashboardHistorySearchCacheKey{
+		query: request.HistoryQuery, sessionID: request.HistorySessionID,
+		provider: request.Provider, dateRange: request.Range,
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if cache.initialized && !request.Sync && cache.key == key {
