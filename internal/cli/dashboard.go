@@ -51,7 +51,7 @@ func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) err
 		provider = tui.ClaudeProvider
 	}
 	historyPage := newHistorySearchPage(cmd, *codexDir, *claudeDir)
-	return runDashboardProgram(cmd, tui.NewWithProviderAndPagesAndCommands(render, loader, offer, provider, commands, historyPage))
+	return runDashboardProgram(cmd, tui.NewWithProviderAndPagesAndCommands(render, loader, offer, provider, commands, historyPage, tui.NewVaultPage(), tui.NewSystemPage()))
 }
 
 func newDashboardCommandRegistry(parent *cobra.Command, codexDir, claudeDir string) tui.CommandRegistry {
@@ -152,6 +152,7 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
 	var ambient dashboardAmbientCache
 	var sessions dashboardSessionCache
+	var pageCache dashboardPageCache
 
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
@@ -210,6 +211,14 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 				backupWarning += strings.Join(maintenance, "; ")
 			}
 		}
+		var actionStatus, actionWarning string
+		if request.Action == tui.VerifyVaultAction {
+			result, verifyErr := verifyDashboardVault(cmd, codexDir, claudeDir)
+			actionStatus, actionWarning, err = dashboardVaultVerificationStatus(result, verifyErr)
+			if err != nil {
+				return tui.Snapshot{}, err
+			}
+		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
@@ -235,6 +244,15 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			}
 			return dashboardStatusBar(cmd, database, stateDir, home, roots), filesScanned
 		})
+		pageCache.Lock()
+		if request.RefreshPages || request.Action != "" || !pageCache.loaded {
+			pageCache.vault, pageCache.system = dashboardPageData(cmd, roots, databasePath, timezone)
+			pageCache.loaded = true
+		}
+		snapshot.Vault, snapshot.System = pageCache.vault, pageCache.system
+		pageCache.Unlock()
+		snapshot.ActionStatus = actionStatus
+		snapshot.ActionWarning = actionWarning
 		return snapshot, err
 	}
 }
@@ -596,6 +614,198 @@ func dashboardVaultStatus(cmd *cobra.Command, database *store.Store, home string
 		RawBytes:         readiness.Status.RawBytes,
 		StoredBytes:      readiness.Status.StoredBytes,
 		CompressionRatio: readiness.Status.Ratio,
+	}
+}
+
+type dashboardPageCache struct {
+	sync.Mutex
+	loaded bool
+	vault  tuipages.VaultPageData
+	system tuipages.SystemPageData
+}
+
+func verifyDashboardVault(cmd *cobra.Command, codexDir, claudeDir string) (vault.VerifyResult, error) {
+	instance, database, err := openVault(cmd, codexDir, claudeDir)
+	if err != nil {
+		return vault.VerifyResult{}, err
+	}
+	defer database.Close()
+	return instance.Verify(true)
+}
+
+func dashboardVaultVerificationStatus(result vault.VerifyResult, verifyErr error) (string, string, error) {
+	if verifyErr != nil && len(result.Failures) == 0 {
+		return "", "", fmt.Errorf("verify vault: %w", verifyErr)
+	}
+	if len(result.Failures) > 0 {
+		warning := fmt.Sprintf("vault verification failed for %d file(s)", len(result.Failures))
+		if verifyErr != nil && verifyErr.Error() != warning {
+			warning += ": " + verifyErr.Error()
+		}
+		return fmt.Sprintf("vault verification failed · %d/%d verified", result.Verified, result.Checked), warning, nil
+	}
+	return fmt.Sprintf("vault verified · %d files checked", result.Checked), "", nil
+}
+
+func dashboardPageData(cmd *cobra.Command, roots []discover.Root, databasePath, timezone string) (tuipages.VaultPageData, tuipages.SystemPageData) {
+	doctor, _, warnings, doctorErr := collectDoctorData(cmd, roots, databasePath, timezone)
+	table, pricingErr := loadPricingTable()
+	if doctorErr != nil {
+		warnings = append(warnings, "System health data could not be loaded; spend pages remain available.")
+		if pricingErr != nil {
+			warnings = append(warnings, "Pricing data could not be loaded; other dashboard pages remain available.")
+		}
+		page := dashboardSystemPageData(doctor, table, warnings)
+		if pricingErr != nil {
+			page.Pricing = nil
+			page.PricingDisclaimer = ""
+		}
+		vaultPage := tuipages.VaultPageData{}
+		if doctor.Vault.Dir != "" {
+			vaultPage = dashboardVaultPageData(doctor.Vault)
+		}
+		return vaultPage, page
+	}
+	if pricingErr != nil {
+		warnings = append(warnings, "Pricing data could not be loaded; other dashboard pages remain available.")
+	}
+	return dashboardVaultPageData(doctor.Vault), dashboardSystemPageData(doctor, table, warnings)
+}
+
+func dashboardVaultPageData(data jsonDoctorVault) tuipages.VaultPageData {
+	ratio := "-"
+	if data.StoredBytes > 0 {
+		ratio = fmt.Sprintf("%.2fx", float64(data.RawBytes)/float64(data.StoredBytes))
+	}
+	verified := "not checked"
+	verificationState := tuipages.FindingMuted
+	if data.LastDeepVerification != nil {
+		verificationState = tuipages.FindingOK
+		verified = "yes · " + *data.LastDeepVerification
+		if data.LastArchive != nil && verificationIsOlderThanArchive(*data.LastDeepVerification, *data.LastArchive) {
+			verificationState = tuipages.FindingWarning
+			verified = "stale · " + *data.LastDeepVerification
+		}
+		if data.KnownBrokenBundles > 0 {
+			verificationState = tuipages.FindingWarning
+			verified = fmt.Sprintf("issues · %s", *data.LastDeepVerification)
+		}
+	}
+	format := "not initialized"
+	if data.Format != nil {
+		format = fmt.Sprintf("v%d, %s", *data.Format, stringValue(data.Encryption))
+	}
+	return tuipages.VaultPageData{
+		Directory:          data.Dir,
+		Initialized:        data.Initialized,
+		Format:             format,
+		Files:              data.Files,
+		RawSize:            humanBytes(data.RawBytes),
+		StoredSize:         humanBytes(data.StoredBytes),
+		Ratio:              ratio,
+		Verified:           verified,
+		VerificationState:  verificationState,
+		LastArchive:        stringValue(data.LastArchive),
+		LastVerification:   stringValue(data.LastDeepVerification),
+		KnownBrokenBundles: data.KnownBrokenBundles,
+		Reclaimable:        humanBytes(data.ReclaimableBytes),
+	}
+}
+
+func verificationIsOlderThanArchive(verification, archive string) bool {
+	verifiedAt, verifiedErr := time.Parse(time.RFC3339, verification)
+	archivedAt, archiveErr := time.Parse(time.RFC3339, archive)
+	return verifiedErr == nil && archiveErr == nil && archivedAt.After(verifiedAt)
+}
+
+func dashboardSystemPageData(data jsonDoctorData, table pricing.Table, warnings []string) tuipages.SystemPageData {
+	findings := make([]tuipages.SystemFinding, 0, len(data.Providers)+5)
+	for _, provider := range data.Providers {
+		state := tuipages.FindingMuted
+		value := "not found"
+		if provider.Exists {
+			state = tuipages.FindingOK
+			value = fmt.Sprintf("ready · %d files · %s", provider.JSONLFiles, humanBytes(provider.TotalBytes))
+			if len(provider.WalkErrors) > 0 {
+				state = tuipages.FindingWarning
+				value = fmt.Sprintf("%d walk error(s)", len(provider.WalkErrors))
+			}
+		}
+		findings = append(findings, tuipages.SystemFinding{Name: providerName(discover.Provider(provider.Provider)), Value: value, State: state})
+	}
+
+	storeState := tuipages.FindingMuted
+	storeValue := "not created"
+	if data.Store.Exists {
+		storeState = tuipages.FindingOK
+		storeValue = fmt.Sprintf("ready · %d rows · %d models · %s", data.Store.UsageRows, data.Store.DistinctModels, humanBytes(data.Store.SizeBytes))
+		if data.Store.MissingFiles > 0 {
+			storeState = tuipages.FindingWarning
+			storeValue = fmt.Sprintf("%d missing transcript(s)", data.Store.MissingFiles)
+		}
+	}
+	findings = append(findings, tuipages.SystemFinding{Name: "Store", Value: storeValue, State: storeState})
+
+	historyState := tuipages.FindingMuted
+	historyValue := "not indexed"
+	if data.History.Status != "" {
+		historyState = dashboardFindingState(data.History.Status)
+		historyValue = fmt.Sprintf("%s · %d sessions · %d prompts", data.History.Status, data.History.LogicalSessions, data.History.LogicalPrompts)
+	}
+	findings = append(findings, tuipages.SystemFinding{Name: "History", Value: historyValue, State: historyState})
+
+	vaultState := tuipages.FindingMuted
+	vaultValue := "not initialized"
+	if data.Vault.Initialized {
+		vaultState = tuipages.FindingOK
+		vaultValue = fmt.Sprintf("ready · %d files · %s raw · %s stored", data.Vault.Files, humanBytes(data.Vault.RawBytes), humanBytes(data.Vault.StoredBytes))
+		if data.Vault.KnownBrokenBundles > 0 || data.Vault.SettledUnvaultedSources > 0 {
+			vaultState = tuipages.FindingWarning
+			vaultValue = fmt.Sprintf("%d broken · %d settled unvaulted", data.Vault.KnownBrokenBundles, data.Vault.SettledUnvaultedSources)
+		}
+	}
+	findings = append(findings, tuipages.SystemFinding{Name: "Vault", Value: vaultValue, State: vaultState})
+
+	scheduleState := tuipages.FindingMuted
+	scheduleValue := "not installed"
+	if data.Schedule.Installed {
+		scheduleState = tuipages.FindingOK
+		scheduleValue = "installed"
+		if data.Schedule.IntervalDrift || !data.Schedule.DefinitionExists || !data.Schedule.BinaryExists {
+			scheduleState = tuipages.FindingWarning
+			scheduleValue = "installed · needs refresh"
+		}
+	}
+	findings = append(findings, tuipages.SystemFinding{Name: "Schedule", Value: scheduleValue, State: scheduleState})
+
+	return tuipages.SystemPageData{Findings: findings, Warnings: append([]string(nil), warnings...), Pricing: dashboardPricingRows(table), PricingDisclaimer: pricingDisclaimer}
+}
+
+func dashboardPricingRows(table pricing.Table) []tuipages.PricingRow {
+	rows := make([]tuipages.PricingRow, 0, len(table.Entries()))
+	for _, entry := range table.Entries() {
+		override := ""
+		if table.IsOverridden(entry.Model) {
+			override = "override"
+		}
+		rows = append(rows, tuipages.PricingRow{
+			Model: entry.Model, BaseInput: pricing.FormatRate(entry.BaseInput), CacheRead: pricing.FormatRate(entry.CacheRead),
+			Write5m: pricing.FormatRate(entry.Write5m), Write1h: pricing.FormatRate(entry.Write1h), Output: pricing.FormatRate(entry.Output),
+			Status: entry.Status, Effective: effectiveWindow(entry), Source: entry.Source, Override: override,
+		})
+	}
+	return rows
+}
+
+func dashboardFindingState(value string) tuipages.FindingState {
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "warn"), strings.Contains(lower, "stale"), strings.Contains(lower, "error"):
+		return tuipages.FindingWarning
+	case strings.Contains(lower, "not"), lower == "missing":
+		return tuipages.FindingMuted
+	default:
+		return tuipages.FindingOK
 	}
 }
 

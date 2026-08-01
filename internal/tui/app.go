@@ -88,7 +88,12 @@ type Request struct {
 	SessionReturnToEnd   bool
 	SessionDetailID      string
 	SessionDetailOffset  int
+	VaultOffset          int
+	SystemOffset         int
+	RefreshPages         bool
 	Sync                 bool
+	Action               string
+	LoadID               uint64
 	PageLoadToken        string
 	HistoryQuery         string
 	HistorySelect        int
@@ -125,6 +130,8 @@ type Snapshot struct {
 	Sessions  tuipages.SessionPageData
 	StatusBar StatusBar
 	Ledger    tuipages.Data
+	Vault     tuipages.VaultPageData
+	System    tuipages.SystemPageData
 	// DailyCursor is the normalized distance from the newest active daily bar.
 	DailyCursor          int
 	DailyCursorMax       int
@@ -135,6 +142,8 @@ type Snapshot struct {
 	FilesScanned         int
 	SyncDuration         time.Duration
 	Warning              string
+	ActionStatus         string
+	ActionWarning        string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -228,6 +237,11 @@ type Model struct {
 	started                  time.Time
 	status                   string
 	warning                  string
+	actionInFlight           string
+	loadID                   uint64
+	pendingAction            bool
+	pendingActionStatus      string
+	pendingActionWarning     string
 	offerState               skillOfferState
 	offerChecked             bool
 	offerResults             []string
@@ -263,6 +277,11 @@ func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, prov
 	return model
 }
 
+// NewWithPages creates a dashboard with additional registered pages.
+func NewWithPages(render theme.Context, loader Loader, offer SkillOffer, pages ...Page) Model {
+	return NewWithProviderAndPages(render, loader, offer, AllProviders, pages...)
+}
+
 // NewWithProviderAndPages creates a dashboard with additional registered
 // pages. The default spend pages remain first so existing numeric navigation
 // keeps its meaning while later sections can be supplied by their owners.
@@ -286,7 +305,7 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 		render: render, loader: loader, offer: offer, spinner: spin,
 		router:  newRouter(pages...),
 		palette: newPalette(render.Palette.Emphasis()),
-		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Ledger: tuipages.State{Cursor: -1}},
 		loading: true, dashboardLoadBusy: true, started: time.Now(),
 		pageLoadTokens: make(map[PageID]string),
 	}
@@ -318,8 +337,69 @@ func (m *Model) loadCmd(request Request) tea.Cmd {
 }
 
 func (m *Model) startDashboardLoad(request Request) tea.Cmd {
+	if request.Action != "" {
+		m.clearPendingActionOutcome()
+	} else if request.Sync {
+		m.clearPendingActionOutcome()
+	}
+	m.loadID++
+	request.LoadID = m.loadID
+	m.request.LoadID = request.LoadID
 	m.dashboardLoadBusy = true
 	return m.loadCmd(request)
+}
+
+func (m *Model) finishAction(request Request, snapshot Snapshot) {
+	m.actionInFlight = ""
+	m.request.Action = ""
+	if request.Sync && request.LoadID == m.loadID {
+		m.syncInFlight = false
+	}
+	if !m.syncInFlight {
+		m.syncing = false
+	}
+	m.status = snapshot.ActionStatus
+	if snapshot.ActionWarning != "" {
+		m.status = ""
+		m.warning = snapshot.ActionWarning
+	}
+}
+
+func (m *Model) queueActionOutcome(snapshot Snapshot) {
+	m.pendingAction = true
+	m.pendingActionStatus = snapshot.ActionStatus
+	m.pendingActionWarning = snapshot.ActionWarning
+}
+
+func (m *Model) clearPendingActionOutcome() {
+	m.pendingAction = false
+	m.pendingActionStatus = ""
+	m.pendingActionWarning = ""
+}
+
+func (m *Model) applyPendingActionOutcome() {
+	if !m.pendingAction {
+		return
+	}
+	m.status = m.pendingActionStatus
+	if m.pendingActionWarning != "" {
+		m.status = ""
+		m.warning = m.pendingActionWarning
+	}
+	m.clearPendingActionOutcome()
+}
+
+func (m *Model) refreshCurrentSnapshotWithActionOutcome(snapshot Snapshot) tea.Cmd {
+	next := m.request
+	next.Action = ""
+	next.Sync = false
+	next.RefreshPages = true
+	if next.Width < minimumWidth || next.Height < minimumHeight {
+		m.clearPendingActionOutcome()
+		return nil
+	}
+	m.queueActionOutcome(snapshot)
+	return m.startDashboardLoad(next)
 }
 
 func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
@@ -409,6 +489,7 @@ func (m *Model) resumeInitialSync() tea.Cmd {
 	m.syncing = true
 	next := m.request
 	next.Sync = true
+	next.RefreshPages = true
 	return m.startDashboardLoad(next)
 }
 
@@ -486,6 +567,44 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.generation == m.loadGeneration {
 			m.dashboardLoadBusy = false
 		}
+		current := msg.request.LoadID == m.loadID
+		if msg.request.LoadID == 0 && msg.generation == m.loadGeneration {
+			current = true
+		}
+		if msg.request.Action != "" {
+			if msg.err != nil {
+				m.actionInFlight = ""
+				m.request.Action = ""
+				m.loading = false
+				if current && msg.request.Sync {
+					m.syncInFlight = false
+				}
+				if !m.syncInFlight {
+					m.syncing = false
+				}
+				m.status = ""
+				m.warning = msg.err.Error()
+				m.clearPendingActionOutcome()
+				if !current {
+					return m, m.refreshCurrentSnapshotWithActionOutcome(Snapshot{ActionWarning: msg.err.Error()})
+				}
+				return m, m.resumePendingWork()
+			}
+			if !current {
+				m.finishAction(msg.request, msg.snapshot)
+				return m, m.refreshCurrentSnapshotWithActionOutcome(msg.snapshot)
+			}
+			m.snapshot = msg.snapshot
+			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
+			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
+			m.request.RefreshPages = false
+			m.loading = false
+			m.loaded = true
+			m.warning = msg.snapshot.Warning
+			m.finishAction(msg.request, msg.snapshot)
+			return m, m.resumePendingWork()
+		}
 		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
 				m.syncInFlight = false
@@ -549,6 +668,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		m.loaded = true
+		m.request.RefreshPages = false
 		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
 			m.syncCompletionPending = false
@@ -583,6 +703,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
+		m.applyPendingActionOutcome()
 		if !initial {
 			return m, m.resumePendingWork()
 		}
@@ -675,6 +796,8 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	// Dashboard loads do not own the history-search page's private state.
 	left.Sync = false
 	right.Sync = false
+	left.LoadID = 0
+	right.LoadID = 0
 	left.PageLoadToken = ""
 	right.PageLoadToken = ""
 	left.HistoryQuery = ""
@@ -690,6 +813,15 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	left.HistoryExportToken = ""
 	right.HistoryExportToken = ""
 	return left == right
+}
+
+func actionProgress(action string) string {
+	switch action {
+	case VerifyVaultAction:
+		return "verifying vault…"
+	default:
+		return "working…"
+	}
 }
 
 func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -808,6 +940,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
+		request.RefreshPages = true
 		return m.loadDashboardAndActivePage(request)
 	case keyActionPageCommand:
 		page := m.activePage()
@@ -822,10 +955,25 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		if !changed {
 			return m, nil
 		}
-		m.request = request
+		if request.Action != "" {
+			if m.actionInFlight != "" || m.syncInFlight || m.dashboardLoadBusy {
+				return m, nil
+			}
+			request.RefreshPages = true
+			loadRequest := request
+			request.Action = ""
+			m.request = request
+			m.warning = ""
+			m.status = actionProgress(loadRequest.Action)
+			m.syncing = true
+			m.actionInFlight = loadRequest.Action
+			return m, m.startDashboardLoad(loadRequest)
+		}
 		if !page.NeedsReload(context, request) {
+			m.request = request
 			return m, nil
 		}
+		m.request = request
 		command := m.startDashboardLoad(m.request)
 		return m, command
 	}

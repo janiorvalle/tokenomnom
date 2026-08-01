@@ -782,6 +782,61 @@ func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
 	}
 }
 
+func TestVaultPageAdapterLaunchesOneShotVerification(t *testing.T) {
+	page := NewVaultPage()
+	context := PageContext{
+		Render:   testRender(),
+		Snapshot: Snapshot{Vault: tuipages.VaultPageData{Directory: "/tmp/vault", Format: "v1"}},
+		Request:  Request{},
+		Width:    60,
+		Height:   10,
+	}
+	request, changed := page.Update(context, "v")
+	if !changed || request.Action != VerifyVaultAction || !page.NeedsReload(context, request) {
+		t.Fatalf("verification update = changed %v request %#v", changed, request)
+	}
+	context.Request = request
+	if _, changed := page.Update(context, "v"); changed {
+		t.Fatal("vault verification was allowed to queue twice")
+	}
+}
+
+func TestPageActionReportsProgressAndCompletion(t *testing.T) {
+	model := loadedTestModel()
+	model.loader = func(request Request) (Snapshot, error) {
+		if request.Action != VerifyVaultAction {
+			return Snapshot{}, errors.New("vault action was not passed to the loader")
+		}
+		return Snapshot{ActionStatus: "vault verified · 4 files checked"}, nil
+	}
+	model.router = newPageRouter(NewVaultPage())
+
+	updated, command := model.Update(keyMsg("v"))
+	model = updated.(Model)
+	if command == nil || !model.syncing || model.status != "verifying vault…" {
+		t.Fatalf("action start = command %v syncing %v status %q", command != nil, model.syncing, model.status)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.syncing || model.actionInFlight != "" || model.request.Action != "" || model.status != "vault verified · 4 files checked" {
+		t.Fatalf("action completion = syncing %v in-flight %q action %q status %q", model.syncing, model.actionInFlight, model.request.Action, model.status)
+	}
+
+	model = loadedTestModel()
+	model.router = newPageRouter(NewVaultPage())
+	model.loader = func(Request) (Snapshot, error) { return Snapshot{}, errors.New("verification failed") }
+	updated, command = model.Update(keyMsg("v"))
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("failed action returned no command")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.syncing || model.actionInFlight != "" || model.request.Action != "" || model.status != "" || model.warning != "verification failed" {
+		t.Fatalf("action failure = syncing %v in-flight %q action %q status %q warning %q", model.syncing, model.actionInFlight, model.request.Action, model.status, model.warning)
+	}
+}
+
 func TestSessionsPageSupportsFiltersSelectionAndDetail(t *testing.T) {
 	model := loadedTestModel()
 	model.request.Width, model.request.Height = 80, 18

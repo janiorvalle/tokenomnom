@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -189,6 +190,14 @@ type jsonDoctorSkill struct {
 }
 
 func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
+	data, zone, warnings, err := collectDoctorData(cmd, roots, databasePath, requestedZone)
+	if err != nil {
+		return err
+	}
+	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func collectDoctorData(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) (jsonDoctorData, string, []string, error) {
 	data := jsonDoctorData{Providers: make([]jsonDoctorProvider, 0, len(roots)), Skills: make([]jsonDoctorSkill, 0, len(roots)), Store: jsonDoctorStore{Path: databasePath, DateRange: jsonDateRange{}}}
 	warnings := []string{}
 	for _, root := range roots {
@@ -228,19 +237,19 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 	zone := requestedTimezone(requestedZone)
 	fileInfo, err := os.Stat(databasePath)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("stat usage store: %w", err)
+		return data, "", nil, fmt.Errorf("stat usage store: %w", err)
 	}
 	if err == nil {
 		data.Store.Exists = true
 		data.Store.SizeBytes = fileInfo.Size()
 		database, openErr := store.Open(databasePath)
 		if openErr != nil {
-			return fmt.Errorf("inspect usage store: %w", openErr)
+			return data, "", nil, fmt.Errorf("inspect usage store: %w", openErr)
 		}
 		defer database.Close()
 		info, infoErr := database.Info()
 		if infoErr != nil {
-			return infoErr
+			return data, "", nil, infoErr
 		}
 		data.Store.SchemaVersion = &info.SchemaVersion
 		storeZone := info.Timezone
@@ -264,31 +273,44 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		}
 		data.Offer = optionalString(info.SkillOffer)
 	}
+	var healthErr error
 	backupData, err := doctorBackups(cmd, databasePath)
-	if err != nil {
-		return err
-	}
 	data.Backups = backupData
+	if err != nil {
+		failure := doctorHealthError("backups", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
 	scheduleData, err := doctorSchedule(cmd)
-	if err != nil {
-		return err
-	}
 	data.Schedule = scheduleData
+	if err != nil {
+		failure := doctorHealthError("schedule", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
 	vaultData, err := doctorVault(cmd, roots, databasePath, scheduleData)
-	if err != nil {
-		return err
-	}
 	data.Vault = vaultData
-	historyHealth, drift, err := doctorHistory(cmd, roots, databasePath)
 	if err != nil {
-		return err
+		failure := doctorHealthError("vault", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
 	}
+	historyHealth, drift, err := doctorHistory(cmd, roots, databasePath)
 	data.History = configuredHistoryHealth(cmd, historyHealth, drift)
 	if historyHealth.LastErrorSummary != "" {
 		warnings = append(warnings, historyHealth.LastErrorSummary)
 	}
 	warnings = append(warnings, drift.Warnings...)
-	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+	if err != nil {
+		failure := doctorHealthError("history", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
+	return data, zone, warnings, healthErr
+}
+
+func doctorHealthError(component string, err error) error {
+	return fmt.Errorf("%s health unavailable: %w", component, err)
 }
 
 func doctorHistory(cmd *cobra.Command, roots []discover.Root, usageDatabasePath string) (historystore.Health, historyfreshness.Result, error) {

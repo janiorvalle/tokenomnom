@@ -48,6 +48,7 @@ var keyRegistry = [...]KeyBinding{
 	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", FooterKey: "p", Footer: "provider", Action: keyActionProvider},
 	{Display: "r", Keys: []string{"r"}, Description: "cycle range", FooterKey: "r", Footer: "range", Action: keyActionRange},
 	{Display: "R", Keys: []string{"R"}, Description: "refresh now", FooterKey: "R", Footer: "refresh", Action: keyActionRefresh},
+	{Display: "v", Keys: []string{"v", "V"}, Description: "verify vault", Action: keyActionPageCommand},
 	{Display: "ctrl+k", Keys: []string{"ctrl+k"}, Description: "open command palette", Action: keyActionOpenPalette},
 	{Display: "?", Keys: []string{"?"}, Description: "close help", FooterKey: "?", Footer: "help", Action: keyActionToggleHelp},
 	{Display: "q / ctrl+c", Keys: []string{"q", "ctrl+c"}, Description: "quit", FooterKey: "q", Footer: "quit", Action: keyActionQuit},
@@ -182,10 +183,12 @@ func (m Model) helpEntries() []helpEntry {
 
 	compact := make([]helpEntry, 0, len(entries)-2)
 	for index := 0; index < len(entries); index++ {
-		if index+1 < len(entries) && (entries[index].display == "h / l" && entries[index+1].display == "j / k" || entries[index].display == "enter" && entries[index+1].display == "esc") {
+		if index+1 < len(entries) && ((entries[index].display == "h / l" && entries[index+1].display == "j / k") || (entries[index].display == "enter" && entries[index+1].display == "esc") || (entries[index].display == "p" && entries[index+1].display == "r")) {
 			description := "open / back"
 			if entries[index].display == "h / l" {
 				description = "ledger zoom / row"
+			} else if entries[index].display == "p" {
+				description = "cycle provider / range"
 			}
 			compact = append(compact, helpEntry{
 				display:     entries[index].display + " · " + entries[index+1].display,
