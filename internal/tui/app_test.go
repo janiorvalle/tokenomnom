@@ -148,6 +148,99 @@ func TestCockpitFillsTheWindow(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersSpendPagesAndHidesEmptySections(t *testing.T) {
+	router := newRouter()
+	groups := router.groups()
+	if len(groups) != 1 || groups[0].section != SpendSection {
+		t.Fatalf("default sidebar groups = %+v, want only spend", groups)
+	}
+	if len(groups[0].pages) != int(tabCount) {
+		t.Fatalf("spend pages = %d, want %d", len(groups[0].pages), tabCount)
+	}
+
+	model := loadedTestModel()
+	view := model.View()
+	if !strings.Contains(view, "SPEND") {
+		t.Fatalf("sidebar omitted spend section:\n%s", view)
+	}
+	for _, section := range []string{"HISTORY", "VAULT", "SYSTEM"} {
+		if strings.Contains(view, section) {
+			t.Errorf("empty section %q was rendered:\n%s", section, view)
+		}
+	}
+}
+
+func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
+	pages := newRouter().Pages()
+	pages = append(pages, testPage{id: "history-search", section: HistorySection, title: "Search"})
+	router := newPageRouter(pages...)
+	groups := router.groups()
+	if len(groups) != 2 || groups[1].section != HistorySection || len(groups[1].pages) != 1 {
+		t.Fatalf("later section groups = %+v", groups)
+	}
+	if router.IndexOf("history-search") != int(tabCount) {
+		t.Fatalf("later page index = %d, want %d", router.IndexOf("history-search"), tabCount)
+	}
+	if !router.Select("history-search") || router.ActivePage().Title() != "Search" {
+		t.Fatalf("router did not select later page: active=%v", router.ActivePage())
+	}
+
+	model := loadedTestModel()
+	model.router = newPageRouter(pages...)
+	model = updateKeyForTest(t, model, "5")
+	model = updateKeyForTest(t, model, "?")
+	if model.router.ActivePage().ID() != "history-search" || !strings.Contains(model.View(), "tab / shift+tab / 1-5") {
+		t.Fatalf("numeric later-page navigation failed: active=%v\n%s", model.router.ActivePage(), model.View())
+	}
+}
+
+func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
+	model := loadedTestModel()
+	footer := model.footerHintsView(newCockpitLayout(model.request.Width, model.request.Height).innerWidth)
+	model = updateKeyForTest(t, model, "?")
+	help := model.View()
+	for _, binding := range KeyBindings() {
+		if binding.Footer != "" && !strings.Contains(footer, binding.FooterKey+" "+binding.Footer) {
+			t.Errorf("footer missing %q binding: %s", binding.FooterKey, footer)
+		}
+		if !strings.Contains(help, binding.Display) || !strings.Contains(help, binding.Description) {
+			t.Errorf("help missing registry binding %q / %q:\n%s", binding.Display, binding.Description, help)
+		}
+	}
+}
+
+func TestHelpFitsMinimumTerminal(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width, model.request.Height = minimumWidth, minimumHeight
+	model = updateKeyForTest(t, model, "?")
+	lines := strings.Split(strings.TrimSuffix(model.View(), "\n"), "\n")
+	if len(lines) > minimumHeight {
+		t.Fatalf("help rendered %d lines, want at most %d:\n%s", len(lines), minimumHeight, model.View())
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width > minimumWidth {
+			t.Fatalf("help line %d rendered width %d, want at most %d:\n%s", index+1, width, minimumWidth, model.View())
+		}
+	}
+}
+
+func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
+	model := loadedTestModel()
+	model = updateKeyForTest(t, model, "3")
+	if model.router.ActivePage().ID() != ModelsPageID || model.tab != ModelsTab {
+		t.Fatalf("models selection = page %v tab %v", model.router.ActivePage().ID(), model.tab)
+	}
+	model = updateKeyForTest(t, model, "s")
+	if model.request.ModelSort != 1 {
+		t.Fatalf("models page did not handle sort key: %+v", model.request)
+	}
+	model = updateKeyForTest(t, model, "4")
+	model = updateKeyForTest(t, model, "y")
+	if model.router.ActivePage().ID() != HeatmapPageID || !model.request.HeatmapYear {
+		t.Fatalf("heatmap page did not handle year key: page=%v request=%+v", model.router.ActivePage().ID(), model.request)
+	}
+}
+
 func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
 	model := loadedTestModel()
 	model.request.Width, model.request.Height = 60, 18
@@ -406,4 +499,20 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 	}
 	updated, _ := model.Update(message)
 	return updated.(Model)
+}
+
+type testPage struct {
+	id      PageID
+	section PageSection
+	title   string
+}
+
+func (p testPage) ID() PageID           { return p.id }
+func (p testPage) Section() PageSection { return p.section }
+func (p testPage) Title() string        { return p.title }
+func (p testPage) View(PageContext) string {
+	return p.title
+}
+func (p testPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
 }
