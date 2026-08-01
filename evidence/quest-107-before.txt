@@ -1,1 +1,34 @@
-Quest 107 baseline snapshotSource: origin/main (quest 106 merged)Command: go test ./internal/tui -run TestQuest107BeforeSnapshot -count=1 -v         tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00         VIEWS            │  daily body                          │         › 1  Daily       │         2  Monthly       │         3  Models        │         4  Heatmap       │                          │         FILTERS          │         provider         │           all            │         range            │           30d            │                          │                          │                          │                          │                          │                          │                          │                          │                          │                          │                          │                          │                          │                          │         ──────────────────────────────────────────────────────────────────────────────────────────────────         tab views · p provider · r range · R refresh · ? help · q quit         API list-price equivalents, not actual bills
+Quest 107 baseline snapshot
+Source: clean origin/main at e6c7f7b; captured in a temporary baseline worktree before quest 107 changes.
+Command: go test ./internal/tui -run TestQuest107BeforeSnapshot -count=1 -v
+
+         tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D
+         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         VIEWS            │  daily body
+                          │
+         › 1  Daily       │
+         2  Monthly       │
+         3  Models        │
+         4  Heatmap       │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+         ──────────────────────────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills

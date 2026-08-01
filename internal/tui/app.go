@@ -30,8 +30,6 @@ const (
 	tabCount
 )
 
-var tabNames = [...]string{"Daily", "Monthly", "Models", "Heatmap"}
-
 // Provider is the dashboard-wide provider filter.
 type Provider uint8
 
@@ -166,7 +164,6 @@ type Model struct {
 	router       PageRouter
 	request      Request
 	snapshot     Snapshot
-	tab          Tab
 	help         bool
 	loading      bool
 	syncing      bool
@@ -400,33 +397,11 @@ func (m *Model) navigatePages(key string) bool {
 		}
 		changed = m.router.SelectIndex(int(key[0] - '1'))
 	}
-	if changed {
-		m.syncTabWithRouter()
-	}
 	return changed
 }
 
-func (m *Model) syncTabWithRouter() {
-	index := m.router.ActiveIndex()
-	if index >= 0 && index < int(tabCount) {
-		m.tab = Tab(index)
-	}
-}
-
 func (m Model) activePage() Page {
-	page := m.router.ActivePage()
-	if page == nil {
-		return nil
-	}
-	// Keep the old Tab field usable for callers that construct a model in
-	// package tests. The router remains authoritative once a later section is
-	// selected, or when a future spend page is beyond the legacy four tabs.
-	if page.Section() == SpendSection && m.router.ActiveIndex() < int(tabCount) && int(m.tab) != m.router.ActiveIndex() {
-		if legacyPage := m.router.PageAt(int(m.tab)); legacyPage != nil {
-			return legacyPage
-		}
-	}
-	return page
+	return m.router.ActivePage()
 }
 
 func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {

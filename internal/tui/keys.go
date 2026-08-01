@@ -20,7 +20,7 @@ const (
 )
 
 // KeyBinding is the single source for keyboard behavior and its visible copy.
-// Display is used in help; Footer is used beside the compact footer key.
+// Display is used for static help copy; PageNumbers derives page navigation copy.
 type KeyBinding struct {
 	Display     string
 	Keys        []string
@@ -32,7 +32,7 @@ type KeyBinding struct {
 }
 
 var keyRegistry = [...]KeyBinding{
-	{Display: "tab / shift+tab / 1-4", Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
+	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
 	{Display: "← / →", Keys: []string{"left", "right"}, Description: "pan active timeline", Action: keyActionPageCommand},
 	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to range edge", Action: keyActionPageCommand},
 	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "scroll models", Action: keyActionPageCommand},
@@ -71,6 +71,13 @@ func isPageNumber(key string) bool {
 func pageNavigationDisplay(pageCount int) string {
 	pageCount = min(max(1, pageCount), 9)
 	return fmt.Sprintf("tab / shift+tab / 1-%d", pageCount)
+}
+
+func keyBindingDisplay(binding KeyBinding, pageCount int) string {
+	if binding.PageNumbers {
+		return pageNavigationDisplay(pageCount)
+	}
+	return binding.Display
 }
 
 func footerBindings() []KeyBinding {
@@ -148,20 +155,14 @@ func (m Model) footerView(layout cockpitLayout) string {
 func (m Model) helpView() string {
 	keyWidth := 0
 	for _, binding := range keyRegistry {
-		display := binding.Display
-		if binding.PageNumbers {
-			display = pageNavigationDisplay(len(m.router.Pages()))
-		}
+		display := keyBindingDisplay(binding, len(m.router.Pages()))
 		keyWidth = max(keyWidth, lipgloss.Width(display))
 	}
 	var body strings.Builder
 	body.WriteString(m.render.Palette.Header().Render("Keys"))
 	body.WriteString("\n\n")
 	for _, binding := range keyRegistry {
-		display := binding.Display
-		if binding.PageNumbers {
-			display = pageNavigationDisplay(len(m.router.Pages()))
-		}
+		display := keyBindingDisplay(binding, len(m.router.Pages()))
 		key := display + strings.Repeat(" ", keyWidth-lipgloss.Width(display))
 		body.WriteString(m.render.Palette.Emphasis().Render(key))
 		body.WriteString("   ")

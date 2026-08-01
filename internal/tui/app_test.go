@@ -16,12 +16,12 @@ import (
 func TestUpdateNavigationFiltersAndHelp(t *testing.T) {
 	model := loadedTestModel()
 	model = updateKeyForTest(t, model, "tab")
-	if model.tab != MonthlyTab {
-		t.Fatalf("tab = %v", model.tab)
+	if model.router.ActiveIndex() != int(MonthlyTab) {
+		t.Fatalf("active page index = %d", model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "4")
-	if model.tab != HeatmapTab {
-		t.Fatalf("number tab = %v", model.tab)
+	if model.router.ActiveIndex() != int(HeatmapTab) {
+		t.Fatalf("number page index = %d", model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "p")
 	if model.request.Provider != CodexProvider {
@@ -51,18 +51,18 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	if model.request.DailyOffset != -7 {
 		t.Fatalf("daily offset = %d", model.request.DailyOffset)
 	}
-	model.tab = MonthlyTab
+	model.router.SelectIndex(int(MonthlyTab))
 	model = updateKeyForTest(t, model, "left")
 	if model.request.MonthlyOffset != -1 {
 		t.Fatalf("monthly offset = %d", model.request.MonthlyOffset)
 	}
-	model.tab = ModelsTab
+	model.router.SelectIndex(int(ModelsTab))
 	model = updateKeyForTest(t, model, "s")
 	model = updateKeyForTest(t, model, "down")
 	if model.request.ModelSort != 1 || model.request.ModelOffset != 1 {
 		t.Fatalf("model navigation = %+v", model.request)
 	}
-	model.tab = HeatmapTab
+	model.router.SelectIndex(int(HeatmapTab))
 	model = updateKeyForTest(t, model, "y")
 	model = updateKeyForTest(t, model, "right")
 	if model.request.HeatmapYear || model.request.HeatmapOffset != 1 {
@@ -106,14 +106,24 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 func TestEveryViewRendersStructure(t *testing.T) {
 	model := loadedTestModel()
 	for tab := Tab(0); tab < tabCount; tab++ {
-		model.tab = tab
+		model.router.SelectIndex(int(tab))
+		page := model.router.ActivePage()
 		view := model.View()
-		for _, fragment := range []string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK", tabNames[tab], model.snapshot.Views[tab], "API list-price equivalents"} {
+		for _, fragment := range []string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK", page.Title(), model.snapshot.Views[tab], "API list-price equivalents"} {
 			if !strings.Contains(view, fragment) {
-				t.Errorf("%s view missing %q:\n%s", tabNames[tab], fragment, view)
+				t.Errorf("%s view missing %q:\n%s", page.Title(), fragment, view)
 			}
 		}
 	}
+}
+
+func TestQuest107AfterSnapshot(t *testing.T) {
+	model := loadedTestModel()
+	view := model.View()
+	if !strings.Contains(view, "SPEND") {
+		t.Fatalf("snapshot omitted the registered sidebar section:\n%s", view)
+	}
+	t.Log("\n" + view)
 }
 
 func TestCockpitFillsTheWindow(t *testing.T) {
@@ -203,8 +213,9 @@ func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 		if binding.Footer != "" && !strings.Contains(footer, binding.FooterKey+" "+binding.Footer) {
 			t.Errorf("footer missing %q binding: %s", binding.FooterKey, footer)
 		}
-		if !strings.Contains(help, binding.Display) || !strings.Contains(help, binding.Description) {
-			t.Errorf("help missing registry binding %q / %q:\n%s", binding.Display, binding.Description, help)
+		display := keyBindingDisplay(binding, len(model.router.Pages()))
+		if !strings.Contains(help, display) || !strings.Contains(help, binding.Description) {
+			t.Errorf("help missing registry binding %q / %q:\n%s", display, binding.Description, help)
 		}
 	}
 }
@@ -227,8 +238,8 @@ func TestHelpFitsMinimumTerminal(t *testing.T) {
 func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
 	model := loadedTestModel()
 	model = updateKeyForTest(t, model, "3")
-	if model.router.ActivePage().ID() != ModelsPageID || model.tab != ModelsTab {
-		t.Fatalf("models selection = page %v tab %v", model.router.ActivePage().ID(), model.tab)
+	if model.router.ActivePage().ID() != ModelsPageID || model.router.ActiveIndex() != int(ModelsTab) {
+		t.Fatalf("models selection = page %v index %v", model.router.ActivePage().ID(), model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "s")
 	if model.request.ModelSort != 1 {
