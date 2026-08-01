@@ -1,0 +1,9 @@
+PR #51 review reproduction (before fix)
+
+Command:
+GOFLAGS=-buildvcs=false go test ./internal/tui -run '^TestStatusBarWarningFitsTheCockpit$' -count=1 -v
+
+Observed status-bar frame:
+● fresh  ·  ! history index is stale: run 'tokenomnom hi……
+
+The truncated warning contains two adjacent ellipsis characters.

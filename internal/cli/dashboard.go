@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,6 +117,8 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 }
 
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
+	var ambient dashboardAmbientCache
+
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -178,15 +181,44 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		if err != nil {
 			return snapshot, err
 		}
-		snapshot.StatusBar = dashboardStatusBar(cmd, database, stateDir, home, roots)
-		if !request.Sync {
-			for _, root := range roots {
-				files, _ := discover.ListSourceFiles(root)
-				snapshot.FilesScanned += len(files)
+		snapshot.StatusBar, snapshot.FilesScanned = ambient.snapshot(request, func() (tui.StatusBar, int) {
+			filesScanned := syncSummary.FilesScanned
+			if !request.Sync {
+				filesScanned = countDashboardFiles(roots)
 			}
-		}
+			return dashboardStatusBar(cmd, database, stateDir, home, roots), filesScanned
+		})
 		return snapshot, err
 	}
+}
+
+// dashboardAmbientCache keeps facts that change on sync out of keypress loads.
+// The mutex also serializes overlapping Bubble Tea commands during a refresh.
+type dashboardAmbientCache struct {
+	mu           sync.Mutex
+	status       tui.StatusBar
+	filesScanned int
+	initialized  bool
+}
+
+func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func() (tui.StatusBar, int)) (tui.StatusBar, int) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync {
+		return cache.status, cache.filesScanned
+	}
+	cache.status, cache.filesScanned = refresh()
+	cache.initialized = true
+	return cache.status, cache.filesScanned
+}
+
+func countDashboardFiles(roots []discover.Root) int {
+	count := 0
+	for _, root := range roots {
+		files, _ := discover.ListSourceFiles(root)
+		count += len(files)
+	}
+	return count
 }
 
 func dashboardStatusBar(cmd *cobra.Command, database *store.Store, stateDir, home string, roots []discover.Root) tui.StatusBar {
@@ -210,7 +242,7 @@ func dashboardHistoryStatus(cmd *cobra.Command, path string, roots []discover.Ro
 	}
 
 	drift := historyfreshness.Probe(path, configuredHistoryRoots(cmd, roots), nil)
-	status := tui.HistoryStatus{Exists: true, SettledChanges: drift.SettledChangedSources}
+	status := tui.HistoryStatus{Exists: true}
 	switch {
 	case health.InspectionError != "" || health.ErrorSources > 0 || health.LastRunErrorCount > 0 || len(drift.Warnings) > 0:
 		status.Hint = "needs attention"

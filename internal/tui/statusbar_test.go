@@ -53,12 +53,20 @@ func TestStatusBarDoesNotClaimFreshBeforeASuccessfulSync(t *testing.T) {
 	}
 }
 
-func TestStatusBarMarksSettledIndexDrift(t *testing.T) {
+func TestStatusBarUsesCliOwnedStaleHint(t *testing.T) {
 	model := loadedTestModel()
 	model.syncFresh = true
-	model.snapshot.StatusBar.History = HistoryStatus{Exists: true, SettledChanges: 2}
+	model.snapshot.StatusBar.History = HistoryStatus{Exists: true, Hint: "stale"}
 	if view := model.View(); !strings.Contains(view, "index stale") {
 		t.Fatalf("stale index status missing:\n%s", view)
+	}
+}
+
+func TestStatusBarDoesNotInventHistoryState(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.StatusBar.History = HistoryStatus{Exists: true}
+	if view := model.View(); strings.Contains(view, "index pending") {
+		t.Fatalf("status bar invented a pending state:\n%s", view)
 	}
 }
 
@@ -71,6 +79,9 @@ func TestStatusBarWarningFitsTheCockpit(t *testing.T) {
 	view := model.View()
 	if !strings.Contains(view, "history index is stale") || !strings.Contains(view, "…") {
 		t.Fatalf("warning was not preserved in the ambient bar:\n%s", view)
+	}
+	if strings.Contains(view, "……") {
+		t.Fatalf("warning rendered a double ellipsis:\n%s", view)
 	}
 	lines := strings.Split(view, "\n")
 	if len(lines) != 18 {

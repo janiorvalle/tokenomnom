@@ -21,10 +21,9 @@ type StatusBar struct {
 // HistoryStatus describes whether the rebuildable transcript index is usable
 // and caught up with settled provider files.
 type HistoryStatus struct {
-	Exists         bool
-	Fresh          bool
-	SettledChanges int
-	Hint           string
+	Exists bool
+	Fresh  bool
+	Hint   string
 }
 
 // VaultStatus contains lightweight archive size facts for the status bar.
@@ -87,11 +86,7 @@ func (m Model) statusBarWarning(sync statusBarSegment, width int) string {
 		return sync.styled
 	}
 	if lipgloss.Width(warning) > available {
-		if available == 1 {
-			warning = "…"
-		} else {
-			warning = truncate(warning, available-1) + "…"
-		}
+		warning = truncate(warning, available)
 	}
 	return sync.styled + m.render.Palette.Subtle().Render(separator) + m.render.Palette.Warning().Render(warning)
 }
@@ -118,12 +113,8 @@ func (m Model) historyStatusSegment() (statusBarSegment, bool) {
 	case status.Fresh:
 		label += "fresh"
 		style = m.render.Palette.Success()
-	case status.SettledChanges > 0:
-		label += "stale"
-		style = m.render.Palette.Warning()
 	default:
-		label += "pending"
-		style = m.render.Palette.Warning()
+		return statusBarSegment{}, false
 	}
 	return statusBarSegment{text: label, styled: style.Render(label), optional: true}, true
 }

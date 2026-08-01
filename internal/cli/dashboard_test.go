@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
@@ -107,6 +109,51 @@ func TestDashboardStatusBarReportsFreshIndexedHistory(t *testing.T) {
 	})
 	if !status.History.Exists || !status.History.Fresh || status.History.Hint != "" || status.Sessions != 1 {
 		t.Fatalf("fresh history status = %+v sessions=%d", status.History, status.Sessions)
+	}
+
+	historyDatabase, err := sql.Open("sqlite", filepath.Join(stateDir, historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := historyDatabase.Exec(`UPDATE source_heads SET extractor_version = 0`); err != nil {
+		historyDatabase.Close()
+		t.Fatal(err)
+	}
+	if err := historyDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status = dashboardStatusBar(cmd, database, stateDir, root, []discover.Root{
+		{Provider: discover.ProviderCodex, Path: codexDir, Exists: true},
+		{Provider: discover.ProviderClaude, Path: claudeDir},
+	})
+	if status.History.Fresh || status.History.Hint != "stale" {
+		t.Fatalf("stale health status = %+v", status.History)
+	}
+}
+
+func TestDashboardAmbientCacheRefreshesOnlyForSyncLoads(t *testing.T) {
+	cache := dashboardAmbientCache{}
+	calls := 0
+	refresh := func() (tui.StatusBar, int) {
+		calls++
+		return tui.StatusBar{Sessions: calls}, calls
+	}
+
+	status, files := cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 1 || files != 1 || calls != 1 {
+		t.Fatalf("initial ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 1 || files != 1 || calls != 1 {
+		t.Fatalf("cached ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{Sync: true}, refresh)
+	if status.Sessions != 2 || files != 2 || calls != 2 {
+		t.Fatalf("sync ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 2 || files != 2 || calls != 2 {
+		t.Fatalf("post-sync cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
 	}
 }
 
