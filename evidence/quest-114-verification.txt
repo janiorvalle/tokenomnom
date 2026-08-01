@@ -3,9 +3,10 @@ Quest 114 verification receipt
 Feature contract
 - Command: tokenomnom history costs [session-id] --format json
 - Alias: tokenomnom history cost
-- Page bound: 1..100 sessions
+- Page bound: default 20 sessions; explicit 1..100 sessions
 - Transcript fallback bound: 3 preferred exact indexed locations per session
 - Model detail bound: 32 date/provider/model rows per session
+- JSON bounds: `default_sessions_per_page: 20` and `max_sessions_per_page: 100`
 - Napkin math: 1,200 sessions / 100 rows = 12 pages; each page parses at most
   100 x 3 = 300 preferred transcript locations.
 
@@ -19,6 +20,7 @@ PASS (all packages; exit 0)
 
 $ go test ./internal/cli -run 'TestHistoryCosts' -v
 PASS TestHistoryCostsPricesExactCodexTranscript
+PASS TestHistoryCostsDefaultLimitIsBoundedAndDocumented
 PASS TestHistoryCostsLimitErrorExplainsBound
 PASS TestHistoryCostsPricesClaudeCacheBuckets
 
@@ -35,7 +37,8 @@ End-to-end receipts from the focused CLI tests
 - Claude: exact indexed transcript bytes preserved 5m, 1h, and unclassified
   cache-write buckets and produced cost_usd 0.54.
 - Store: session-cost pagination returns a generation-bound cursor contract,
-  hides raw local paths from JSON, and rejects limits above 100.
+  defaults to 20 rows, preserves cursor page size, hides raw local paths from
+  JSON, and rejects limits above 100.
 
 Final closeout gates
 - `make verify`: PASS (build, vet, all tests, GoReleaser configuration check,

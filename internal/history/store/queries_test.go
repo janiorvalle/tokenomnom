@@ -58,4 +58,8 @@ func TestListSessionCostSourcesBoundsPageAndKeepsLocationsOutOfJSON(t *testing.T
 	if _, err := database.ListSessionCostSources(SessionCostQuery{Catalog: CatalogQuery{Limit: MaxSessionCostPageSize + 1}}); err == nil || !strings.Contains(err.Error(), "between 1 and 100") {
 		t.Fatalf("oversized session cost page error = %v", err)
 	}
+	defaultPage, err := database.ListSessionCostSources(SessionCostQuery{})
+	if err != nil || defaultPage.Page.Limit != DefaultSessionCostPageSize {
+		t.Fatalf("default session cost page = %+v, err=%v", defaultPage.Page, err)
+	}
 }

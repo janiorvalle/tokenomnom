@@ -270,7 +270,9 @@ YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--project NAME]
 root|subagent|unknown|all] --format json`
 
 `history cost` is an alias. Without a session ID, the command returns a
-generation-bound page of at most 100 sessions; `--limit` accepts 1 through 100.
+generation-bound page of 20 sessions by default; `--limit` accepts 1 through
+100, with 100 as the maximum. The response states both values in
+`data.bounds.default_sessions_per_page` and `data.bounds.max_sessions_per_page`.
 With a session ID, it returns one session and cannot be combined with list
 filters. `data.sessions` contains the normal history session fields plus
 `tokens`, `models`, `attribution_status`, `token_source`, and
@@ -293,11 +295,18 @@ Unknown or otherwise unpriced tokens remain visible instead of being silently
 estimated.
 Pricing effective dates use the UTC calendar date of each usage event; `--tz`
 changes displayed timestamps but cannot change the calculated cost.
+The dashboard's `usage_daily` rows bucket spend by the configured ingest
+timezone, so a session's UTC detail dates can differ from the dashboard day
+that contains it, and an effective-date boundary can apply a different rate
+there. Session totals are date-independent; consumers such as quest #116
+should join drill-down rows by session identity and treat day totals and
+session sums as related but not reconciled.
 
-The response includes `data.bounds.napkin_math`: 1,200 sessions require at
-most 12 pages, and each page parses at most 100 sessions x 3 preferred exact
-transcript locations. `data.page` contains `limit`, `has_more`, and
-`next_cursor`; cursors are bound to the history index generation and filters.
+The response includes `data.bounds.napkin_math`: at the maximum page size,
+1,200 sessions require at most 12 pages, and each page parses at most 100
+sessions x 3 preferred exact transcript locations. The default page size is
+20. `data.page` contains `limit`, `has_more`, and `next_cursor`; cursors are
+bound to the history index generation and filters.
 
 ## History Search
 

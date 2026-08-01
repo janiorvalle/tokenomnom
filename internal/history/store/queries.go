@@ -6,6 +6,9 @@ import (
 )
 
 const (
+	// DefaultSessionCostPageSize keeps an unqualified cost request small and
+	// resumable while still allowing callers to request larger pages.
+	DefaultSessionCostPageSize = 20
 	// MaxSessionCostPageSize keeps one cost request bounded. A 1,200-session
 	// index is therefore at most 12 pages before transcript parsing begins.
 	MaxSessionCostPageSize = 100
@@ -64,7 +67,7 @@ func (s *Store) ListSessionCostSources(query SessionCostQuery) (SessionCostPage,
 		catalogQuery.Limit = cursor.Limit
 	}
 	if catalogQuery.Limit == 0 {
-		catalogQuery.Limit = MaxSessionCostPageSize
+		catalogQuery.Limit = DefaultSessionCostPageSize
 	}
 
 	catalogPage, err := s.ListCatalog(catalogQuery)

@@ -54,8 +54,21 @@ func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
 	if len(row.Models) != 1 || row.Models[0].Model != "gpt-5.2" || row.Models[0].Date != "2026-07-20" {
 		t.Fatalf("session cost model rows = %+v", row.Models)
 	}
-	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
+	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.DefaultSessionsPerPage != 20 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
 		t.Fatalf("session cost bounds/page = %+v / %+v", data.Bounds, data.Page)
+	}
+}
+
+func TestHistoryCostsDefaultLimitIsBoundedAndDocumented(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+
+	command := newHistoryCostsCommand(nil, nil)
+	flag := command.Flags().Lookup("limit")
+	if flag == nil || flag.DefValue != "20" || flag.Usage != "maximum page rows (1-100, default 20)" {
+		t.Fatalf("history costs limit flag = %+v", flag)
 	}
 }
 

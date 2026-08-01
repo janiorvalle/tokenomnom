@@ -45,7 +45,7 @@ func (flags *historySessionCostFlags) add(command *cobra.Command) {
 	command.Flags().StringVar(&flags.project, "project", "", "filter by derived project name")
 	command.Flags().StringVar(&flags.branch, "branch", "", "filter by known branch")
 	command.Flags().StringVar(&flags.source, "source", "any", "filter by availability source")
-	command.Flags().IntVar(&flags.limit, "limit", historystore.MaxSessionCostPageSize, "maximum page rows (1-100)")
+	command.Flags().IntVar(&flags.limit, "limit", historystore.DefaultSessionCostPageSize, fmt.Sprintf("maximum page rows (1-%d, default %d)", historystore.MaxSessionCostPageSize, historystore.DefaultSessionCostPageSize))
 	command.Flags().StringVar(&flags.cursor, "cursor", "", "continue a previous page")
 	command.Flags().StringVar(&flags.threadKind, "thread-kind", "all", "filter by thread kind (root, subagent, unknown, or all)")
 	command.Flags().BoolVar(&flags.rootOnly, "root-only", false, "include only directly evidenced root sessions")
@@ -182,10 +182,11 @@ func newHistoryCostsCommand(codexDir, claudeDir *string) *cobra.Command {
 				Coverage:   page.Coverage,
 				Generation: page.Generation,
 				Bounds: historySessionCostBounds{
+					DefaultSessionsPerPage:            historystore.DefaultSessionCostPageSize,
 					MaxSessionsPerPage:                historystore.MaxSessionCostPageSize,
 					MaxTranscriptCandidatesPerSession: historystore.MaxSessionCostCandidates,
 					MaxModelRowsPerSession:            maxHistorySessionCostModels,
-					NapkinMath:                        fmt.Sprintf("1,200 sessions / %d max rows = 12 pages; each page parses at most %d preferred transcript locations", historystore.MaxSessionCostPageSize, historystore.MaxSessionCostPageSize*historystore.MaxSessionCostCandidates),
+					NapkinMath:                        fmt.Sprintf("1,200 sessions / %d max rows = 12 pages; default page size is %d; each page parses at most %d preferred transcript locations", historystore.MaxSessionCostPageSize, historystore.DefaultSessionCostPageSize, historystore.MaxSessionCostPageSize*historystore.MaxSessionCostCandidates),
 				},
 			}
 			warnings := append([]string{}, page.Warnings...)
@@ -223,6 +224,7 @@ type historySessionCostData struct {
 }
 
 type historySessionCostBounds struct {
+	DefaultSessionsPerPage            int    `json:"default_sessions_per_page"`
 	MaxSessionsPerPage                int    `json:"max_sessions_per_page"`
 	MaxTranscriptCandidatesPerSession int    `json:"max_transcript_candidates_per_session"`
 	MaxModelRowsPerSession            int    `json:"max_model_rows_per_session"`
@@ -505,6 +507,6 @@ func writeHistorySessionCosts(cmd *cobra.Command, data historySessionCostData) {
 		if row.LastTimestamp != nil {
 			last = *row.LastTimestamp
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%d\t$%.2f\t%s\n", row.SessionID, row.Provider, last, row.Tokens.TotalTokens, row.Tokens.CostUSD, safePrettyPreview(row.Preview))
+		fmt.Fprintf(cmd.OutOrStdout(), "%-38s %-8s %-24s %-12d %-12s %s\n", row.SessionID, row.Provider, last, row.Tokens.TotalTokens, fmt.Sprintf("$%.2f", row.Tokens.CostUSD), safePrettyPreview(row.Preview))
 	}
 }
