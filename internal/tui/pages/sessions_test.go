@@ -18,6 +18,13 @@ func TestRenderSessionsEmptyIndexProvidesActionableHint(t *testing.T) {
 	}
 }
 
+func TestRenderSessionsPendingDoesNotClaimIndexMissing(t *testing.T) {
+	view := RenderSessions(testRender(), SessionPageData{Pending: true}, SessionViewState{Provider: "all", DateRange: "30d"}, 70, 20)
+	if !strings.Contains(view, "Loading sessions…") || strings.Contains(view, "No history index is available.") || strings.Contains(view, "Run tokenomnom history index") {
+		t.Fatalf("pending sessions view =\n%s", view)
+	}
+}
+
 func TestRenderSessionsListBoundsRowsAndProjectOptions(t *testing.T) {
 	data := SessionPageData{
 		IndexAvailable: true,

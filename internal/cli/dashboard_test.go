@@ -856,7 +856,7 @@ func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.
 	if snapshot.StatusBar.History.Hint != "pending" || snapshot.StatusBar.Vault.Hint != "pending" {
 		t.Fatalf("initial loader status bar = %#v", snapshot.StatusBar)
 	}
-	if snapshot.Vault.Directory != "" || len(snapshot.System.Findings) != 0 || snapshot.Sessions.IndexAvailable {
+	if snapshot.Vault.Directory != "" || len(snapshot.System.Findings) != 0 || !snapshot.Sessions.Pending || snapshot.Sessions.IndexAvailable {
 		t.Fatalf("initial loader performed ambient work: vault=%#v system=%#v sessions=%#v", snapshot.Vault, snapshot.System, snapshot.Sessions)
 	}
 }

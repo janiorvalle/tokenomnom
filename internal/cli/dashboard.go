@@ -187,6 +187,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			if err != nil {
 				return tui.Snapshot{}, err
 			}
+			snapshot.Sessions.Pending = true
 			snapshot.StatusBar = dashboardPendingStatusBar()
 			return snapshot, nil
 		}

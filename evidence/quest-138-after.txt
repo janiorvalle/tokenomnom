@@ -42,3 +42,9 @@ Result:
 Assertions:
 - A populated usage store renders its dashboard snapshot before discovery, history, vault, or doctor data is present.
 - The first frame exposes pending status-bar segments instead of blocking on optional data.
+
+PR comment follow-up:
+go test -count=1 -run 'TestInitialSnapshotShowsPendingOptionalSegments|TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData|TestRenderSessionsPendingDoesNotClaimIndexMissing' -v ./internal/tui ./internal/tui/pages ./internal/cli
+
+The pending Sessions page now renders `Loading sessions…` and does not tell the
+user that an existing history index is missing.

@@ -292,6 +292,7 @@ func TestInitialSnapshotShowsPendingOptionalSegments(t *testing.T) {
 		t.Fatal("new dashboard request was not marked initial")
 	}
 	pending := Snapshot{
+		Sessions: tuipages.SessionPageData{Pending: true},
 		StatusBar: StatusBar{
 			History: HistoryStatus{Hint: "pending"},
 			Vault:   VaultStatus{Hint: "pending"},
@@ -305,6 +306,11 @@ func TestInitialSnapshotShowsPendingOptionalSegments(t *testing.T) {
 	view := model.View()
 	if !strings.Contains(view, "index pending") || !strings.Contains(view, "vault pending") {
 		t.Fatalf("pending optional segments missing from first frame:\n%s", view)
+	}
+	model.router.Select(SessionsPageID)
+	sessionsView := model.View()
+	if !strings.Contains(sessionsView, "Loading sessions…") || strings.Contains(sessionsView, "No history index is available.") {
+		t.Fatalf("pending sessions page made a false availability claim:\n%s", sessionsView)
 	}
 	t.Log("\n" + view)
 }
