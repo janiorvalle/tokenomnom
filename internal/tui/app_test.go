@@ -1199,7 +1199,7 @@ func TestSkillOfferFitsMinimumTerminal(t *testing.T) {
 func loadedTestModel() Model {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model.snapshot = Snapshot{
 		Summary: Summary{Metrics: [5]SummaryMetric{
 			{Value: "$1.00", Kind: MetricMoney},
@@ -1323,8 +1323,16 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 	default:
 		message = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
-	updated, _ := model.Update(message)
-	return updated.(Model)
+	updated, command := model.Update(message)
+	model = updated.(Model)
+	if command != nil {
+		result := command()
+		if _, quit := result.(tea.QuitMsg); !quit {
+			updated, _ = model.Update(result)
+			model = updated.(Model)
+		}
+	}
+	return model
 }
 
 type testPage struct {

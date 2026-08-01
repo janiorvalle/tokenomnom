@@ -139,6 +139,7 @@ func TestCommandPaletteDoesNotOpenDuringDashboardWork(t *testing.T) {
 		{name: "loading", set: func(model *Model) { model.loading = true }},
 		{name: "syncing", set: func(model *Model) { model.syncing = true }},
 		{name: "pending startup sync", set: func(model *Model) { model.pendingSync = true }},
+		{name: "dashboard load", set: func(model *Model) { model.dashboardLoadBusy = true }},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			model := loadedTestModel()
@@ -186,6 +187,25 @@ func TestCommandPaletteDefersStartupSyncUntilActionCompletes(t *testing.T) {
 	model = updated.(Model)
 	if command == nil || model.pendingSync || !model.syncing {
 		t.Fatalf("startup sync did not resume after action: command=%v pending=%v syncing=%v", command != nil, model.pendingSync, model.syncing)
+	}
+}
+
+func TestCommandPaletteDoesNotStartDuringResizeLoad(t *testing.T) {
+	model := loadedTestModel()
+	updated, loadCommand := model.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
+	model = updated.(Model)
+	if loadCommand == nil || !model.dashboardLoadBusy {
+		t.Fatalf("resize load did not become busy: command=%v busy=%v", loadCommand != nil, model.dashboardLoadBusy)
+	}
+	updated, paletteCommand := model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	model = updated.(Model)
+	if paletteCommand != nil || model.palette.active {
+		t.Fatalf("palette opened during resize load: command=%v active=%v", paletteCommand != nil, model.palette.active)
+	}
+	updated, _ = model.Update(loadCommand())
+	model = updated.(Model)
+	if model.dashboardLoadBusy {
+		t.Fatal("resize load remained busy after completion")
 	}
 }
 
@@ -287,7 +307,7 @@ func TestCommandPaletteFullSyncPassesFullRequest(t *testing.T) {
 		return Snapshot{}, nil
 	}, SkillOffer{})
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model = openPaletteForTest(t, model)
 	for _, runeValue := range []rune("sync") {
 		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{runeValue}})
@@ -329,7 +349,7 @@ func TestCommandPaletteStyledFitsWindow(t *testing.T) {
 	})
 	model := New(render, func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model.snapshot = Snapshot{Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"}}
 	model = openPaletteForTest(t, model)
 	for index, line := range strings.Split(model.View(), "\n") {
@@ -342,7 +362,7 @@ func TestCommandPaletteStyledFitsWindow(t *testing.T) {
 func loadedTestModelWithCommands(registry CommandRegistry) Model {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, registry)
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model.snapshot = Snapshot{Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"}}
 	return model
 }
