@@ -159,10 +159,6 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		if err != nil {
 			return tui.Snapshot{}, fmt.Errorf("find user home directory: %w", err)
 		}
-		roots, err := resolveRoots(cmd, codexDir, claudeDir, home)
-		if err != nil {
-			return tui.Snapshot{}, err
-		}
 		stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
 		if err != nil {
 			return tui.Snapshot{}, err
@@ -183,6 +179,19 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		defer database.Close()
 
 		location, timezoneName, err := dashboardTimezone(timezone)
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		if request.Initial && !request.Sync {
+			snapshot, err := dashboardSnapshot(database, request, render, location, syncer.Summary{})
+			if err != nil {
+				return tui.Snapshot{}, err
+			}
+			snapshot.StatusBar = dashboardPendingStatusBar()
+			return snapshot, nil
+		}
+
+		roots, err := resolveRoots(cmd, codexDir, claudeDir, home)
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -254,6 +263,13 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		snapshot.ActionStatus = actionStatus
 		snapshot.ActionWarning = actionWarning
 		return snapshot, err
+	}
+}
+
+func dashboardPendingStatusBar() tui.StatusBar {
+	return tui.StatusBar{
+		History: tui.HistoryStatus{Hint: "pending"},
+		Vault:   tui.VaultStatus{Hint: "pending"},
 	}
 }
 

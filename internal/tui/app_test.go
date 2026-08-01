@@ -284,6 +284,31 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	}
 }
 
+func TestInitialSnapshotShowsPendingOptionalSegments(t *testing.T) {
+	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
+	model.request.Width, model.request.Height = 100, 30
+	initialRequest := model.request
+	if !initialRequest.Initial {
+		t.Fatal("new dashboard request was not marked initial")
+	}
+	pending := Snapshot{
+		StatusBar: StatusBar{
+			History: HistoryStatus{Hint: "pending"},
+			Vault:   VaultStatus{Hint: "pending"},
+		},
+	}
+	updated, command := model.Update(loadedMsg{request: initialRequest, generation: model.loadGeneration, snapshot: pending})
+	model = updated.(Model)
+	if command == nil || model.request.Initial || !model.loaded || model.loading || !model.syncing {
+		t.Fatalf("initial snapshot transition = initial=%v loaded=%v loading=%v syncing=%v command=%v", model.request.Initial, model.loaded, model.loading, model.syncing, command != nil)
+	}
+	view := model.View()
+	if !strings.Contains(view, "index pending") || !strings.Contains(view, "vault pending") {
+		t.Fatalf("pending optional segments missing from first frame:\n%s", view)
+	}
+	t.Log("\n" + view)
+}
+
 func TestEveryViewRendersStructure(t *testing.T) {
 	model := loadedTestModel()
 	for tab := Tab(0); tab < tabCount; tab++ {

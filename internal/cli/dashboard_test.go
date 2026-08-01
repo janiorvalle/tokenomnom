@@ -803,6 +803,64 @@ func TestDashboardLoaderProvidesVaultAndSystemPages(t *testing.T) {
 	}
 }
 
+func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(tempDir, "config")
+	codexDir := filepath.Join(tempDir, "codex")
+	claudeDir := filepath.Join(tempDir, "claude")
+	for _, path := range []string{stateDir, dataDir, configDir, codexDir, claudeDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Transaction(func(tx *store.Tx) error {
+		return tx.ApplyUsage(store.Usage{
+			Date: "2026-08-01", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 25,
+		}, "")
+	}); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--format", "pretty", "--codex-dir", codexDir, "--claude-dir", claudeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
+	snapshot, err := loader(tui.Request{Initial: true, Width: 100, Height: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Empty || snapshot.Summary.Metrics[1].Value == "0" {
+		t.Fatalf("initial loader did not return stored dashboard data: %#v", snapshot)
+	}
+	if snapshot.StatusBar.History.Hint != "pending" || snapshot.StatusBar.Vault.Hint != "pending" {
+		t.Fatalf("initial loader status bar = %#v", snapshot.StatusBar)
+	}
+	if snapshot.Vault.Directory != "" || len(snapshot.System.Findings) != 0 || snapshot.Sessions.IndexAvailable {
+		t.Fatalf("initial loader performed ambient work: vault=%#v system=%#v sessions=%#v", snapshot.Vault, snapshot.System, snapshot.Sessions)
+	}
+}
+
 func boolPointer(value bool) *bool { return &value }
 
 func TestBarePlainInvocationRemainsHelp(t *testing.T) {

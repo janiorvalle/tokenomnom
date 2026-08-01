@@ -1,0 +1,44 @@
+Quest 138 first-paint verification
+
+Command:
+go test -count=1 -run 'TestInitialSnapshotShowsPendingOptionalSegments|TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData' -v ./internal/tui ./internal/cli
+
+Result:
+=== RUN   TestInitialSnapshotShowsPendingOptionalSegments
+    app_test.go:309:
+         tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D
+         TOTAL —  ·  TOKENS —  ·  ACTIVE DAYS —  ·  AVG/DAY —  ·  PEAK —
+         SPEND            │
+         › 1  Daily       │
+         2  Ledger        │
+         3  Models        │
+         4  Heatmap       │
+                          │
+         HISTORY          │
+         5  Sessions      │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+         ● syncing  ·  index pending  ·  vault pending
+         ──────────────────────────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+--- PASS: TestInitialSnapshotShowsPendingOptionalSegments (0.00s)
+=== RUN   TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData
+--- PASS: TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData (0.01s)
+--- PASS: all focused checks
+
+Assertions:
+- A populated usage store renders its dashboard snapshot before discovery, history, vault, or doctor data is present.
+- The first frame exposes pending status-bar segments instead of blocking on optional data.
