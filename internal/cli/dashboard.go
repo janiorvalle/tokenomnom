@@ -359,6 +359,9 @@ func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh 
 	if err != nil {
 		return data, err
 	}
+	if data.NotIndexed {
+		return data, nil
+	}
 	cache.data, cache.err, cache.key, cache.initialized = data, nil, key, true
 	return cache.data, nil
 }

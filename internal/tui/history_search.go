@@ -154,9 +154,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 			nextSelection := max(0, currentSelection-1)
 			if nextSelection != request.HistorySelect {
 				result.Request.HistorySelect = nextSelection
-				result.Request.HistoryExportID = ""
-				result.Request.HistoryExportToken = ""
-				p.clearExport()
+				p.updateSelectionExport(&result.Request, nextSelection)
 				result.Changed = true
 			}
 		}
@@ -183,9 +181,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 			nextSelection := min(len(p.hits)-1, currentSelection+1)
 			if nextSelection != request.HistorySelect {
 				result.Request.HistorySelect = nextSelection
-				result.Request.HistoryExportID = ""
-				result.Request.HistoryExportToken = ""
-				p.clearExport()
+				p.updateSelectionExport(&result.Request, nextSelection)
 				result.Changed = true
 			}
 		}
@@ -206,9 +202,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		p.inputMode = false
 		if p.sessionID == "" && request.HistorySelect != 0 {
 			result.Request.HistorySelect = 0
-			result.Request.HistoryExportID = ""
-			result.Request.HistoryExportToken = ""
-			p.clearExport()
+			p.updateSelectionExport(&result.Request, 0)
 			result.Changed = true
 		}
 		return result
@@ -226,9 +220,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		p.inputMode = false
 		if p.sessionID == "" && len(p.hits) > 0 && request.HistorySelect != len(p.hits)-1 {
 			result.Request.HistorySelect = len(p.hits) - 1
-			result.Request.HistoryExportID = ""
-			result.Request.HistoryExportToken = ""
-			p.clearExport()
+			p.updateSelectionExport(&result.Request, len(p.hits)-1)
 			result.Changed = true
 		}
 		return result
@@ -491,6 +483,17 @@ func (p *HistorySearchPage) clearExport() {
 	p.exportText = ""
 	p.exportID = ""
 	p.exportAttemptID = ""
+}
+
+func (p *HistorySearchPage) updateSelectionExport(request *Request, selectedIndex int) {
+	if p.exporting && p.exportID != "" && selectedIndex >= 0 && selectedIndex < len(p.hits) && p.hits[selectedIndex].SessionID == p.exportID {
+		request.HistoryExportID = p.exportID
+		request.HistoryExportToken = p.exportAttemptID
+		return
+	}
+	request.HistoryExportID = ""
+	request.HistoryExportToken = ""
+	p.clearExport()
 }
 
 func (p *HistorySearchPage) beginSearch(query string) {

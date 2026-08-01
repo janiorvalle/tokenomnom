@@ -293,7 +293,7 @@ func TestHistorySearchPageCancelsStaleExportWhenOpeningDetail(t *testing.T) {
 	}
 }
 
-func TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport(t *testing.T) {
+func TestHistorySearchPagePreservesInFlightExportForRepeatedSession(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 100, Height: 30}
 	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{
@@ -302,17 +302,16 @@ func TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport(t *test
 	}}}, nil)
 	first := page.HandleKey(request, keyMsg("e"))
 	moved := page.HandleKey(first.Request, tea.KeyMsg{Type: tea.KeyDown})
+	if moved.Request.HistoryExportID != first.Request.HistoryExportID || moved.Request.HistoryExportToken != first.Request.HistoryExportToken {
+		t.Fatalf("selection lost the in-flight same-session export: first=%+v moved=%+v", first.Request, moved.Request)
+	}
 	second := page.HandleKey(moved.Request, keyMsg("e"))
-	if first.Request.HistoryExportToken == second.Request.HistoryExportToken {
-		t.Fatalf("export attempts reused the same attempt value: %q", first.Request.HistoryExportToken)
+	if second.Changed || second.Action != PageActionNone || second.Request.HistoryExportToken != first.Request.HistoryExportToken {
+		t.Fatalf("duplicate export was scheduled for the same session: %+v", second)
 	}
-	page.ApplyExport(first.Request, "/tmp/stale", nil)
-	if !strings.Contains(page.View(pageContext(second.Request)), "Exporting session") {
-		t.Fatal("stale completion replaced the active export")
-	}
-	page.ApplyExport(second.Request, "/tmp/current", nil)
-	if !strings.Contains(page.View(pageContext(second.Request)), "Exported to /tmp/current") {
-		t.Fatal("current export receipt missing")
+	page.ApplyExport(first.Request, "/tmp/current", nil)
+	if !strings.Contains(page.View(pageContext(moved.Request)), "Exported to /tmp/current") {
+		t.Fatal("in-flight export receipt missing after same-session selection move")
 	}
 }
 

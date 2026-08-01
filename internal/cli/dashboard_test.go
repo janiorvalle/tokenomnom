@@ -255,6 +255,30 @@ func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
 	}
 }
 
+func TestDashboardHistorySearchCacheDoesNotCacheMissingIndex(t *testing.T) {
+	cache := dashboardHistorySearchCache{}
+	indexed := false
+	calls := 0
+	refresh := func() (tuipages.HistorySearchData, error) {
+		calls++
+		if !indexed {
+			return tuipages.HistorySearchData{NotIndexed: true}, nil
+		}
+		return tuipages.HistorySearchData{Search: tuipages.SearchResult{Hits: []tuipages.SearchHit{{SessionID: "ses_ready"}}}}, nil
+	}
+	request := tui.Request{HistoryQuery: "prompt", Provider: tui.AllProviders, Range: tui.Range30Days}
+
+	data, err := cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 1 {
+		t.Fatalf("missing-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	indexed = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.NotIndexed || len(data.Search.Hits) != 1 || calls != 2 {
+		t.Fatalf("post-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+}
+
 func TestLoadDashboardHistoryReadsCatalogAndProjectOptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), historystore.DatabaseName)
 	database, err := historystore.Open(path)
