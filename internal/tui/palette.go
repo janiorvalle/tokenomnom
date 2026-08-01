@@ -143,7 +143,13 @@ func (m Model) commandOutputView() string {
 	if truncated && len(lines) > 0 {
 		lines[len(lines)-1] = truncate(lines[len(lines)-1], max(1, contentWidth-1)) + "…"
 	}
-	body := m.render.Palette.Header().Render("COMMAND RESULT") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + m.render.Palette.Subtle().Render("Press any key to return")
+	title := m.render.Palette.Header().Render("COMMAND RESULT")
+	footer := m.render.Palette.Subtle().Render("Press any key to return")
+	if m.warning != "" {
+		title = m.render.Palette.Warning().Render("COMMAND FAILED")
+		footer = m.render.Palette.Warning().Render(wrapText(m.warning, contentWidth)) + "\n" + footer
+	}
+	body := title + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footer
 	modal := m.render.Palette.Surface().
 		Width(width-2).
 		Border(lipgloss.RoundedBorder()).

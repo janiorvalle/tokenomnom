@@ -89,10 +89,33 @@ func TestCommandPaletteRunsActionOffUpdateLoop(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteBlocksRefreshWhileActionRuns(t *testing.T) {
+	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
+		ID:  CommandVaultVerifyID,
+		Run: func() (CommandResult, error) { return CommandResult{}, nil },
+	}}})
+	model.commandBusy = true
+
+	updated, command := model.Update(keyMsg("R"))
+	model = updated.(Model)
+	if command != nil || !model.commandBusy || model.syncing {
+		t.Fatalf("refresh was not ignored while command ran: command=%v busy=%v syncing=%v", command != nil, model.commandBusy, model.syncing)
+	}
+	if !strings.Contains(model.statusView(), "working") {
+		t.Fatalf("busy status disappeared after ignored refresh: %q", model.statusView())
+	}
+	updated, command = model.Update(keyMsg("q"))
+	if command == nil {
+		t.Fatal("quit was blocked while command ran")
+	}
+}
+
 func TestCommandPaletteTranslatesActionFailure(t *testing.T) {
 	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
-		ID:  CommandPricingID,
-		Run: func() (CommandResult, error) { return CommandResult{}, errors.New("raw pricing parser detail") },
+		ID: CommandPricingID,
+		Run: func() (CommandResult, error) {
+			return CommandResult{Output: "raw pricing parser detail"}, errors.New("pricing command failed")
+		},
 	}}})
 	model = openPaletteForTest(t, model)
 	for _, runeValue := range []rune("price") {
@@ -103,8 +126,14 @@ func TestCommandPaletteTranslatesActionFailure(t *testing.T) {
 	model = updated.(Model)
 	updated, _ = model.Update(command())
 	model = updated.(Model)
-	if model.warning != "Pricing failed; run `tokenomnom pricing` for details" || model.status != "" {
-		t.Fatalf("failure state warning=%q status=%q", model.warning, model.status)
+	view := model.View()
+	if model.warning != "Pricing failed; run `tokenomnom pricing` for details" || model.status != "" || model.commandOutput != "raw pricing parser detail" || !strings.Contains(view, "COMMAND FAILED") || !strings.Contains(view, "raw pricing parser detail") || !strings.Contains(view, "tokenomnom pricing") {
+		t.Fatalf("failure state warning=%q status=%q output=%q view=%s", model.warning, model.status, model.commandOutput, view)
+	}
+	updated, _ = model.Update(keyMsg("x"))
+	model = updated.(Model)
+	if model.commandOutput != "" || model.warning != "" {
+		t.Fatalf("failure overlay did not dismiss cleanly: output=%q warning=%q", model.commandOutput, model.warning)
 	}
 }
 

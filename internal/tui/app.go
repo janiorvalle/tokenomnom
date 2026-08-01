@@ -550,6 +550,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.commandBusy, m.syncing = false, false
 		if msg.err != nil {
 			m.status = ""
+			m.commandOutput = strings.TrimSpace(msg.result.Output)
+			if m.commandOutput == "" {
+				m.commandOutput = msg.err.Error()
+			}
 			m.warning = paletteActionFailure(msg.command, msg.err)
 			return m, nil
 		}
@@ -614,6 +618,9 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	binding, bound := keyBindingFor(value, len(m.router.Pages()))
+	if bound && m.commandBusy && binding.Action != keyActionNavigatePages && binding.Action != keyActionToggleHelp && binding.Action != keyActionQuit {
+		return m, nil
+	}
 	page := m.activePage()
 	interactive, interactivePage := page.(InteractivePage)
 	globalFirst := bound && binding.Action != keyActionPageCommand &&
@@ -653,9 +660,6 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		return m, nil
 	}
 	if binding.Action == keyActionOpenPalette {
-		if m.commandBusy {
-			return m, nil
-		}
 		m.help = false
 		m.palette.resize(m.request.Width)
 		return m, m.palette.open(m.router, m.commandRegistry, m.request.Width)
@@ -775,7 +779,7 @@ func (m Model) updateCommandOutputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
-	m.commandOutput = ""
+	m.commandOutput, m.warning = "", ""
 	return m, nil
 }
 
