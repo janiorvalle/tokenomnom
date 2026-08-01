@@ -855,6 +855,7 @@ func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
 		m.dashboardLoadBusy = true
 		m.warning = ""
 		m.status = "running sync --full"
+		m.resetSessionNavigation()
 		request := m.request
 		request.Sync, request.FullSync = true, true
 		return m.startDashboardLoad(request)

@@ -312,6 +312,14 @@ func TestCommandPaletteFullSyncPassesFullRequest(t *testing.T) {
 		return Snapshot{}, nil
 	}, SkillOffer{})
 	model.request.Width, model.request.Height = 100, 30
+	model.request.SessionProject = "alpha"
+	model.request.SessionProjectActive = true
+	model.request.SessionCursor = "cursor-page"
+	model.request.SessionCursorStack = "cursor-root"
+	model.request.SessionOffset = 2
+	model.request.SessionReturnToEnd = true
+	model.request.SessionDetailID = "session-detail"
+	model.request.SessionDetailOffset = 3
 	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model = openPaletteForTest(t, model)
 	for _, runeValue := range []rune("sync") {
@@ -325,7 +333,7 @@ func TestCommandPaletteFullSyncPassesFullRequest(t *testing.T) {
 	}
 	updated, _ = model.Update(command())
 	model = updated.(Model)
-	if !got.Sync || !got.FullSync || model.status != "full sync complete" || model.commandBusy {
+	if !got.Sync || !got.FullSync || got.SessionProject != "" || got.SessionProjectActive || got.SessionCursor != "" || got.SessionCursorStack != "" || got.SessionOffset != 0 || got.SessionReturnToEnd || got.SessionDetailID != "" || got.SessionDetailOffset != 0 || model.status != "full sync complete" || model.commandBusy {
 		t.Fatalf("full sync request=%+v state=%+v", got, model)
 	}
 }

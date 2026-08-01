@@ -143,7 +143,11 @@ func (m Model) helpView() string {
 	}
 	var body strings.Builder
 	body.WriteString(m.render.Palette.Header().Render("Keys"))
-	body.WriteString("\n\n")
+	if m.request.Height > minimumHeight {
+		body.WriteString("\n\n")
+	} else {
+		body.WriteByte('\n')
+	}
 	for _, entry := range entries {
 		key := entry.display + strings.Repeat(" ", keyWidth-lipgloss.Width(entry.display))
 		body.WriteString(m.render.Palette.Emphasis().Render(key))

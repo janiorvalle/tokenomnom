@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const paletteVisibleRows = 7
+const paletteVisibleRows = 8
 
 type paletteState struct {
 	active    bool

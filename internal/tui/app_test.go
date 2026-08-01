@@ -1328,6 +1328,11 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 	if command != nil {
 		result := command()
 		if _, quit := result.(tea.QuitMsg); !quit {
+			if loaded, ok := result.(loadedMsg); ok && loaded.err == nil {
+				// Keep fixture data while completing synthetic reload commands.
+				loaded.snapshot = model.snapshot
+				result = loaded
+			}
 			updated, _ = model.Update(result)
 			model = updated.(Model)
 		}
