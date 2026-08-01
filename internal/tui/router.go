@@ -13,11 +13,14 @@ type PageID string
 
 const (
 	DailyPageID    PageID = "daily"
-	MonthlyPageID  PageID = "monthly"
+	LedgerPageID   PageID = "ledger"
 	ModelsPageID   PageID = "models"
 	HeatmapPageID  PageID = "heatmap"
 	SessionsPageID PageID = "sessions"
 )
+
+// MonthlyPageID is retained for callers that still use the old page name.
+const MonthlyPageID PageID = LedgerPageID
 
 // PageSection is a navigation group in the sidebar.
 type PageSection string
@@ -86,6 +89,37 @@ func (p snapshotPage) Update(request Request, key string) (Request, bool) {
 	return p.keyHandler(request, key)
 }
 
+type ledgerPage struct{}
+
+func (ledgerPage) ID() PageID           { return LedgerPageID }
+func (ledgerPage) Section() PageSection { return SpendSection }
+func (ledgerPage) Title() string        { return "Ledger" }
+
+func (ledgerPage) View(context PageContext) string {
+	if int(LedgerTab) < len(context.Snapshot.Views) && context.Snapshot.Views[LedgerTab] != "" {
+		return context.Snapshot.Views[LedgerTab]
+	}
+	return tuipages.Render(context.Render, context.Snapshot.Ledger, context.Request.Ledger, context.Request.Height)
+}
+
+func (ledgerPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
+}
+
+func (ledgerPage) UpdateContext(context PageContext, key string) (Request, bool) {
+	// Keep the old horizontal commands harmlessly compatible for callers that
+	// still send them to the former monthly page.
+	if key == "left" || key == "right" {
+		return updateMonthlyPage(context.Request, key)
+	}
+	state, changed := tuipages.Update(context.Request.Ledger, context.Snapshot.Ledger, key)
+	if !changed {
+		return context.Request, false
+	}
+	context.Request.Ledger = state
+	return context.Request, true
+}
+
 // PageRouter keeps page order and selection separate from the dashboard
 // state machine. Registration order is also the order used by tab navigation.
 type PageRouter struct {
@@ -101,7 +135,7 @@ type pageGroup struct {
 func newRouter() PageRouter {
 	return newPageRouter(
 		snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage},
-		snapshotPage{id: MonthlyPageID, section: SpendSection, title: "Monthly", viewIndex: int(MonthlyTab), keyHandler: updateMonthlyPage},
+		ledgerPage{},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
 		sessionsPage{},

@@ -44,7 +44,13 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 			t.Errorf("dashboard summary metric %d supplies label %q; TUI owns summary labels", index, metric.Label)
 		}
 	}
-	for index, fragments := range [][]string{{"cost/day", "DATE"}, {"cost/month", "MONTH"}, {"PROVIDER", "MODEL"}, {"Less", "active days"}} {
+	viewFragments := map[int][]string{
+		int(tui.DailyTab):   {"cost/day", "DATE"},
+		int(tui.LedgerTab):  {"PERIOD", "CODEX", "CLAUDE", "ACTIVITY", "▓"},
+		int(tui.ModelsTab):  {"PROVIDER", "MODEL"},
+		int(tui.HeatmapTab): {"Less", "active days"},
+	}
+	for index, fragments := range viewFragments {
 		for _, fragment := range fragments {
 			if !strings.Contains(snapshot.Views[index], fragment) {
 				t.Errorf("view %d missing %q:\n%s", index, fragment, snapshot.Views[index])
@@ -70,7 +76,6 @@ func TestDashboardStatusBarHintsMissingOptionalStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-
 	cmd := &cobra.Command{}
 	cmd.SetContext(appconfig.WithContext(context.Background(), appconfig.Loaded{Config: appconfig.Defaults()}))
 	status := dashboardStatusBar(cmd, database, stateDir, root, []discover.Root{
@@ -269,6 +274,90 @@ func TestDashboardHistoryWindowUsesInclusiveDateBounds(t *testing.T) {
 	if leapSince == nil || !leapSince.Equal(time.Date(2023, time.March, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("leap-day history window since = %v", leapSince)
 	}
+}
+
+func TestDashboardLedgerZoomsFromYearToMonthToDay(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	render := styledRenderContext(120)
+
+	year, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"ALL YEARS", "CODEX", "CLAUDE", "ACTIVITY", "TOTAL"} {
+		if !strings.Contains(year.Views[tui.LedgerTab], fragment) {
+			t.Errorf("year ledger missing %q:\n%s", fragment, year.Views[tui.LedgerTab])
+		}
+	}
+
+	monthRequest := tui.Request{Range: tui.RangeAll, Width: 120, Height: 30, Ledger: tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2026, Cursor: -1}}
+	month, err := dashboardSnapshot(database, monthRequest, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(month.Views[tui.LedgerTab], "Jan 2026") || !strings.Contains(month.Views[tui.LedgerTab], "Feb 2026") {
+		t.Fatalf("month ledger did not show 2026 periods:\n%s", month.Views[tui.LedgerTab])
+	}
+
+	dayRequest := tui.Request{Range: tui.RangeAll, Width: 120, Height: 30, Ledger: tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-02", Cursor: -1}}
+	day, err := dashboardSnapshot(database, dayRequest, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(day.Views[tui.LedgerTab], "Feb 03") || !strings.Contains(day.Views[tui.LedgerTab], "TOTAL") {
+		t.Fatalf("day ledger did not show selected month:\n%s", day.Views[tui.LedgerTab])
+	}
+}
+
+func TestDashboardLedgerUsesFullHistoryOutsideDashboardRange(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Transaction(func(tx *store.Tx) error {
+		return tx.ApplyUsage(store.Usage{
+			Date: "2020-01-15", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 10,
+		}, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := dashboardSnapshot(database, tui.Request{
+		Range: tui.Range30Days, Width: 120, Height: 30,
+		Ledger: tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2020, Cursor: -1},
+	}, styledRenderContext(120), time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Empty {
+		t.Fatal("full-history ledger was marked empty outside dashboard range")
+	}
+	for _, fragment := range []string{"Jan 2020"} {
+		if !strings.Contains(snapshot.Views[tui.LedgerTab], fragment) {
+			t.Errorf("full-history ledger missing %q outside dashboard range:\n%s", fragment, snapshot.Views[tui.LedgerTab])
+		}
+	}
+}
+
+func TestQuest115AfterSnapshot(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	snapshot, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}, styledRenderContext(120), time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("\n" + snapshot.Views[tui.LedgerTab])
 }
 
 func TestBareStyledInvocationLaunchesDashboard(t *testing.T) {

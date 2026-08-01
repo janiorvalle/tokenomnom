@@ -35,6 +35,8 @@ var keyRegistry = [...]KeyBinding{
 	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
 	{Display: "← / →", Keys: []string{"left", "right"}, Description: "move in active page", Action: keyActionPageCommand},
 	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to page edge", Action: keyActionPageCommand},
+	{Display: "h / l", Keys: []string{"h", "l"}, Description: "zoom ledger period", Action: keyActionPageCommand},
+	{Display: "j / k", Keys: []string{"j", "k"}, Description: "move ledger row", Action: keyActionPageCommand},
 	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "move in active page", Action: keyActionPageCommand},
 	{Display: "enter", Keys: []string{"enter"}, Description: "open selected item", Action: keyActionPageCommand},
 	{Display: "esc", Keys: []string{"esc"}, Description: "back to list", Action: keyActionPageCommand},

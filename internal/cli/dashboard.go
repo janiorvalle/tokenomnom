@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -441,11 +442,8 @@ func dashboardTimezone(value string) (*time.Location, string, error) {
 }
 
 func dashboardSnapshot(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary) (tui.Snapshot, error) {
-	info, err := database.Info()
-	if err != nil {
-		return tui.Snapshot{}, err
-	}
 	filter := dashboardFilter(request, time.Now().In(location))
+	var err error
 	totals, err := database.Totals(filter)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -459,17 +457,27 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		return tui.Snapshot{}, err
 	}
 
+	ledgerFilter := filter
+	ledgerFilter.Since = ""
+	ledgerFilter.Until = ""
+	ledgerCosts, err := loadReportCosts(database, ledgerFilter, nil)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+
 	render.Width = tui.ContentWidth(request.Width)
-	snapshot := tui.Snapshot{Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
+	snapshot := tui.Snapshot{FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
 	snapshot.Summary = dashboardSummary(totals, costs)
 	snapshot.Views[tui.DailyTab], err = dashboardDailyView(database, filter, costs, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	snapshot.Views[tui.MonthlyTab], err = dashboardMonthlyView(database, filter, costs, request, render)
+	snapshot.Ledger, err = dashboardLedgerData(database, ledgerFilter, ledgerCosts, request)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	snapshot.Empty = len(snapshot.Ledger.Rows) == 0 && totals.Total == 0
+	snapshot.Views[tui.LedgerTab] = tuipages.Render(render, snapshot.Ledger, request.Ledger, request.Height)
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {
@@ -546,6 +554,126 @@ func dashboardDailyView(database *store.Store, filter store.Filter, costs report
 		tableRows = append(tableRows, []string{row.Date, formatNumber(row.Total), formatCost(costs.ByDate[row.Date])})
 	}
 	return chart + renderStyledTable(render, []string{"DATE", "TOKENS", "COST"}, tableRows, []bool{false, true, true}, tableStyle{moneyColumns: map[int]bool{2: true}}), nil
+}
+
+func dashboardLedgerData(database *store.Store, filter store.Filter, costs reportCosts, request tui.Request) (tuipages.Data, error) {
+	daily, err := database.Daily(filter)
+	if err != nil {
+		return tuipages.Data{}, err
+	}
+
+	zoom := request.Ledger.Zoom
+	if zoom > tuipages.ZoomDay {
+		zoom = tuipages.ZoomYear
+	}
+	effectiveYear := request.Ledger.Year
+	if zoom == tuipages.ZoomMonth && effectiveYear == 0 {
+		effectiveYear = latestLedgerYear(daily)
+	}
+	effectiveMonth := request.Ledger.Month
+	if zoom == tuipages.ZoomDay && effectiveMonth == "" {
+		effectiveMonth = latestLedgerMonth(daily)
+	}
+
+	grouped := make(map[string]tuipages.Row)
+	order := make([]string, 0, len(daily))
+	for _, row := range daily {
+		key, include := ledgerPeriodKey(row.Date, zoom, effectiveYear, effectiveMonth)
+		if !include {
+			continue
+		}
+		period, exists := grouped[key]
+		if !exists {
+			period = tuipages.Row{Key: key, Label: ledgerPeriodLabel(key, zoom)}
+			order = append(order, key)
+		}
+		for provider, value := range costs.ByDateProvider[row.Date] {
+			addLedgerProvider(&period, provider, value)
+		}
+		grouped[key] = period
+	}
+
+	rows := make([]tuipages.Row, 0, len(order))
+	for _, key := range order {
+		rows = append(rows, grouped[key])
+	}
+	for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+		rows[left], rows[right] = rows[right], rows[left]
+	}
+
+	total := tuipages.Row{Key: "total", Label: "TOTAL"}
+	for _, row := range rows {
+		total = total.Add(row)
+	}
+	return tuipages.Data{Available: true, Zoom: zoom, Year: effectiveYear, Month: effectiveMonth, Rows: rows, Total: total}, nil
+}
+
+func ledgerPeriodKey(date string, zoom tuipages.Zoom, year int, month string) (string, bool) {
+	if len(date) < len("2006-01-02") {
+		return "", false
+	}
+	switch zoom {
+	case tuipages.ZoomMonth:
+		if year > 0 && date[:4] != fmt.Sprintf("%04d", year) {
+			return "", false
+		}
+		return date[:7], true
+	case tuipages.ZoomDay:
+		if month != "" && date[:7] != month {
+			return "", false
+		}
+		return date, true
+	default:
+		return date[:4], true
+	}
+}
+
+func ledgerPeriodLabel(key string, zoom tuipages.Zoom) string {
+	if zoom == tuipages.ZoomYear || len(key) < len("2006-01") {
+		return key
+	}
+	date := key
+	if zoom == tuipages.ZoomMonth {
+		date += "-01"
+	}
+	parsed, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return key
+	}
+	if zoom == tuipages.ZoomMonth {
+		return parsed.Format("Jan 2006")
+	}
+	return parsed.Format("Jan 02")
+}
+
+func latestLedgerYear(rows []store.DailyRow) int {
+	if len(rows) == 0 || len(rows[len(rows)-1].Date) < 4 {
+		return 0
+	}
+	year, _ := strconv.Atoi(rows[len(rows)-1].Date[:4])
+	return year
+}
+
+func latestLedgerMonth(rows []store.DailyRow) string {
+	if len(rows) == 0 || len(rows[len(rows)-1].Date) < 7 {
+		return ""
+	}
+	return rows[len(rows)-1].Date[:7]
+}
+
+func addLedgerProvider(row *tuipages.Row, provider discover.Provider, value providerChartValue) {
+	totals := tuipages.ProviderTotals{
+		Cost:           value.Cost.Total,
+		Tokens:         value.Tokens,
+		PricedTokens:   value.Cost.PricedTokens,
+		UnpricedTokens: value.Cost.UnpricedTokens,
+	}
+	switch provider {
+	case discover.ProviderCodex:
+		row.Codex = row.Codex.Add(totals)
+	case discover.ProviderClaude:
+		row.Claude = row.Claude.Add(totals)
+	}
 }
 
 func dashboardMonthlyView(database *store.Store, filter store.Filter, costs reportCosts, request tui.Request, render theme.Context) (string, error) {

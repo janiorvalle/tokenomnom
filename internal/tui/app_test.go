@@ -342,6 +342,52 @@ func TestSessionsPageShowsIndexHintWhenHistoryIsAbsent(t *testing.T) {
 	view := model.View()
 	if !strings.Contains(view, "No history index is available.") || !strings.Contains(view, "tokenomnom history index") {
 		t.Fatalf("empty history hint missing:\n%s", view)
+		}
+	}
+
+func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.Views[LedgerTab] = ""
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{
+		{Key: "2026", Label: "2026"},
+		{Key: "2025", Label: "2025"},
+	}}
+	model.router.SelectIndex(int(LedgerTab))
+
+	updated, command := model.Update(keyMsg("l"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomMonth || model.request.Ledger.Year != 2026 {
+		t.Fatalf("ledger year zoom = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomMonth, Year: 2026, Rows: []tuipages.Row{
+		{Key: "2026-07", Label: "Jul 2026"},
+		{Key: "2026-06", Label: "Jun 2026"},
+	}}
+	updated, command = model.Update(keyMsg("l"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomDay || model.request.Ledger.Month != "2026-07" {
+		t.Fatalf("ledger month zoom = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{
+		{Key: "2026-07-14", Label: "Jul 14"},
+		{Key: "2026-07-13", Label: "Jul 13"},
+	}}
+	updated, command = model.Update(keyMsg("j"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 1 {
+		t.Fatalf("ledger j selection = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+	updated, command = model.Update(keyMsg("home"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 0 {
+		t.Fatalf("ledger home selection = %+v, command=%v", model.request.Ledger, command != nil)
+	}
+	updated, command = model.Update(keyMsg("end"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.Cursor != 1 {
+		t.Fatalf("ledger end selection = %+v, command=%v", model.request.Ledger, command != nil)
 	}
 }
 
