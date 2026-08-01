@@ -1,25 +1,27 @@
-package pages
+package tui
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
-	"github.com/janiorvalle/tokenomnom/internal/tui"
 )
 
 func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	var exported string
 	page := NewHistorySearchPage(HistorySearchOptions{
-		Export: func(request tui.Request) (string, error) {
+		Export: func(request Request) (string, error) {
 			exported = request.HistoryExportID
 			return "/tmp/tokenomnom-history", nil
 		},
 	})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	edit := page.HandleKey(request, keyMsg("/"))
 	if !edit.Handled || !edit.Changed {
 		t.Fatalf("edit result = %+v", edit)
@@ -27,7 +29,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	request = edit.Request
 	for _, key := range []string{"d", "e", " ", "n", "o", "t", "?"} {
 		result := page.HandleKey(request, keyMsg(key))
-		if !result.Handled || !result.Changed || result.Action != tui.PageActionNone {
+		if !result.Handled || !result.Changed || result.Action != PageActionNone {
 			t.Fatalf("input %q result = %+v", key, result)
 		}
 		request = result.Request
@@ -41,7 +43,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	}
 	request = slash.Request
 	search := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter})
-	if !search.Handled || !search.Changed || search.Action != tui.PageActionLoad {
+	if !search.Handled || !search.Changed || search.Action != PageActionLoad {
 		t.Fatalf("search result = %+v", search)
 	}
 	request = search.Request
@@ -70,7 +72,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	}
 	request = move.Request
 	open := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter})
-	if !open.Handled || !open.Changed || open.Action != tui.PageActionLoad || open.Request.HistorySessionID != "ses_2" {
+	if !open.Handled || !open.Changed || open.Action != PageActionLoad || open.Request.HistorySessionID != "ses_2" {
 		t.Fatalf("open result = %+v", open)
 	}
 	request = open.Request
@@ -86,7 +88,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	}
 
 	export := page.HandleKey(request, keyMsg("e"))
-	if !export.Handled || !export.Changed || export.Action != tui.PageActionExport || export.Request.HistoryExportID != "ses_2" {
+	if !export.Handled || !export.Changed || export.Action != PageActionExport || export.Request.HistoryExportID != "ses_2" {
 		t.Fatalf("export result = %+v", export)
 	}
 	request = export.Request
@@ -101,7 +103,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 	t.Log("\n-- detail --\n" + page.View(pageContext(request)))
 
 	back := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEsc})
-	if !back.Handled || !back.Changed || back.Action != tui.PageActionLoad || back.Request.HistorySessionID != "" {
+	if !back.Handled || !back.Changed || back.Action != PageActionLoad || back.Request.HistorySessionID != "" {
 		t.Fatalf("back result = %+v", back)
 	}
 	request = back.Request
@@ -124,7 +126,7 @@ func TestHistorySearchPageInputResultsDetailAndExport(t *testing.T) {
 
 func TestHistorySearchPageShowsIndexHint(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	page.Apply(request, HistorySearchData{NotIndexed: true}, nil)
 	view := page.View(pageContext(request))
 	if !strings.Contains(view, "run `tokenomnom history index`") {
@@ -133,16 +135,130 @@ func TestHistorySearchPageShowsIndexHint(t *testing.T) {
 	t.Log("\n-- missing index --\n" + view)
 }
 
+func TestHistorySearchPageKeepsMissingIndexHintWhileEditing(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30}
+	page.Apply(request, HistorySearchData{NotIndexed: true}, nil)
+	request = page.HandleKey(request, keyMsg("/")).Request
+	request = page.HandleKey(request, keyMsg("x")).Request
+	view := page.View(pageContext(request))
+	if !strings.Contains(view, "run `tokenomnom history index`") || strings.Contains(view, "No matching prompts") {
+		t.Fatalf("missing-index state was lost while editing:\n%s", view)
+	}
+}
+
+func TestHistorySearchPageReportsLoaderErrors(t *testing.T) {
+	var reported error
+	page := NewHistorySearchPage(HistorySearchOptions{
+		Load: func(Request) (HistorySearchData, error) { return HistorySearchData{}, errors.New("database is locked") },
+		ReportError: func(err error) {
+			reported = err
+		},
+	})
+	if _, err := page.Load(Request{}); err == nil || reported == nil || reported.Error() != "database is locked" {
+		t.Fatalf("loader error report = err %v reported %v", err, reported)
+	}
+}
+
+func TestHistorySearchPageTruncatesProvenanceToPane(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 60, Height: 18}
+	request = page.HandleKey(request, keyMsg("/")).Request
+	request = page.HandleKey(request, keyMsg("x")).Request
+	request = page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter}).Request
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{
+		SessionID: "ses_long", Date: "2026-07-01", Provider: "codex", Project: "/a/very/long/project/path/that/should/not/overflow/the/pane",
+		Snippet: "said " + marked("x") + " implement",
+	}}}}, nil)
+	for index, line := range strings.Split(page.View(pageContext(request)), "\n") {
+		if width := lipgloss.Width(line); width > ContentWidth(request.Width) {
+			t.Fatalf("line %d width=%d exceeds pane=%d:\n%s", index+1, width, ContentWidth(request.Width), page.View(pageContext(request)))
+		}
+	}
+}
+
+func TestHistorySearchSelectedHighlightKeepsBoldSuffix(t *testing.T) {
+	terminal, dark := true, true
+	render := theme.Resolve(theme.ResolveOptions{
+		Output: &bytes.Buffer{}, ForceTerminal: &terminal, Width: 80, ForceColor: true,
+		Dark: &dark, LookupEnv: func(string) (string, bool) { return "", false },
+	})
+	plain := render.Palette.Emphasis().Bold(true)
+	match := plain.Underline(true)
+	value := highlightSnippet("before "+marked("match")+" after", plain, match)
+	if !strings.Contains(value, plain.Render(" after")) {
+		t.Fatalf("selected suffix lost its bold style: %q", value)
+	}
+}
+
+func TestHistorySearchEvidenceFrames(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	model := loadedTestModel()
+	model.router = newRouter(page)
+	if !model.router.Select(HistorySearchPageID) {
+		t.Fatal("history search page was not registered")
+	}
+	page.query = "do not implement"
+	page.searched = true
+	page.warnings = []string{"History index is stale; run `tokenomnom history index` to refresh it."}
+	page.hits = []SearchHit{
+		{
+			SessionID: "ses_7f2a", Provider: "codex", Date: "2026-08-01",
+			Project: "/Users/janiorvalle/Documents/github/tokenomnom",
+			Snippet: "said " + marked("do not implement") + " until the provenance view is ready",
+		},
+		{
+			SessionID: "ses_4b19", Provider: "claude", Date: "2026-07-31",
+			Project: "/Users/janiorvalle/Documents/github/another-long-project-name",
+			Snippet: "another " + marked("do not implement") + " result",
+		},
+	}
+	page.hasMore = true
+	model.request.HistoryQuery = page.query
+
+	model.request.Width, model.request.Height = 100, 30
+	model.render = evidenceRender(100)
+	full := evidenceText(model.View())
+	if !strings.Contains(full, "<ESC>") || !strings.Contains(full, "do not implement") {
+		t.Fatalf("styled full cockpit evidence is missing ANSI output or highlighted text:\n%s", full)
+	}
+
+	model.request.Width, model.request.Height = 60, 18
+	model.render = evidenceRender(60)
+	narrow := evidenceText(model.View())
+	if !strings.Contains(narrow, "FIND IN HISTORY") || !strings.Contains(narrow, "History index is stale") {
+		t.Fatalf("narrow cockpit evidence is incomplete:\n%s", narrow)
+	}
+
+	stateRequest := Request{Width: 60, Height: 18, HistoryQuery: "do not implement", PageLoadToken: "1"}
+	loadingPage := NewHistorySearchPage(HistorySearchOptions{})
+	loadingPage.query, loadingPage.searched, loadingPage.loading = stateRequest.HistoryQuery, true, true
+	loading := evidenceText(loadingPage.View(PageContext{
+		Render: model.render, Request: stateRequest, Width: ContentWidth(stateRequest.Width), Height: ContentHeight(stateRequest.Height),
+	}))
+	errorPage := NewHistorySearchPage(HistorySearchOptions{})
+	errorPage.query, errorPage.searched = stateRequest.HistoryQuery, true
+	errorPage.BeginLoad(stateRequest)
+	errorPage.Apply(stateRequest, nil, errors.New("database is locked"))
+	error := evidenceText(errorPage.View(PageContext{
+		Render: model.render, Request: stateRequest, Width: ContentWidth(stateRequest.Width), Height: ContentHeight(stateRequest.Height),
+	}))
+	if !strings.Contains(loading, "Searching local history") || !strings.Contains(error, "History search is unavailable") {
+		t.Fatalf("loading/error evidence is incomplete:\nloading=%s\nerror=%s", loading, error)
+	}
+	t.Logf("Command: go test -v ./internal/tui -run TestHistorySearch -count=1\n\n-- full cockpit 100x30 --\n%s\n\n-- narrow cockpit 60x18 --\n%s\n\n-- loading state --\n%s\n\n-- error state --\n%s", full, narrow, loading, error)
+}
+
 func TestHistorySearchPageCancelsStaleExportWhenOpeningDetail(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_1", Snippet: "prompt"}}}}, nil)
 	export := page.HandleKey(request, keyMsg("e"))
 	if !export.Changed || export.Request.HistoryExportID != "ses_1" {
 		t.Fatalf("export start = %+v", export)
 	}
 	duplicate := page.HandleKey(export.Request, keyMsg("e"))
-	if duplicate.Changed || duplicate.Action != tui.PageActionNone {
+	if duplicate.Changed || duplicate.Action != PageActionNone {
 		t.Fatalf("duplicate export was scheduled: %+v", duplicate)
 	}
 	open := page.HandleKey(export.Request, tea.KeyMsg{Type: tea.KeyEnter})
@@ -161,7 +277,7 @@ func TestHistorySearchPageCancelsStaleExportWhenOpeningDetail(t *testing.T) {
 
 func TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{
 		{SessionID: "ses_1", Snippet: "first"},
 		{SessionID: "ses_1", Snippet: "second"},
@@ -170,7 +286,7 @@ func TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport(t *test
 	moved := page.HandleKey(first.Request, tea.KeyMsg{Type: tea.KeyDown})
 	second := page.HandleKey(moved.Request, keyMsg("e"))
 	if first.Request.HistoryExportToken == second.Request.HistoryExportToken {
-		t.Fatalf("export attempts reused token: first=%+v second=%+v", first.Request, second.Request)
+		t.Fatalf("export attempts reused the same attempt value: %q", first.Request.HistoryExportToken)
 	}
 	page.ApplyExport(first.Request, "/tmp/stale", nil)
 	if !strings.Contains(page.View(pageContext(second.Request)), "Exporting session") {
@@ -184,16 +300,16 @@ func TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport(t *test
 
 func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	request = page.HandleKey(request, keyMsg("/")).Request
 	for _, current := range "do" {
 		request = page.HandleKey(request, keyMsg(string(current))).Request
 	}
 	request = page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter}).Request
 	older := request
-	older.HistoryLoadToken = "1"
+	older.PageLoadToken = "1"
 	newer := request
-	newer.HistoryLoadToken = "2"
+	newer.PageLoadToken = "2"
 	page.BeginLoad(newer)
 	page.Apply(older, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "old", Snippet: "old result"}}}}, nil)
 	if strings.Contains(page.View(pageContext(newer)), "old result") {
@@ -207,11 +323,11 @@ func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 
 func TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
-	request := tui.Request{Width: 100, Height: 30}
+	request := Request{Width: 100, Height: 30}
 	edit := page.HandleKey(request, keyMsg("/"))
 	request = edit.Request
 	batched := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
-	if batched.Action != tui.PageActionNone || batched.Request.HistoryQuery != "enter" || !page.Editing() {
+	if batched.Action != PageActionNone || batched.Request.HistoryQuery != "enter" || !page.Editing() {
 		t.Fatalf("batched text became a command: %+v", batched)
 	}
 	spaced := page.HandleKey(batched.Request, tea.KeyMsg{Type: tea.KeySpace})
@@ -254,14 +370,22 @@ func TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues(t *testing
 	}
 }
 
-func pageContext(request tui.Request) tui.PageContext {
-	return tui.PageContext{Render: theme.Context{Mode: theme.Plain, Width: request.Width, Palette: theme.NewPalette(nil)}, Request: request}
-}
-
-func keyMsg(value string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+func pageContext(request Request) PageContext {
+	return PageContext{Render: theme.Context{Mode: theme.Plain, Width: request.Width, Palette: theme.NewPalette(nil)}, Request: request}
 }
 
 func marked(value string) string {
 	return string(history.SearchSnippetMatchStart) + value + string(history.SearchSnippetMatchEnd)
+}
+
+func evidenceRender(width int) theme.Context {
+	terminal, dark := true, true
+	return theme.Resolve(theme.ResolveOptions{
+		Output: &bytes.Buffer{}, ForceTerminal: &terminal, Width: width, ForceColor: true,
+		Dark: &dark, LookupEnv: func(string) (string, bool) { return "", false },
+	})
+}
+
+func evidenceText(value string) string {
+	return strings.ReplaceAll(value, "\x1b", "<ESC>")
 }

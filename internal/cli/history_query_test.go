@@ -11,7 +11,7 @@ import (
 func TestHistorySearchPageReportsMissingIndexWithoutCreatingIt(t *testing.T) {
 	t.Setenv("TOKENOMNOM_STATE_DIR", t.TempDir())
 	command := NewRootCommand()
-	data, err := loadHistorySearchPage(command, tui.Request{Width: 100, Height: 30})
+	data, err := loadHistorySearchPage(command, tui.Request{Width: 100, Height: 30, HistoryQuery: "prompt"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,5 +26,13 @@ func TestHistorySearchJSONPageKeepsBracketSnippetContract(t *testing.T) {
 	}}})
 	if page.Hits[0].Snippet != "[match]" {
 		t.Fatalf("JSON snippet = %q", page.Hits[0].Snippet)
+	}
+}
+
+func TestHistoryExportDirectoryNameIsDeterministic(t *testing.T) {
+	first := historyExportDirectoryName("ses_example")
+	second := historyExportDirectoryName("ses_example")
+	if first == "" || first != second || first == historyExportDirectoryName("ses_other") {
+		t.Fatalf("export directory names are not stable: %q %q", first, second)
 	}
 }

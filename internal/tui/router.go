@@ -51,7 +51,8 @@ type Page interface {
 	Section() PageSection
 	Title() string
 	View(PageContext) string
-	Update(Request, string) (Request, bool)
+	Update(PageContext, string) (Request, bool)
+	NeedsReload(PageContext, Request) bool
 }
 
 // PageAction tells the app whether a handled key needs background work.
@@ -112,13 +113,6 @@ type snapshotPage struct {
 	keyHandler pageKeyHandler
 }
 
-// contextualPage can inspect the current snapshot before handling a key. The
-// original Page.Update contract stays small for existing report pages, while
-// interactive pages can open detail views without duplicating data elsewhere.
-type contextualPage interface {
-	UpdateContext(PageContext, string) (Request, bool)
-}
-
 func (p snapshotPage) ID() PageID           { return p.id }
 func (p snapshotPage) Section() PageSection { return p.section }
 func (p snapshotPage) Title() string        { return p.title }
@@ -130,12 +124,14 @@ func (p snapshotPage) View(context PageContext) string {
 	return context.Snapshot.Views[p.viewIndex]
 }
 
-func (p snapshotPage) Update(request Request, key string) (Request, bool) {
+func (p snapshotPage) Update(context PageContext, key string) (Request, bool) {
 	if p.keyHandler == nil {
-		return request, false
+		return context.Request, false
 	}
-	return p.keyHandler(request, key)
+	return p.keyHandler(context.Request, key)
 }
+
+func (snapshotPage) NeedsReload(PageContext, Request) bool { return true }
 
 type ledgerPage struct{}
 
@@ -149,11 +145,9 @@ func (ledgerPage) View(context PageContext) string {
 	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
 }
 
-func (ledgerPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
-}
+func (ledgerPage) NeedsReload(PageContext, Request) bool { return true }
 
-func (ledgerPage) UpdateContext(context PageContext, key string) (Request, bool) {
+func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
 	if key == "left" || key == "right" {
 		return context.Request, false
 	}
@@ -192,12 +186,14 @@ type dailyPage struct {
 	snapshotPage
 }
 
-func (dailyPage) UpdateContext(context PageContext, key string) (Request, bool) {
+func (dailyPage) Update(context PageContext, key string) (Request, bool) {
 	if key == "down" && context.Request.DailyDetailOffset >= max(0, context.Snapshot.DailyDetailMaxOffset) {
 		return context.Request, false
 	}
 	return updateDailyPage(context.Request, key)
 }
+
+func (dailyPage) NeedsReload(PageContext, Request) bool { return true }
 
 type sessionsPage struct{}
 
@@ -218,12 +214,16 @@ func (sessionsPage) View(context PageContext) string {
 	}, context.Width, context.Height)
 }
 
-func (sessionsPage) Update(request Request, key string) (Request, bool) {
-	return updateSessionsRequest(request, tuipages.SessionPageData{}, key)
+func (sessionsPage) Update(context PageContext, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(context, key)
 }
 
-func (sessionsPage) UpdateContext(context PageContext, key string) (Request, bool) {
-	return updateSessionsRequestWithContext(context, key)
+func (sessionsPage) NeedsReload(context PageContext, request Request) bool {
+	return context.Request.SessionProject != request.SessionProject ||
+		context.Request.SessionProjectActive != request.SessionProjectActive ||
+		context.Request.SessionCursor != request.SessionCursor ||
+		context.Request.SessionCursorStack != request.SessionCursorStack ||
+		context.Request.SessionDetailID != request.SessionDetailID
 }
 
 func updateSessionsRequest(request Request, data tuipages.SessionPageData, key string) (Request, bool) {

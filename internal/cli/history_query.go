@@ -20,25 +20,36 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
 	"github.com/janiorvalle/tokenomnom/internal/tui/pages"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
 const maxHistoryRawJSONBytes int64 = 64 << 20
 
-func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *pages.HistorySearchPage {
-	return pages.NewHistorySearchPage(pages.HistorySearchOptions{
+func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.HistorySearchPage {
+	var cache dashboardHistorySearchCache
+	return tui.NewHistorySearchPage(tui.HistorySearchOptions{
 		Load: func(request tui.Request) (pages.HistorySearchData, error) {
-			return loadHistorySearchPage(cmd, request)
+			return cache.snapshot(request, func() (pages.HistorySearchData, error) {
+				return loadHistorySearchPage(cmd, request, codexDir, claudeDir)
+			})
 		},
 		Export: func(request tui.Request) (string, error) {
 			return exportHistorySearch(cmd, request, codexDir, claudeDir)
 		},
+		ReportError: func(err error) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "tokenomnom history search: %v\n", err)
+		},
 	})
 }
 
-func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.HistorySearchData, error) {
+func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string) (pages.HistorySearchData, error) {
+	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
+		return pages.HistorySearchData{}, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return pages.HistorySearchData{}, fmt.Errorf("find user home directory: %w", err)
@@ -54,6 +65,7 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.Histo
 	if !info.Exists {
 		return pages.HistorySearchData{NotIndexed: true}, nil
 	}
+	freshnessWarnings := historySearchFreshnessWarnings(cmd, path, codexDir, claudeDir, home)
 	database, err := historystore.OpenReadOnly(path)
 	if err != nil {
 		return pages.HistorySearchData{}, err
@@ -61,7 +73,9 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.Histo
 	defer database.Close()
 	location, _ := historyPresentationTimezone(cmd)
 	if request.HistorySessionID != "" {
-		return loadHistorySessionPage(database, request.HistorySessionID, location)
+		data, err := loadHistorySessionPage(database, request.HistorySessionID, location)
+		data.Search.Warnings = append(data.Search.Warnings, freshnessWarnings...)
+		return data, err
 	}
 	data := pages.HistorySearchData{}
 	if strings.TrimSpace(request.HistoryQuery) == "" {
@@ -75,7 +89,8 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.Histo
 		return pages.HistorySearchData{}, err
 	}
 	presentHistorySearchPage(&result, location)
-	data.Search.HasMore, data.Search.Warnings = result.Page.HasMore, append([]string(nil), result.Warnings...)
+	data.Search.HasMore = result.Page.HasMore
+	data.Search.Warnings = append(append([]string(nil), result.Warnings...), freshnessWarnings...)
 	data.Search.Hits = make([]pages.SearchHit, 0, len(result.Hits))
 	for _, hit := range result.Hits {
 		data.Search.Hits = append(data.Search.Hits, pages.SearchHit{
@@ -86,13 +101,26 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.Histo
 	return data, nil
 }
 
+func historySearchFreshnessWarnings(cmd *cobra.Command, path, codexDir, claudeDir, home string) []string {
+	roots, err := resolveRoots(cmd, codexDir, claudeDir, home)
+	if err != nil {
+		return []string{"History freshness could not be checked; run `tokenomnom history status` for details."}
+	}
+	drift := historyfreshness.Probe(path, configuredHistoryRoots(cmd, roots), nil)
+	warnings := append([]string(nil), drift.Warnings...)
+	if drift.SettledChangedSources > 0 || drift.SettledNewSources > 0 {
+		warnings = append(warnings, "History index is stale; run `tokenomnom history index` to refresh it.")
+	}
+	return warnings
+}
+
 func loadHistorySessionPage(database *historystore.Store, sessionID string, location *time.Location) (pages.HistorySearchData, error) {
 	session, err := database.GetSession(sessionID)
 	if err != nil {
 		return pages.HistorySearchData{}, err
 	}
 	prompts, err := database.SessionPrompts(sessionID, historystore.PromptQuery{
-		Role: "user", Source: historystore.CatalogSourceAny, Limit: 12, IncludeText: true,
+		Role: "user", Source: historystore.CatalogSourceAny, IncludeText: true,
 	})
 	if err != nil {
 		return pages.HistorySearchData{}, err
@@ -100,9 +128,10 @@ func loadHistorySessionPage(database *historystore.Store, sessionID string, loca
 	presentHistorySession(&session, location)
 	presentHistoryPromptPage(&prompts, location)
 	detail := &pages.SessionDetail{
-		SessionID: session.SessionID, Provider: string(session.Provider), Project: session.Project,
+		SessionID: session.SessionID, Provider: string(session.Provider), Project: session.Project, ProjectSource: string(session.ProjectSource),
 		FirstDate: historyPageDate(session.FirstTimestamp), LastDate: historyPageDate(session.LastTimestamp),
-		Preview: safePrettyPreview(session.Preview), Prompts: make([]pages.SessionPrompt, 0, len(prompts.Prompts)),
+		Preview: safePrettyPreview(session.Preview), PromptCount: session.LogicalPromptCount, OccurrenceCount: session.OccurrenceCount,
+		HasMore: prompts.Page.HasMore, Prompts: make([]pages.SessionPrompt, 0, len(prompts.Prompts)),
 	}
 	for _, prompt := range prompts.Prompts {
 		detail.Prompts = append(detail.Prompts, pages.SessionPrompt{
@@ -119,17 +148,17 @@ func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, clau
 	if request.HistoryExportID == "" {
 		return "", errors.New("select a history result before exporting")
 	}
-	workingDirectory, err := os.Getwd()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("find current directory for history export: %w", err)
+		return "", fmt.Errorf("find user home directory for history export: %w", err)
 	}
-	outputRoot := filepath.Join(workingDirectory, "tokenomnom-history")
-	if err := os.MkdirAll(outputRoot, 0o700); err != nil {
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		return "", fmt.Errorf("find state directory for history export: %w", err)
+	}
+	outputDirectory := filepath.Join(stateDir, "history-exports", historyExportDirectoryName(request.HistoryExportID))
+	if err := os.MkdirAll(outputDirectory, 0o700); err != nil {
 		return "", fmt.Errorf("create history export directory: %w", err)
-	}
-	outputDirectory, err := os.MkdirTemp(outputRoot, "export-")
-	if err != nil {
-		return "", fmt.Errorf("create unique history export directory: %w", err)
 	}
 	codexRoot, claudeRoot := codexDir, claudeDir
 	exportCommand := newHistoryExportCommand(&codexRoot, &claudeRoot)
@@ -140,12 +169,21 @@ func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, clau
 	exportCommand.SetArgs([]string{
 		request.HistoryExportID,
 		"--out", outputDirectory + string(os.PathSeparator),
+		"--force",
 	})
 	if err := exportCommand.Execute(); err != nil {
-		_ = os.RemoveAll(outputDirectory)
-		return "", err
+		details := strings.TrimSpace(output.String())
+		if details != "" {
+			return "", fmt.Errorf("history export failed: %w: %s", err, details)
+		}
+		return "", fmt.Errorf("history export failed: %w", err)
 	}
 	return outputDirectory, nil
+}
+
+func historyExportDirectoryName(sessionID string) string {
+	digest := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(digest[:])
 }
 
 func historyPageDate(value *string) string {

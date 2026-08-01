@@ -162,8 +162,9 @@ type helpEntry struct {
 }
 
 func (m Model) helpEntries() []helpEntry {
-	entries := make([]helpEntry, 0, len(keyRegistry))
-	for _, binding := range keyRegistry {
+	bindings := helpBindings()
+	entries := make([]helpEntry, 0, len(bindings))
+	for _, binding := range bindings {
 		entries = append(entries, helpEntry{
 			display:     keyBindingDisplay(binding, len(m.router.Pages())),
 			description: binding.Description,
@@ -190,4 +191,18 @@ func (m Model) helpEntries() []helpEntry {
 		compact = append(compact, entries[index])
 	}
 	return compact
+}
+
+func helpBindings() []KeyBinding {
+	bindings := make([]KeyBinding, 0, len(keyRegistry)-1)
+	for _, binding := range keyRegistry {
+		if binding.Display == "e" {
+			continue
+		}
+		if binding.Display == "enter" {
+			binding.Description += " · e export"
+		}
+		bindings = append(bindings, binding)
+	}
+	return bindings
 }

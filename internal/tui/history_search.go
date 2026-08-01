@@ -1,4 +1,4 @@
-package pages
+package tui
 
 import (
 	"errors"
@@ -11,97 +11,67 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
-	"github.com/janiorvalle/tokenomnom/internal/tui"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 // HistorySearchPageID is the stable sidebar identity for local prompt search.
-const HistorySearchPageID tui.PageID = "history-search"
+const HistorySearchPageID PageID = "history-search"
 
-// SearchHit is the small, presentation-ready result shape used by the page.
-// The CLI adapter deliberately keeps storage types out of the TUI package.
-type SearchHit struct {
-	PromptID  string
-	SessionID string
-	Provider  string
-	Date      string
-	Project   string
-	Snippet   string
-}
-
-// SearchResult contains one bounded search response.
-type SearchResult struct {
-	Hits     []SearchHit
-	HasMore  bool
-	Warnings []string
-}
-
-// SessionPrompt is one prompt preview in the selected session.
-type SessionPrompt struct {
-	PromptID string
-	Date     string
-	Snippet  string
-}
-
-// SessionDetail is the bounded session view opened from a search result.
-type SessionDetail struct {
-	SessionID string
-	Provider  string
-	Project   string
-	FirstDate string
-	LastDate  string
-	Preview   string
-	Prompts   []SessionPrompt
-}
-
-// HistorySearchData is returned by the CLI-owned history loader.
-type HistorySearchData struct {
-	NotIndexed bool
-	Search     SearchResult
-	Session    *SessionDetail
-}
+type SearchHit = tuipages.SearchHit
+type SearchResult = tuipages.SearchResult
+type SessionPrompt = tuipages.SessionPrompt
+type SessionDetail = tuipages.SessionDetail
+type HistorySearchData = tuipages.HistorySearchData
 
 // HistorySearchOptions supplies storage operations without coupling the page
 // to the history database or to CLI command state.
 type HistorySearchOptions struct {
-	Load   func(tui.Request) (HistorySearchData, error)
-	Export func(tui.Request) (string, error)
+	Load        func(Request) (HistorySearchData, error)
+	Export      func(Request) (string, error)
+	ReportError func(error)
 }
 
 // HistorySearchPage is the interactive local-history search destination.
 type HistorySearchPage struct {
-	load   func(tui.Request) (HistorySearchData, error)
-	export func(tui.Request) (string, error)
+	load        func(Request) (HistorySearchData, error)
+	export      func(Request) (string, error)
+	reportError func(error)
 
-	query         string
-	sessionID     string
-	hits          []SearchHit
-	hasMore       bool
-	warnings      []string
-	detail        *SessionDetail
-	notIndexed    bool
-	loading       bool
-	inputMode     bool
-	exporting     bool
-	errorText     string
-	exportText    string
-	exportID      string
-	exportToken   string
-	exportAttempt uint64
-	loadToken     string
+	query           string
+	sessionID       string
+	hits            []SearchHit
+	hasMore         bool
+	warnings        []string
+	detail          *SessionDetail
+	notIndexed      bool
+	searched        bool
+	loading         bool
+	inputMode       bool
+	exporting       bool
+	errorText       string
+	exportText      string
+	exportID        string
+	exportAttemptID string
+	exportAttempt   uint64
+	loadToken       string
 }
 
 // NewHistorySearchPage creates the page without opening the history index.
 func NewHistorySearchPage(options HistorySearchOptions) *HistorySearchPage {
-	return &HistorySearchPage{load: options.Load, export: options.Export}
+	return &HistorySearchPage{load: options.Load, export: options.Export, reportError: options.ReportError}
 }
 
-func (p *HistorySearchPage) ID() tui.PageID           { return HistorySearchPageID }
-func (p *HistorySearchPage) Section() tui.PageSection { return tui.HistorySection }
-func (p *HistorySearchPage) Title() string            { return "Search" }
+func (p *HistorySearchPage) ID() PageID           { return HistorySearchPageID }
+func (p *HistorySearchPage) Section() PageSection { return HistorySection }
+func (p *HistorySearchPage) Title() string        { return "Search" }
 
 // View renders either the query results or the selected session detail.
-func (p *HistorySearchPage) View(context tui.PageContext) string {
-	width := max(1, tui.ContentWidth(context.Request.Width))
+func (p *HistorySearchPage) View(context PageContext) string {
+	width := context.Width
+	if width <= 0 {
+		width = ContentWidth(context.Request.Width)
+	}
+	width = max(1, width)
 	if p.sessionID != "" {
 		return p.detailView(width, context)
 	}
@@ -116,26 +86,48 @@ func (p *HistorySearchPage) Editing() bool {
 
 // BeginLoad records the request generation on the update loop before a
 // background history query starts.
-func (p *HistorySearchPage) BeginLoad(request tui.Request) {
-	p.loadToken = request.HistoryLoadToken
+func (p *HistorySearchPage) BeginLoad(request Request) {
+	p.loadToken = request.PageLoadToken
 }
 
 // Update preserves the base Page contract for page-command dispatch.
-func (p *HistorySearchPage) Update(request tui.Request, key string) (tui.Request, bool) {
-	result := p.HandleKey(request, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+func (p *HistorySearchPage) Update(context PageContext, key string) (Request, bool) {
+	keyRunes := []rune(key)
+	if len(keyRunes) != 1 {
+		return context.Request, false
+	}
+	result := p.HandleKey(context.Request, tea.KeyMsg{Type: tea.KeyRunes, Runes: keyRunes})
 	return result.Request, result.Handled && result.Changed
 }
 
+func (p *HistorySearchPage) NeedsReload(PageContext, Request) bool { return false }
+
 // HandleKey owns text entry and result navigation while leaving global keys
 // such as ? and ctrl+c to the dashboard.
-func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.PageKeyResult {
+func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyResult {
 	if request.HistoryQuery != p.query {
 		p.query = request.HistoryQuery
 	}
 	value := key.String()
-	result := tui.PageKeyResult{Request: request}
+	result := PageKeyResult{Request: request}
+	if p.inputMode && key.Type != tea.KeyRunes && key.Type != tea.KeySpace {
+		switch value {
+		case "enter", "esc", "backspace", "ctrl+u":
+		default:
+			result.Handled = true
+			return result
+		}
+	}
 	switch value {
 	case "up":
+		if p.sessionID != "" {
+			result.Handled = true
+			if result.Request.SessionDetailOffset > 0 {
+				result.Request.SessionDetailOffset--
+				result.Changed = true
+			}
+			return result
+		}
 		if key.Type == tea.KeyRunes {
 			break
 		}
@@ -150,6 +142,12 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 		}
 		return result
 	case "down":
+		if p.sessionID != "" {
+			result.Handled = true
+			result.Request.SessionDetailOffset++
+			result.Changed = true
+			return result
+		}
 		if key.Type == tea.KeyRunes {
 			break
 		}
@@ -164,6 +162,14 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 		}
 		return result
 	case "home":
+		if p.sessionID != "" {
+			result.Handled = true
+			if result.Request.SessionDetailOffset != 0 {
+				result.Request.SessionDetailOffset = 0
+				result.Changed = true
+			}
+			return result
+		}
 		if key.Type == tea.KeyRunes {
 			break
 		}
@@ -178,6 +184,12 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 		}
 		return result
 	case "end":
+		if p.sessionID != "" {
+			result.Handled = true
+			result.Request.SessionDetailOffset = int(^uint(0) >> 1)
+			result.Changed = true
+			return result
+		}
 		if key.Type == tea.KeyRunes {
 			break
 		}
@@ -201,8 +213,9 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 				return result
 			}
 			p.inputMode = false
+			p.searched = true
 			p.loading = true
-			result.Changed, result.Action = true, tui.PageActionLoad
+			result.Changed, result.Action = true, PageActionLoad
 			return result
 		}
 		if p.sessionID != "" || len(p.hits) == 0 {
@@ -216,9 +229,10 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 		p.errorText = ""
 		p.clearExport()
 		result.Request.HistorySessionID = p.sessionID
+		result.Request.SessionDetailOffset = 0
 		result.Request.HistoryExportID = ""
 		result.Request.HistoryExportToken = ""
-		result.Changed, result.Action = true, tui.PageActionLoad
+		result.Changed, result.Action = true, PageActionLoad
 		return result
 	case "esc":
 		if key.Type == tea.KeyRunes {
@@ -233,9 +247,10 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 			p.errorText = ""
 			p.clearExport()
 			result.Request.HistorySessionID = ""
+			result.Request.SessionDetailOffset = 0
 			result.Request.HistoryExportID = ""
 			result.Request.HistoryExportToken = ""
-			result.Changed, result.Action = true, tui.PageActionLoad
+			result.Changed, result.Action = true, PageActionLoad
 			return result
 		}
 		if request.HistoryQuery != "" {
@@ -335,17 +350,20 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 		p.exporting, p.exportText, p.errorText = true, "", ""
 		p.exportID = target
 		p.exportAttempt++
-		p.exportToken = strconv.FormatUint(p.exportAttempt, 10)
+		p.exportAttemptID = strconv.FormatUint(p.exportAttempt, 10)
+		attemptID := p.exportAttemptID
 		result.Request.HistoryExportID = target
-		result.Request.HistoryExportToken = p.exportToken
-		result.Changed, result.Action = true, tui.PageActionExport
+		result.Request.HistoryExportToken = attemptID
+		result.Changed, result.Action = true, PageActionExport
 		return result
 	}
 
+	if p.inputMode {
+		result.Handled = true
+	}
 	if !isPrintableKey(key) || p.sessionID != "" || !p.inputMode {
 		return result
 	}
-	result.Handled = true
 	result.Request.HistoryQuery += printableKeyText(key)
 	result.Request.HistorySelect = 0
 	result.Request.HistorySessionID = ""
@@ -357,17 +375,21 @@ func (p *HistorySearchPage) HandleKey(request tui.Request, key tea.KeyMsg) tui.P
 }
 
 // Load executes the storage callback outside the Bubble Tea update loop.
-func (p *HistorySearchPage) Load(request tui.Request) (any, error) {
+func (p *HistorySearchPage) Load(request Request) (any, error) {
 	if p.load == nil {
 		return nil, errors.New("history search loader is unavailable")
 	}
-	return p.load(request)
+	data, err := p.load(request)
+	if err != nil && p.reportError != nil {
+		p.reportError(err)
+	}
+	return data, err
 }
 
 // Apply installs only the response for the current query/session. This keeps
 // a slower older search from replacing a newer result after rapid typing.
-func (p *HistorySearchPage) Apply(request tui.Request, value any, err error) {
-	if request.HistoryLoadToken != p.loadToken || request.HistoryQuery != p.query || request.HistorySessionID != p.sessionID {
+func (p *HistorySearchPage) Apply(request Request, value any, err error) {
+	if request.PageLoadToken != p.loadToken || request.HistoryQuery != p.query || request.HistorySessionID != p.sessionID {
 		return
 	}
 	p.loading = false
@@ -384,6 +406,9 @@ func (p *HistorySearchPage) Apply(request tui.Request, value any, err error) {
 	}
 	p.errorText, p.exportText = "", ""
 	p.notIndexed = data.NotIndexed
+	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) != "" {
+		p.searched = true
+	}
 	p.warnings = append([]string(nil), data.Search.Warnings...)
 	p.hasMore = data.Search.HasMore
 	p.hits = append([]SearchHit(nil), data.Search.Hits...)
@@ -391,24 +416,28 @@ func (p *HistorySearchPage) Apply(request tui.Request, value any, err error) {
 }
 
 // Export writes the selected session through the CLI-owned callback.
-func (p *HistorySearchPage) Export(request tui.Request) (string, error) {
+func (p *HistorySearchPage) Export(request Request) (string, error) {
 	if p.export == nil {
 		return "", errors.New("history export is unavailable")
 	}
 	if request.HistoryExportID == "" {
 		return "", errors.New("select a history result before exporting")
 	}
-	return p.export(request)
+	path, err := p.export(request)
+	if err != nil && p.reportError != nil {
+		p.reportError(err)
+	}
+	return path, err
 }
 
 // ApplyExport records a user-facing receipt for the completed export.
-func (p *HistorySearchPage) ApplyExport(request tui.Request, path string, err error) {
-	if request.HistoryExportID != p.exportID || request.HistoryExportToken != p.exportToken {
+func (p *HistorySearchPage) ApplyExport(request Request, path string, err error) {
+	if request.HistoryExportID != p.exportID || request.HistoryExportToken != p.exportAttemptID {
 		return
 	}
 	p.exporting = false
 	p.exportID = ""
-	p.exportToken = ""
+	p.exportAttemptID = ""
 	if err != nil {
 		p.errorText = "Export failed. Check the history index and try again."
 		return
@@ -416,7 +445,7 @@ func (p *HistorySearchPage) ApplyExport(request tui.Request, path string, err er
 	p.errorText, p.exportText = "", "Exported to "+path
 }
 
-func (p *HistorySearchPage) exportTarget(request tui.Request) string {
+func (p *HistorySearchPage) exportTarget(request Request) string {
 	if request.HistorySessionID != "" {
 		return request.HistorySessionID
 	}
@@ -431,7 +460,7 @@ func (p *HistorySearchPage) clearExport() {
 	p.exporting = false
 	p.exportText = ""
 	p.exportID = ""
-	p.exportToken = ""
+	p.exportAttemptID = ""
 }
 
 func (p *HistorySearchPage) beginSearch(query string) {
@@ -445,7 +474,7 @@ func (p *HistorySearchPage) resetSearch() {
 	p.hasMore = false
 	p.warnings = nil
 	p.detail = nil
-	p.notIndexed = false
+	p.searched = false
 	p.loading = false
 	p.errorText = ""
 	p.exportText = ""
@@ -453,10 +482,10 @@ func (p *HistorySearchPage) resetSearch() {
 	p.exportID = ""
 }
 
-func (p *HistorySearchPage) searchView(width int, context tui.PageContext) string {
+func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 	lines := []string{
 		context.Render.Palette.Header().Render("FIND IN HISTORY"),
-		context.Render.Palette.Subtle().Render("Search your indexed prompts by exact phrase."),
+		context.Render.Palette.Subtle().Render(truncateText("Search your indexed prompts by exact phrase.", width)),
 		"",
 		context.Render.Palette.Subtle().Render("SEARCH ") + context.Render.Palette.Emphasis().Render("/"+oneLine(p.query)+"█"),
 		context.Render.Palette.Border().Render(strings.Repeat("─", min(width, 40))),
@@ -471,13 +500,13 @@ func (p *HistorySearchPage) searchView(width int, context tui.PageContext) strin
 		)
 	case p.errorText != "":
 		lines = append(lines, context.Render.Palette.Warning().Render(p.errorText))
-	case p.query == "":
-		lines = append(lines, context.Render.Palette.Subtle().Render("Type a phrase to search local session history."))
+	case !p.searched:
+		lines = append(lines, context.Render.Palette.Subtle().Render(truncateText("Press enter to search.", width)))
 	case len(p.hits) == 0:
 		lines = append(lines, context.Render.Palette.Subtle().Render("No matching prompts."))
 	default:
 		selectedIndex := min(max(context.Request.HistorySelect, 0), len(p.hits)-1)
-		visibleCount := max(1, (tui.ContentHeight(context.Request.Height)-10)/2)
+		visibleCount := max(1, (ContentHeight(context.Request.Height)-10)/2)
 		start := max(0, selectedIndex-visibleCount+1)
 		end := min(len(p.hits), start+visibleCount)
 		if start > 0 {
@@ -493,16 +522,22 @@ func (p *HistorySearchPage) searchView(width int, context tui.PageContext) strin
 				style = context.Render.Palette.Emphasis().Bold(true)
 			}
 			snippet := truncateText(oneLine(hit.Snippet), max(1, width-3))
-			lines = append(lines, prefix+style.Render(highlightSnippet(snippet, context.Render.Palette)))
+			plainStyle := style
+			matchStyle := context.Render.Palette.Emphasis()
+			if selected {
+				matchStyle = style.Underline(true)
+			}
+			lines = append(lines, prefix+highlightSnippet(snippet, plainStyle, matchStyle))
 			project := oneLine(hit.Project)
 			if project == "" {
 				project = "unknown project"
 			}
 			metadata := oneLine(hit.Date) + " · " + oneLine(hit.Provider) + " · " + project
+			metadata = truncateText(metadata, max(1, width-4))
 			lines = append(lines, "    "+context.Render.Palette.Subtle().Render(metadata))
 		}
 		if end < len(p.hits) || p.hasMore {
-			lines = append(lines, context.Render.Palette.Subtle().Render("More results are available in `tokenomnom history search`."))
+			lines = append(lines, context.Render.Palette.Subtle().Render(truncateText("More results are available in `tokenomnom history search`.", width)))
 		}
 	}
 	lines = appendPageStatus(lines, context.Render, p.warnings, p.exporting, p.exportText)
@@ -516,42 +551,47 @@ func (p *HistorySearchPage) searchView(width int, context tui.PageContext) strin
 	return strings.Join(lines, "\n")
 }
 
-func (p *HistorySearchPage) detailView(width int, context tui.PageContext) string {
-	lines := []string{
-		context.Render.Palette.Header().Render("SESSION DETAIL"),
-		context.Render.Palette.Subtle().Render(oneLine(p.sessionID)),
-		"",
-	}
+func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 	if p.loading {
-		lines = append(lines, context.Render.Palette.Subtle().Render("Loading session…"))
-	} else if p.errorText != "" {
-		lines = append(lines, context.Render.Palette.Warning().Render(p.errorText))
-	} else if p.detail == nil {
-		lines = append(lines, context.Render.Palette.Subtle().Render("No session detail is available."))
-	} else {
-		project := oneLine(p.detail.Project)
-		if project == "" {
-			project = "unknown project"
-		}
-		lines = append(lines,
-			context.Render.Palette.Subtle().Render("PROVENANCE ")+oneLine(p.detail.Provider)+" · "+project,
-			context.Render.Palette.Subtle().Render("DATE ")+oneLine(p.detail.FirstDate)+" → "+oneLine(p.detail.LastDate),
-		)
-		if p.detail.Preview != "" {
-			lines = append(lines, "", truncateText(oneLine(p.detail.Preview), max(1, width)))
-		}
-		lines = append(lines, "", context.Render.Palette.Header().Render("PROMPTS"))
-		if len(p.detail.Prompts) == 0 {
-			lines = append(lines, context.Render.Palette.Subtle().Render("No indexed prompts in this session."))
-		}
-		for _, prompt := range p.detail.Prompts {
-			line := oneLine(prompt.Date) + "  " + oneLine(prompt.Snippet)
-			lines = append(lines, truncateText(line, max(1, width)))
-		}
+		return strings.Join([]string{
+			context.Render.Palette.Header().Render("SESSION DETAIL"),
+			context.Render.Palette.Subtle().Render(oneLine(p.sessionID)),
+			"",
+			context.Render.Palette.Subtle().Render("Loading session…"),
+			"",
+			context.Render.Palette.Subtle().Render("esc back to search  e export"),
+		}, "\n")
 	}
-	lines = appendPageStatus(lines, context.Render, p.warnings, p.exporting, p.exportText)
-	lines = append(lines, "", context.Render.Palette.Subtle().Render("esc back  e export"))
-	return strings.Join(lines, "\n")
+	if p.errorText != "" || p.detail == nil {
+		message := p.errorText
+		if message == "" {
+			message = "No session detail is available."
+		}
+		return strings.Join([]string{
+			context.Render.Palette.Header().Render("SESSION DETAIL"),
+			context.Render.Palette.Subtle().Render(oneLine(p.sessionID)),
+			"",
+			context.Render.Palette.Warning().Render(truncateText(oneLine(message), width)),
+			"",
+			context.Render.Palette.Subtle().Render("esc back to search  e export"),
+		}, "\n")
+	}
+	notices := make([]string, 0, 4)
+	notices = append(notices, "esc back to search  e export")
+	if p.exportText != "" {
+		notices = append(notices, p.exportText)
+	}
+	if p.exporting {
+		notices = append(notices, "Exporting session…")
+	}
+	if len(p.warnings) > 0 {
+		notices = append(notices, "Index note: "+p.warnings[0])
+	}
+	height := context.Height
+	if height <= 0 {
+		height = ContentHeight(context.Request.Height)
+	}
+	return tuipages.RenderHistorySearchSessionDetail(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, notices)
 }
 
 func appendPageStatus(lines []string, render theme.Context, warnings []string, exporting bool, exported string) []string {
@@ -567,32 +607,24 @@ func appendPageStatus(lines []string, render theme.Context, warnings []string, e
 	return lines
 }
 
-func highlightSnippet(value string, palette interface {
-	Emphasis() lipgloss.Style
-}) string {
+func highlightSnippet(value string, plainStyle, matchStyle lipgloss.Style) string {
 	var result strings.Builder
 	var plain, match strings.Builder
 	inMatch := false
 	flushPlain := func() {
 		if plain.Len() > 0 {
-			result.WriteString(plain.String())
+			result.WriteString(plainStyle.Render(plain.String()))
 			plain.Reset()
 		}
 	}
 	flushMatch := func() {
 		if match.Len() > 0 {
-			result.WriteString(palette.Emphasis().Render(match.String()))
+			result.WriteString(matchStyle.Render(match.String()))
 			match.Reset()
 		}
 	}
 	for _, current := range value {
 		switch current {
-		case '[':
-			if inMatch {
-				match.WriteRune(current)
-			} else {
-				plain.WriteRune(current)
-			}
 		case history.SearchSnippetMatchStart:
 			if inMatch {
 				match.WriteRune(current)
@@ -671,21 +703,7 @@ func truncateText(value string, width int) string {
 	return string(runes) + "…"
 }
 
-func max(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
-}
-
-func min(left, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
-var _ tui.InteractivePage = (*HistorySearchPage)(nil)
-var _ tui.PageLoader = (*HistorySearchPage)(nil)
-var _ tui.PageLoadTracker = (*HistorySearchPage)(nil)
-var _ tui.PageExporter = (*HistorySearchPage)(nil)
+var _ InteractivePage = (*HistorySearchPage)(nil)
+var _ PageLoader = (*HistorySearchPage)(nil)
+var _ PageLoadTracker = (*HistorySearchPage)(nil)
+var _ PageExporter = (*HistorySearchPage)(nil)

@@ -89,12 +89,12 @@ type Request struct {
 	SessionDetailID      string
 	SessionDetailOffset  int
 	Sync                 bool
+	PageLoadToken        string
 	HistoryQuery         string
 	HistorySelect        int
 	HistorySessionID     string
 	HistoryExportID      string
 	HistoryExportToken   string
-	HistoryLoadToken     string
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -230,6 +230,7 @@ type Model struct {
 	syncInFlight             bool
 	syncCompletionGeneration uint64
 	pageLoadAttempt          uint64
+	pageLoadTokens           map[PageID]string
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -258,6 +259,7 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 		router:  newRouter(pages...),
 		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
 		loading: true, started: time.Now(),
+		pageLoadTokens: make(map[PageID]string),
 	}
 }
 
@@ -297,9 +299,13 @@ func (m Model) loadPageCmd(page PageLoader, request Request) tea.Cmd {
 
 func (m Model) startPageLoad(page PageLoader, request Request) (Model, tea.Cmd) {
 	m.pageLoadAttempt++
-	request.HistoryLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
+	request.PageLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
 	commandRequest := request
 	request.Sync = false
+	if m.pageLoadTokens == nil {
+		m.pageLoadTokens = make(map[PageID]string)
+	}
+	m.pageLoadTokens[page.ID()] = commandRequest.PageLoadToken
 	if tracker, ok := page.(PageLoadTracker); ok {
 		tracker.BeginLoad(commandRequest)
 	}
@@ -377,7 +383,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
 	case pageLoadedMsg:
-		if msg.request.HistoryLoadToken != m.request.HistoryLoadToken {
+		if m.pageLoadTokens[msg.id] != msg.request.PageLoadToken {
 			return m, nil
 		}
 		m.syncing = false
@@ -606,7 +612,9 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		command := m.loadCmd(request)
 		if page := m.activePage(); page != nil {
 			if loader, ok := page.(PageLoader); ok {
-				return m.startPageLoad(loader, request)
+				var pageCommand tea.Cmd
+				m, pageCommand = m.startPageLoad(loader, request)
+				return m, tea.Batch(command, pageCommand)
 			}
 		}
 		return m, command
@@ -619,22 +627,17 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 			Render: m.render, Snapshot: m.snapshot, Request: m.request,
 			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
 		}
-		request, changed := m.updatePage(context, page, value)
+		request, changed := page.Update(context, value)
 		if !changed {
 			return m, nil
 		}
 		m.request = request
-		command := m.loadCmd(m.request)
-		return m, command
+		if !page.NeedsReload(context, request) {
+			return m, nil
+		}
+		return m, m.loadCmd(m.request)
 	}
 	return m, nil
-}
-
-func (m Model) updatePage(context PageContext, page Page, key string) (Request, bool) {
-	if contextual, ok := page.(contextualPage); ok {
-		return contextual.UpdateContext(context, key)
-	}
-	return page.Update(context.Request, key)
 }
 
 func (m *Model) navigatePages(key string) bool {

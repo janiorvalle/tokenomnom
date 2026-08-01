@@ -327,6 +327,37 @@ type dashboardSessionCache struct {
 	initialized bool
 }
 
+// dashboardHistorySearchCache keeps repeated page visits from reopening the
+// history index. Sync is the refresh boundary so a search can still see newly
+// indexed prompts after an explicit refresh.
+type dashboardHistorySearchCache struct {
+	mu          sync.Mutex
+	key         dashboardHistorySearchCacheKey
+	data        tuipages.HistorySearchData
+	err         error
+	initialized bool
+}
+
+type dashboardHistorySearchCacheKey struct {
+	query     string
+	sessionID string
+}
+
+func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh func() (tuipages.HistorySearchData, error)) (tuipages.HistorySearchData, error) {
+	key := dashboardHistorySearchCacheKey{query: request.HistoryQuery, sessionID: request.HistorySessionID}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync && cache.key == key {
+		return cache.data, cache.err
+	}
+	data, err := refresh()
+	if err != nil {
+		return data, err
+	}
+	cache.data, cache.err, cache.key, cache.initialized = data, nil, key, true
+	return cache.data, nil
+}
+
 type dashboardSessionCacheKey struct {
 	provider      tui.Provider
 	dateRange     tui.Range

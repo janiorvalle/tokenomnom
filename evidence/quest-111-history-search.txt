@@ -1,5 +1,9 @@
+Command: go test -v ./internal/tui -run TestHistorySearch -count=1
+
+=== RUN   TestHistorySearchArrowKeysStayInInput
+--- PASS: TestHistorySearchArrowKeysStayInInput (0.00s)
 === RUN   TestHistorySearchPageInputResultsDetailAndExport
-    history_search_test.go:65:
+    history_search_test.go:67:
         -- search --
         FIND IN HISTORY
         Search your indexed prompts by exact phrase.
@@ -12,25 +16,35 @@
             2026-07-02 · claude · other
 
         ↑/↓  enter open  e export  / edit  esc
-    history_search_test.go:101:
+    history_search_test.go:103:
         -- detail --
         SESSION DETAIL
         ses_2
 
-        PROVENANCE claude · other
-        DATE 2026-07-02 → 2026-07-03
 
-        another prompt
-
-        PROMPTS
-        2026-07-02  another prompt
-
+        esc back to search e export
         Exported to /tmp/tokenomnom-history
 
-        esc back  e export
+        FIRST PROMPT
+          another prompt
+
+        OVERVIEW
+        PROVIDER          claude
+        PROJECT           other (unknown)
+        FIRST             2026-07-02
+        LAST              2026-07-03
+        PROMPTS           0 logical
+        OCCURRENCES       0 indexed
+        THREAD            ( confidence)
+
+        PROVENANCE
+        PREFERRED         unknown
+        PROVIDER FILES    0 live · 0 archive
+        VAULT SNAPSHOTS   0 available
+        ↓ more below
 --- PASS: TestHistorySearchPageInputResultsDetailAndExport (0.00s)
 === RUN   TestHistorySearchPageShowsIndexHint
-    history_search_test.go:133:
+    history_search_test.go:135:
         -- missing index --
         FIND IN HISTORY
         Search your indexed prompts by exact phrase.
@@ -42,6 +56,89 @@
 
         / edit
 --- PASS: TestHistorySearchPageShowsIndexHint (0.00s)
+=== RUN   TestHistorySearchPageKeepsMissingIndexHintWhileEditing
+--- PASS: TestHistorySearchPageKeepsMissingIndexHintWhileEditing (0.00s)
+=== RUN   TestHistorySearchPageReportsLoaderErrors
+--- PASS: TestHistorySearchPageReportsLoaderErrors (0.00s)
+=== RUN   TestHistorySearchPageTruncatesProvenanceToPane
+--- PASS: TestHistorySearchPageTruncatesProvenanceToPane (0.00s)
+=== RUN   TestHistorySearchSelectedHighlightKeepsBoldSuffix
+--- PASS: TestHistorySearchSelectedHighlightKeepsBoldSuffix (0.00s)
+=== RUN   TestHistorySearchEvidenceFrames
+    history_search_test.go:249: Command: go test -v ./internal/tui -run TestHistorySearch -count=1
+
+        -- full cockpit 100x30 --
+         <ESC>[1;38;2;243;243;246mtokenomnom<ESC>[0m<ESC>[38;2;156;163;175m  /  <ESC>[0m<ESC>[1;38;2;165;179;252mSEARCH<ESC>[0m                                                        <ESC>[38;2;156;163;175mLOCAL  ·  ALL  ·  30D<ESC>[0m
+         <ESC>[38;2;156;163;175mTOTAL <ESC>[0m<ESC>[1;38;2;110;231;183m$1.00<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mTOKENS <ESC>[0m<ESC>[1;38;2;165;179;252m100<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mACTIVE DAYS <ESC>[0m<ESC>[1;38;2;165;179;252m2<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mAVG/DAY <ESC>[0m<ESC>[1;38;2;110;231;183m$0.50<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mPEAK <ESC>[0m<ESC>[1;38;2;110;231;183m$1.00<ESC>[0m
+         <ESC>[1;38;2;243;243;246mSPEND<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;243;243;246mFIND IN HISTORY<ESC>[0m
+         <ESC>[38;2;156;163;175m1  Daily<ESC>[0m         <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mSearch your indexed prompts by exact phrase.<ESC>[0m
+         <ESC>[38;2;156;163;175m2  Monthly<ESC>[0m       <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175m3  Models<ESC>[0m        <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mSEARCH <ESC>[0m<ESC>[1;38;2;165;179;252m/do not implement█<ESC>[0m
+         <ESC>[38;2;156;163;175m4  Heatmap<ESC>[0m       <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;55;65;81m────────────────────────────────────────<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m  › <ESC>[1;38;2;165;179;252msaid <ESC>[0m<ESC>[1;4;38;2;165;179;252;4md<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mo<ESC>[0m<ESC>[38;2;165;179;252;4m <ESC>[0m<ESC>[1;4;38;2;165;179;252;4mn<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mo<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mt<ESC>[0m<ESC>[38;2;165;179;252;4m <ESC>[0m<ESC>[1;4;38;2;165;179;252;4mi<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mm<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mp<ESC>[0m<ESC>[1;4;38;2;165;179;252;4ml<ESC>[0m<ESC>[1;4;38;2;165;179;252;4me<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mm<ESC>[0m<ESC>[1;4;38;2;165;179;252;4me<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mn<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mt<ESC>[0m<ESC>[1;38;2;165;179;252m until the provenance view is ready<ESC>[0m
+         <ESC>[1;38;2;243;243;246mHISTORY<ESC>[0m          <ESC>[38;2;55;65;81m│<ESC>[0m      <ESC>[38;2;156;163;175m2026-08-01 · codex · /Users/janiorvalle/Documents/github/tokenomnom<ESC>[0m
+         <ESC>[38;2;156;163;175m5  Sessions<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m    <ESC>[38;2;156;163;175manother <ESC>[0m<ESC>[1;38;2;165;179;252mdo not implement<ESC>[0m<ESC>[38;2;156;163;175m result<ESC>[0m
+         <ESC>[1;38;2;165;179;252m› 6  Search<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m      <ESC>[38;2;156;163;175m2026-07-31 · claude · /Users/janiorvalle/Documents/github/another-long-pr…<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mMore results are available in `tokenomnom history search`.<ESC>[0m
+         <ESC>[1;38;2;243;243;246mFILTERS<ESC>[0m          <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175mprovider<ESC>[0m         <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `tokenomnom history index` to refresh <ESC>[0m
+         <ESC>[38;2;156;163;175m  all<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175mrange<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+         <ESC>[38;2;156;163;175m  30d<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175m● idle<ESC>[0m
+         <ESC>[38;2;55;65;81m──────────────────────────────────────────────────────────────────────────────────────────────────<ESC>[0m
+         <ESC>[38;2;243;243;246mtab<ESC>[0m <ESC>[38;2;156;163;175mviews<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mp<ESC>[0m <ESC>[38;2;156;163;175mprovider<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mr<ESC>[0m <ESC>[38;2;156;163;175mrange<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mR<ESC>[0m <ESC>[38;2;156;163;175mrefresh<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246m?<ESC>[0m <ESC>[38;2;156;163;175mhelp<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mq<ESC>[0m <ESC>[38;2;156;163;175mquit<ESC>[0m
+         <ESC>[38;2;156;163;175mAPI list-price equivalents, not actual bills<ESC>[0m
+
+        -- narrow cockpit 60x18 --
+         <ESC>[1;38;2;243;243;246mtokenomnom<ESC>[0m<ESC>[38;2;156;163;175m  /  <ESC>[0m<ESC>[1;38;2;165;179;252mSEARCH<ESC>[0m                <ESC>[38;2;156;163;175mLOCAL  ·  ALL  ·  30D<ESC>[0m
+         <ESC>[38;2;156;163;175mTOTAL <ESC>[0m<ESC>[1;38;2;110;231;183m$1.00<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mTOKENS <ESC>[0m<ESC>[1;38;2;165;179;252m100<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mACTIVE DAYS <ESC>[0m<ESC>[1;38;2;165;179;252m2<ESC>[0m<ESC>[38;2;156;163;175m  ·  <ESC>[0m<ESC>[38;2;156;163;175mAVG/DAY <ESC>[0m<ESC>[1;38;2;110;231;183m$<ESC>[0m<ESC>[38;2;156;163;175m<ESC>[0m<ESC>[38;2;156;163;175m<ESC>[0m<ESC>[1;38;2;110;231;183m<ESC>[0m
+         <ESC>[1;38;2;243;243;246mSPEND<ESC>[0m        <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;243;243;246mFIND IN HISTORY<ESC>[0m
+         <ESC>[38;2;156;163;175m1  Daily<ESC>[0m     <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mSearch your indexed prompts by exact phra…<ESC>[0m
+         <ESC>[38;2;156;163;175m2  Monthly<ESC>[0m   <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175m3  Models<ESC>[0m    <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mSEARCH <ESC>[0m<ESC>[1;38;2;165;179;252m/do not implement█<ESC>[0m
+         <ESC>[38;2;156;163;175m4  Heatmap<ESC>[0m   <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;55;65;81m────────────────────────────────────────<ESC>[0m
+                      <ESC>[38;2;55;65;81m│<ESC>[0m  › <ESC>[1;38;2;165;179;252msaid <ESC>[0m<ESC>[1;4;38;2;165;179;252;4md<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mo<ESC>[0m<ESC>[38;2;165;179;252;4m <ESC>[0m<ESC>[1;4;38;2;165;179;252;4mn<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mo<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mt<ESC>[0m<ESC>[38;2;165;179;252;4m <ESC>[0m<ESC>[1;4;38;2;165;179;252;4mi<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mm<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mp<ESC>[0m<ESC>[1;4;38;2;165;179;252;4ml<ESC>[0m<ESC>[1;4;38;2;165;179;252;4me<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mm<ESC>[0m<ESC>[1;4;38;2;165;179;252;4me<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mn<ESC>[0m<ESC>[1;4;38;2;165;179;252;4mt<ESC>[0m<ESC>[1;38;2;165;179;252m until the prov…<ESC>[0m
+         <ESC>[1;38;2;243;243;246mHISTORY<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m      <ESC>[38;2;156;163;175m2026-08-01 · codex · /Users/janiorval…<ESC>[0m
+         <ESC>[38;2;156;163;175m5  Sessions<ESC>[0m  <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mMore results are available in `tokenomnom…<ESC>[0m
+         <ESC>[1;38;2;165;179;252m› 6  Search<ESC>[0m  <ESC>[38;2;55;65;81m│<ESC>[0m
+                      <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `t<ESC>[0m
+         <ESC>[1;38;2;243;243;246mFILTERS<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m
+         <ESC>[38;2;156;163;175mprovider<ESC>[0m     <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+         <ESC>[38;2;156;163;175m● idle<ESC>[0m
+         <ESC>[38;2;55;65;81m──────────────────────────────────────────────────────────<ESC>[0m
+         <ESC>[38;2;243;243;246mtab<ESC>[0m <ESC>[38;2;156;163;175mviews<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mp<ESC>[0m <ESC>[38;2;156;163;175mprov<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mr<ESC>[0m <ESC>[38;2;156;163;175mrange<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mR<ESC>[0m <ESC>[38;2;156;163;175mrefresh<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246m?<ESC>[0m <ESC>[38;2;156;163;175mhelp<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mq<ESC>[0m <ESC>[38;2;156;163;175mquit<ESC>[0m
+         <ESC>[38;2;156;163;175mAPI list-price equivalents, not actual bills<ESC>[0m
+
+        -- loading state --
+        <ESC>[1;38;2;243;243;246mFIND IN HISTORY<ESC>[0m
+        <ESC>[38;2;156;163;175mSearch your indexed prompts by exact phra…<ESC>[0m
+
+        <ESC>[38;2;156;163;175mSEARCH <ESC>[0m<ESC>[1;38;2;165;179;252m/do not implement█<ESC>[0m
+        <ESC>[38;2;55;65;81m────────────────────────────────────────<ESC>[0m
+        <ESC>[38;2;156;163;175mSearching local history…<ESC>[0m
+
+        <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+
+        -- error state --
+        <ESC>[1;38;2;243;243;246mFIND IN HISTORY<ESC>[0m
+        <ESC>[38;2;156;163;175mSearch your indexed prompts by exact phra…<ESC>[0m
+
+        <ESC>[38;2;156;163;175mSEARCH <ESC>[0m<ESC>[1;38;2;165;179;252m/do not implement█<ESC>[0m
+        <ESC>[38;2;55;65;81m────────────────────────────────────────<ESC>[0m
+        <ESC>[1;38;2;251;191;36mHistory search is unavailable. Try again.<ESC>[0m
+
+        <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+--- PASS: TestHistorySearchEvidenceFrames (0.00s)
 === RUN   TestHistorySearchPageCancelsStaleExportWhenOpeningDetail
 --- PASS: TestHistorySearchPageCancelsStaleExportWhenOpeningDetail (0.00s)
 === RUN   TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport
@@ -51,16 +148,21 @@
 === RUN   TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues
 --- PASS: TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/tui/pages	0.005s
-=== RUN   TestAdditionalPageOwnsAsyncLoads
---- PASS: TestAdditionalPageOwnsAsyncLoads (0.00s)
-=== RUN   TestHelpStillAllowsQuit
---- PASS: TestHelpStillAllowsQuit (0.00s)
-=== RUN   TestEditingPageDoesNotLoseGlobalNavigation
---- PASS: TestEditingPageDoesNotLoseGlobalNavigation (0.00s)
-PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.005s
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.009s
+
+Command: go test -v ./internal/cli -run 'TestHistorySearch|TestHistoryExport' -count=1
+
 === RUN   TestHistorySearchPageReportsMissingIndexWithoutCreatingIt
 --- PASS: TestHistorySearchPageReportsMissingIndexWithoutCreatingIt (0.00s)
+=== RUN   TestHistorySearchJSONPageKeepsBracketSnippetContract
+--- PASS: TestHistorySearchJSONPageKeepsBracketSnippetContract (0.00s)
+=== RUN   TestHistoryExportDirectoryNameIsDeterministic
+--- PASS: TestHistoryExportDirectoryNameIsDeterministic (0.00s)
+=== RUN   TestHistorySearchShowPromptsStatsAndRawEndToEnd
+--- PASS: TestHistorySearchShowPromptsStatsAndRawEndToEnd (0.04s)
+=== RUN   TestHistoryExportFullSessionTreeDestinationsAndRawBytes
+--- PASS: TestHistoryExportFullSessionTreeDestinationsAndRawBytes (0.20s)
+=== RUN   TestHistoryExportDirectoryTargetUsesPlatformSeparators
+--- PASS: TestHistoryExportDirectoryTargetUsesPlatformSeparators (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.009s
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.246s

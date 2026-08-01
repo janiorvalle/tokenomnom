@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,40 @@ func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
 	data = cache.snapshot(request, refresh)
 	if data.Warning != "four" || calls != 4 {
 		t.Fatalf("post-sync session snapshot = %+v calls=%d", data, calls)
+	}
+}
+
+func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
+	cache := dashboardHistorySearchCache{}
+	calls := 0
+	refresh := func() (tuipages.HistorySearchData, error) {
+		calls++
+		return tuipages.HistorySearchData{Search: tuipages.SearchResult{Warnings: []string{fmt.Sprintf("load-%d", calls)}}}, nil
+	}
+	request := tui.Request{HistoryQuery: "do not implement"}
+
+	data, err := cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-1" || calls != 1 {
+		t.Fatalf("initial search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-1" || calls != 1 {
+		t.Fatalf("cached search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.HistorySessionID = "ses_example"
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-2" || calls != 2 {
+		t.Fatalf("session detail snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-3" || calls != 3 {
+		t.Fatalf("sync search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = false
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-3" || calls != 3 {
+		t.Fatalf("post-sync cached search snapshot = %+v err=%v calls=%d", data, err, calls)
 	}
 }
 

@@ -367,7 +367,7 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
 	model.request.Width, model.request.Height = 100, 30
 	model.loading, model.loaded = false, true
-	updated, command := model.Update(keyMsg("5"))
+	updated, command := model.Update(keyMsg("6"))
 	model = updated.(Model)
 	if model.activePage().ID() != page.id || command == nil {
 		t.Fatalf("page selection active=%v command=%v", model.activePage(), command != nil)
@@ -382,8 +382,15 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if command == nil {
 		t.Fatal("page refresh did not schedule a page load")
 	}
-	updated, _ = model.Update(command())
-	model = updated.(Model)
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("page refresh commands = %T %v, want two commands", message, batch)
+	}
+	for _, refreshCommand := range batch {
+		updated, _ = model.Update(refreshCommand())
+		model = updated.(Model)
+	}
 	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
 		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
 	}
@@ -445,7 +452,7 @@ func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 	footer := model.footerHintsView(newCockpitLayout(model.request.Width, model.request.Height).innerWidth)
 	model = updateKeyForTest(t, model, "?")
 	help := model.View()
-	for _, binding := range KeyBindings() {
+	for _, binding := range helpBindings() {
 		if binding.Footer != "" && !strings.Contains(footer, binding.FooterKey+" "+binding.Footer) {
 			t.Errorf("footer missing %q binding: %s", binding.FooterKey, footer)
 		}
@@ -453,6 +460,9 @@ func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 		if !strings.Contains(help, display) || !strings.Contains(help, binding.Description) {
 			t.Errorf("help missing registry binding %q / %q:\n%s", display, binding.Description, help)
 		}
+	}
+	if !strings.Contains(help, "e export") {
+		t.Fatalf("help omitted the export shortcut:\n%s", help)
 	}
 }
 
@@ -815,6 +825,22 @@ func TestSkillOfferCheckWaitsForInitialData(t *testing.T) {
 	}
 }
 
+func TestHistorySearchArrowKeysStayInInput(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	model := loadedTestModel()
+	model.router = newRouter(page)
+	if !model.router.Select(HistorySearchPageID) {
+		t.Fatal("history search page was not registered")
+	}
+
+	model = updateKeyForTest(t, model, "/")
+	model = updateKeyForTest(t, model, "d")
+	model = updateKeyForTest(t, model, "left")
+	if model.request.HistoryQuery != "d" || !page.Editing() {
+		t.Fatalf("arrow key changed query or focus: query=%q editing=%v", model.request.HistoryQuery, page.Editing())
+	}
+}
+
 func TestSkillOfferFitsMinimumTerminal(t *testing.T) {
 	model := offerTestModel(nil, nil)
 	model.request.Width, model.request.Height = minimumWidth, minimumHeight
@@ -916,9 +942,10 @@ func (p testPage) Title() string        { return p.title }
 func (p testPage) View(PageContext) string {
 	return p.title
 }
-func (p testPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
+func (p testPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
 }
+func (p testPage) NeedsReload(PageContext, Request) bool { return true }
 
 func testSessionPageData() tuipages.SessionPageData {
 	return tuipages.SessionPageData{
@@ -946,9 +973,10 @@ func (p *asyncTestPage) Title() string        { return p.title }
 func (p *asyncTestPage) View(PageContext) string {
 	return p.title
 }
-func (p *asyncTestPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
+func (p *asyncTestPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
 }
+func (p *asyncTestPage) NeedsReload(PageContext, Request) bool { return true }
 func (p *asyncTestPage) Load(request Request) (any, error) {
 	p.loads++
 	p.loadedRequest = request
@@ -972,9 +1000,10 @@ func (p *interactiveTestPage) Title() string        { return p.title }
 func (p *interactiveTestPage) View(PageContext) string {
 	return p.title
 }
-func (p *interactiveTestPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
+func (p *interactiveTestPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
 }
+func (p *interactiveTestPage) NeedsReload(PageContext, Request) bool { return true }
 func (p *interactiveTestPage) HandleKey(request Request, key tea.KeyMsg) PageKeyResult {
 	p.lastKey = key.String()
 	return PageKeyResult{Request: request, Handled: true}
