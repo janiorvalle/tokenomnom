@@ -1,0 +1,30 @@
+ tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D
+ TOTAL $0.18  ·  TOKENS 206,910  ·  ACTIVE DAYS 3  ·  AVG/DAY $0.06  ·  PEAK $0.18
+ VIEWS            │  ■ Codex  ■ Claude  cost/day
+                  │   $0.18       ██████
+ › 1  Daily       │               ██████
+ 2  Monthly       │               ██████
+ 3  Models        │               ██████
+ 4  Heatmap       │               ██████
+                  │   $0.00       ██████
+ FILTERS          │          31     01     03
+ provider         │        Jan 2026 – Feb 2026
+   all            │  DATE         TOKENS   COST
+ range            │  2026-01-31    1,100      —
+   30d            │  2026-02-01  205,350  $0.18
+                  │  2026-02-03      460      —
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+                  │
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+ tab views · p provider · r range · R refresh · ? help · q quit · synced · 0s ago
+ API list-price equivalents, not actual bills

@@ -28,8 +28,14 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Cards[0].Value != "$0.18" || snapshot.Cards[1].Value != "206,910" || snapshot.Cards[2].Value != "3" || snapshot.Cards[3].Value != "gpt-5.2" {
-		t.Fatalf("dashboard cards = %+v", snapshot.Cards)
+	metrics := snapshot.Summary.Metrics
+	if metrics[0].Value != "$0.18" || metrics[1].Value != "206,910" || metrics[2].Value != "3" || metrics[3].Value != "$0.06" || metrics[4].Value != "$0.18" {
+		t.Fatalf("dashboard summary = %+v", metrics)
+	}
+	for index, metric := range metrics {
+		if metric.Label != "" {
+			t.Errorf("dashboard summary metric %d supplies label %q; TUI owns summary labels", index, metric.Label)
+		}
 	}
 	for index, fragments := range [][]string{{"cost/day", "DATE"}, {"cost/month", "MONTH"}, {"PROVIDER", "MODEL"}, {"Less", "active days"}} {
 		for _, fragment := range fragments {
@@ -43,8 +49,8 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if codex.Cards[1].Value != "206,100" || strings.Contains(codex.Views[tui.ModelsTab], "Claude") {
-		t.Fatalf("provider filter did not apply: cards=%+v\n%s", codex.Cards, codex.Views[tui.ModelsTab])
+	if codex.Summary.Metrics[1].Value != "206,100" || strings.Contains(codex.Views[tui.ModelsTab], "Claude") {
+		t.Fatalf("provider filter did not apply: summary=%+v\n%s", codex.Summary.Metrics, codex.Views[tui.ModelsTab])
 	}
 }
 

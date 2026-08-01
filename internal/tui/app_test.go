@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"strings"
@@ -15,12 +16,12 @@ import (
 func TestUpdateNavigationFiltersAndHelp(t *testing.T) {
 	model := loadedTestModel()
 	model = updateKeyForTest(t, model, "tab")
-	if model.tab != MonthlyTab {
-		t.Fatalf("tab = %v", model.tab)
+	if model.router.ActiveIndex() != int(MonthlyTab) {
+		t.Fatalf("active page index = %d", model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "4")
-	if model.tab != HeatmapTab {
-		t.Fatalf("number tab = %v", model.tab)
+	if model.router.ActiveIndex() != int(HeatmapTab) {
+		t.Fatalf("number page index = %d", model.router.ActiveIndex())
 	}
 	model = updateKeyForTest(t, model, "p")
 	if model.request.Provider != CodexProvider {
@@ -50,18 +51,18 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	if model.request.DailyOffset != -7 {
 		t.Fatalf("daily offset = %d", model.request.DailyOffset)
 	}
-	model.tab = MonthlyTab
+	model.router.SelectIndex(int(MonthlyTab))
 	model = updateKeyForTest(t, model, "left")
 	if model.request.MonthlyOffset != -1 {
 		t.Fatalf("monthly offset = %d", model.request.MonthlyOffset)
 	}
-	model.tab = ModelsTab
+	model.router.SelectIndex(int(ModelsTab))
 	model = updateKeyForTest(t, model, "s")
 	model = updateKeyForTest(t, model, "down")
 	if model.request.ModelSort != 1 || model.request.ModelOffset != 1 {
 		t.Fatalf("model navigation = %+v", model.request)
 	}
-	model.tab = HeatmapTab
+	model.router.SelectIndex(int(HeatmapTab))
 	model = updateKeyForTest(t, model, "y")
 	model = updateKeyForTest(t, model, "right")
 	if model.request.HeatmapYear || model.request.HeatmapOffset != 1 {
@@ -105,12 +106,171 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 func TestEveryViewRendersStructure(t *testing.T) {
 	model := loadedTestModel()
 	for tab := Tab(0); tab < tabCount; tab++ {
-		model.tab = tab
+		model.router.SelectIndex(int(tab))
+		page := model.router.ActivePage()
 		view := model.View()
-		for _, fragment := range []string{"TOTAL COST", tabNames[tab], model.snapshot.Views[tab], "API list-price equivalents"} {
+		for _, fragment := range []string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK", page.Title(), model.snapshot.Views[tab], "API list-price equivalents"} {
 			if !strings.Contains(view, fragment) {
-				t.Errorf("%s view missing %q:\n%s", tabNames[tab], fragment, view)
+				t.Errorf("%s view missing %q:\n%s", page.Title(), fragment, view)
 			}
+		}
+	}
+}
+
+func TestQuest107AfterSnapshot(t *testing.T) {
+	model := loadedTestModel()
+	view := model.View()
+	if !strings.Contains(view, "SPEND") {
+		t.Fatalf("snapshot omitted the registered sidebar section:\n%s", view)
+	}
+	t.Log("\n" + view)
+}
+
+func TestCockpitFillsTheWindow(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{100, 30}, {160, 40}} {
+		model := loadedTestModel()
+		model.request.Width, model.request.Height = size.width, size.height
+		lines := strings.Split(model.View(), "\n")
+		if len(lines) != size.height {
+			t.Fatalf("size %dx%d rendered %d lines", size.width, size.height, len(lines))
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("size %dx%d line %d has width %d:\n%s", size.width, size.height, index+1, width, model.View())
+			}
+		}
+
+		terminal, dark := true, true
+		model.render = theme.Resolve(theme.ResolveOptions{
+			Output: &bytes.Buffer{}, ForceTerminal: &terminal, Width: size.width,
+			ForceColor: true, Dark: &dark, LookupEnv: func(string) (string, bool) { return "", false },
+		})
+		styledLines := strings.Split(model.View(), "\n")
+		for index, line := range styledLines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("styled size %dx%d line %d has width %d", size.width, size.height, index+1, width)
+			}
+		}
+	}
+
+	if ContentWidth(160) <= ContentWidth(100) {
+		t.Fatalf("content width does not grow with the terminal: 100=%d 160=%d", ContentWidth(100), ContentWidth(160))
+	}
+}
+
+func TestRouterRegistersSpendPagesAndHidesEmptySections(t *testing.T) {
+	router := newRouter()
+	groups := router.groups()
+	if len(groups) != 1 || groups[0].section != SpendSection {
+		t.Fatalf("default sidebar groups = %+v, want only spend", groups)
+	}
+	if len(groups[0].pages) != int(tabCount) {
+		t.Fatalf("spend pages = %d, want %d", len(groups[0].pages), tabCount)
+	}
+
+	model := loadedTestModel()
+	view := model.View()
+	if !strings.Contains(view, "SPEND") {
+		t.Fatalf("sidebar omitted spend section:\n%s", view)
+	}
+	for _, section := range []string{"HISTORY", "VAULT", "SYSTEM"} {
+		if strings.Contains(view, section) {
+			t.Errorf("empty section %q was rendered:\n%s", section, view)
+		}
+	}
+}
+
+func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
+	pages := newRouter().Pages()
+	pages = append(pages, testPage{id: "history-search", section: HistorySection, title: "Search"})
+	router := newPageRouter(pages...)
+	groups := router.groups()
+	if len(groups) != 2 || groups[1].section != HistorySection || len(groups[1].pages) != 1 {
+		t.Fatalf("later section groups = %+v", groups)
+	}
+	if router.IndexOf("history-search") != int(tabCount) {
+		t.Fatalf("later page index = %d, want %d", router.IndexOf("history-search"), tabCount)
+	}
+	if !router.Select("history-search") || router.ActivePage().Title() != "Search" {
+		t.Fatalf("router did not select later page: active=%v", router.ActivePage())
+	}
+
+	model := loadedTestModel()
+	model.router = newPageRouter(pages...)
+	model = updateKeyForTest(t, model, "5")
+	model = updateKeyForTest(t, model, "?")
+	if model.router.ActivePage().ID() != "history-search" || !strings.Contains(model.View(), "tab / shift+tab / 1-5") {
+		t.Fatalf("numeric later-page navigation failed: active=%v\n%s", model.router.ActivePage(), model.View())
+	}
+}
+
+func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
+	model := loadedTestModel()
+	footer := model.footerHintsView(newCockpitLayout(model.request.Width, model.request.Height).innerWidth)
+	model = updateKeyForTest(t, model, "?")
+	help := model.View()
+	for _, binding := range KeyBindings() {
+		if binding.Footer != "" && !strings.Contains(footer, binding.FooterKey+" "+binding.Footer) {
+			t.Errorf("footer missing %q binding: %s", binding.FooterKey, footer)
+		}
+		display := keyBindingDisplay(binding, len(model.router.Pages()))
+		if !strings.Contains(help, display) || !strings.Contains(help, binding.Description) {
+			t.Errorf("help missing registry binding %q / %q:\n%s", display, binding.Description, help)
+		}
+	}
+}
+
+func TestHelpFitsMinimumTerminal(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width, model.request.Height = minimumWidth, minimumHeight
+	model = updateKeyForTest(t, model, "?")
+	lines := strings.Split(strings.TrimSuffix(model.View(), "\n"), "\n")
+	if len(lines) > minimumHeight {
+		t.Fatalf("help rendered %d lines, want at most %d:\n%s", len(lines), minimumHeight, model.View())
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width > minimumWidth {
+			t.Fatalf("help line %d rendered width %d, want at most %d:\n%s", index+1, width, minimumWidth, model.View())
+		}
+	}
+}
+
+func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
+	model := loadedTestModel()
+	model = updateKeyForTest(t, model, "3")
+	if model.router.ActivePage().ID() != ModelsPageID || model.router.ActiveIndex() != int(ModelsTab) {
+		t.Fatalf("models selection = page %v index %v", model.router.ActivePage().ID(), model.router.ActiveIndex())
+	}
+	model = updateKeyForTest(t, model, "s")
+	if model.request.ModelSort != 1 {
+		t.Fatalf("models page did not handle sort key: %+v", model.request)
+	}
+	model = updateKeyForTest(t, model, "4")
+	model = updateKeyForTest(t, model, "y")
+	if model.router.ActivePage().ID() != HeatmapPageID || !model.request.HeatmapYear {
+		t.Fatalf("heatmap page did not handle year key: page=%v request=%+v", model.router.ActivePage().ID(), model.request)
+	}
+}
+
+func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width, model.request.Height = 60, 18
+	model.warning = "history index is stale: run 'tokenomnom history index' to refresh before searching"
+
+	view := model.View()
+	if !strings.Contains(view, "q quit") {
+		t.Fatalf("quit hint lost under long warning:\n%s", view)
+	}
+	if !strings.Contains(view, "history index is stale") || !strings.Contains(view, "…") {
+		t.Fatalf("long warning was not preserved with truncation:\n%s", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) != 18 {
+		t.Fatalf("warning view rendered %d lines, want 18", len(lines))
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width != 60 {
+			t.Fatalf("warning view line %d has width %d, want 60:\n%s", index+1, width, view)
 		}
 	}
 }
@@ -307,12 +467,13 @@ func loadedTestModel() Model {
 	model.request.Width, model.request.Height = 100, 30
 	model.loading, model.loaded = false, true
 	model.snapshot = Snapshot{
-		Cards: [4]Card{
-			{Label: "TOTAL COST", Value: "$1.00", Kind: CardMoney},
-			{Label: "TOTAL TOKENS", Value: "100"},
-			{Label: "ACTIVE DAYS", Value: "2"},
-			{Label: "TOP MODEL", Value: "model", Kind: CardModel, Provider: "codex"},
-		},
+		Summary: Summary{Metrics: [5]SummaryMetric{
+			{Value: "$1.00", Kind: MetricMoney},
+			{Value: "100"},
+			{Value: "2"},
+			{Value: "$0.50", Kind: MetricMoney},
+			{Value: "$1.00", Kind: MetricMoney},
+		}},
 		Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"},
 	}
 	return model
@@ -349,4 +510,20 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 	}
 	updated, _ := model.Update(message)
 	return updated.(Model)
+}
+
+type testPage struct {
+	id      PageID
+	section PageSection
+	title   string
+}
+
+func (p testPage) ID() PageID           { return p.id }
+func (p testPage) Section() PageSection { return p.section }
+func (p testPage) Title() string        { return p.title }
+func (p testPage) View(PageContext) string {
+	return p.title
+}
+func (p testPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
 }

@@ -30,8 +30,6 @@ const (
 	tabCount
 )
 
-var tabNames = [...]string{"Daily", "Monthly", "Models", "Heatmap"}
-
 // Provider is the dashboard-wide provider filter.
 type Provider uint8
 
@@ -74,39 +72,29 @@ type Request struct {
 	Sync          bool
 }
 
-// CardKind selects the value treatment for one header card.
-type CardKind uint8
+// MetricKind selects the value treatment for one summary metric.
+type MetricKind uint8
 
 const (
-	CardPlain CardKind = iota
-	CardMoney
-	CardModel
+	MetricPlain MetricKind = iota
+	MetricMoney
 )
 
-// Card is one header value.
-type Card struct {
-	Label    string
-	Value    string
-	Kind     CardKind
-	Provider string // provider hue for CardModel values
+// SummaryMetric is one value in the one-line dashboard summary strip.
+type SummaryMetric struct {
+	Label string
+	Value string
+	Kind  MetricKind
 }
 
-// contentMaxWidth bounds the dashboard column: wide enough for a full-year
-// heatmap at two-column cells, narrow enough to stay scannable on wide
-// terminals instead of smearing content across them.
-const contentMaxWidth = 112
-
-// ContentWidth returns the bounded column width for a terminal width.
-func ContentWidth(width int) int {
-	if width <= 0 {
-		return contentMaxWidth
-	}
-	return max(minimumWidth-4, min(width-2, contentMaxWidth))
+// Summary contains the five values that orient every dashboard view.
+type Summary struct {
+	Metrics [5]SummaryMetric
 }
 
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
-	Cards        [4]Card
+	Summary      Summary
 	Views        [4]string
 	Empty        bool
 	FilesScanned int
@@ -173,9 +161,9 @@ type Model struct {
 	loader       Loader
 	offer        SkillOffer
 	spinner      spinner.Model
+	router       PageRouter
 	request      Request
 	snapshot     Snapshot
-	tab          Tab
 	help         bool
 	loading      bool
 	syncing      bool
@@ -201,6 +189,7 @@ func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, prov
 	spin.Style = render.Palette.Emphasis()
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
+		router:  newRouter(),
 		request: Request{Provider: provider, Range: Range30Days, Width: render.Width},
 		loading: true, started: time.Now(),
 	}
@@ -351,72 +340,68 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.offerState != skillOfferHidden {
 		return m.updateSkillOfferKey(value)
 	}
-	if value == "ctrl+c" || value == "q" {
+	binding, ok := keyBindingFor(value, len(m.router.Pages()))
+	if !ok {
+		return m, nil
+	}
+	if binding.Action == keyActionQuit {
 		return m, tea.Quit
 	}
-	if value == "?" {
+	if binding.Action == keyActionToggleHelp {
 		m.help = !m.help
 		return m, nil
 	}
 	if m.help {
 		return m, nil
 	}
-	switch value {
-	case "tab":
-		m.tab = (m.tab + 1) % tabCount
+	switch binding.Action {
+	case keyActionNavigatePages:
+		m.navigatePages(value)
 		return m, nil
-	case "shift+tab":
-		m.tab = (m.tab + tabCount - 1) % tabCount
-		return m, nil
-	case "1", "2", "3", "4":
-		m.tab = Tab(value[0] - '1')
-		return m, nil
-	case "p":
+	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
 		return m, m.loadCmd(m.request)
-	case "r":
+	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
 		return m, m.loadCmd(m.request)
-	case "R":
+	case keyActionRefresh:
 		m.syncing = true
 		request := m.request
 		request.Sync = true
 		return m, m.loadCmd(request)
-	case "s":
-		if m.tab == ModelsTab {
-			m.request.ModelSort = (m.request.ModelSort + 1) % 3
-			m.request.ModelOffset = 0
-			return m, m.loadCmd(m.request)
+	case keyActionPageCommand:
+		page := m.activePage()
+		if page == nil {
+			return m, nil
 		}
-	case "y":
-		if m.tab == HeatmapTab {
-			m.request.HeatmapYear = !m.request.HeatmapYear
-			return m, m.loadCmd(m.request)
+		request, changed := page.Update(m.request, value)
+		if !changed {
+			return m, nil
 		}
-	case "left":
-		m.pan(-1)
-		return m, m.loadCmd(m.request)
-	case "right":
-		m.pan(1)
-		return m, m.loadCmd(m.request)
-	case "up":
-		if m.tab == ModelsTab && m.request.ModelOffset > 0 {
-			m.request.ModelOffset--
-			return m, m.loadCmd(m.request)
-		}
-	case "down":
-		if m.tab == ModelsTab {
-			m.request.ModelOffset++
-			return m, m.loadCmd(m.request)
-		}
-	case "home":
-		m.setOffset(-1000000)
-		return m, m.loadCmd(m.request)
-	case "end":
-		m.setOffset(0)
+		m.request = request
 		return m, m.loadCmd(m.request)
 	}
 	return m, nil
+}
+
+func (m *Model) navigatePages(key string) bool {
+	var changed bool
+	switch key {
+	case "tab":
+		changed = m.router.Move(1)
+	case "shift+tab":
+		changed = m.router.Move(-1)
+	default:
+		if len(key) != 1 || key[0] < '1' || key[0] > '9' {
+			return false
+		}
+		changed = m.router.SelectIndex(int(key[0] - '1'))
+	}
+	return changed
+}
+
+func (m Model) activePage() Page {
+	return m.router.ActivePage()
 }
 
 func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {
@@ -451,29 +436,6 @@ func (m Model) declineSkillOfferAndQuitCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) pan(direction int) {
-	switch m.tab {
-	case DailyTab:
-		m.request.DailyOffset += direction * 7
-	case MonthlyTab:
-		m.request.MonthlyOffset += direction
-	case HeatmapTab:
-		m.request.HeatmapYear = false
-		m.request.HeatmapOffset += direction
-	}
-}
-
-func (m *Model) setOffset(value int) {
-	switch m.tab {
-	case DailyTab:
-		m.request.DailyOffset = value
-	case MonthlyTab:
-		m.request.MonthlyOffset = value
-	case ModelsTab:
-		m.request.ModelOffset = max(0, value)
-	}
-}
-
 // View renders the current immutable model state.
 func (m Model) View() string {
 	if m.request.Width > 0 && m.request.Height > 0 && (m.request.Width < minimumWidth || m.request.Height < minimumHeight) {
@@ -490,26 +452,69 @@ func (m Model) View() string {
 		line := fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
 		return m.place(line)
 	}
-	body := m.snapshot.Views[m.tab]
-	if !strings.HasSuffix(body, "\n") {
-		body += "\n"
-	}
-	column := m.cardsView() + m.tabsView() + body
-	footer := m.footerView()
-	return m.compose(column, footer)
+	return m.cockpitView()
 }
 
-// compose pins the footer to the bottom edge and centers the bounded column.
-func (m Model) compose(column, footer string) string {
-	width := max(m.request.Width, minimumWidth)
-	if m.request.Height > 0 {
-		filler := m.request.Height - lipgloss.Height(column) - lipgloss.Height(footer)
-		if filler > 0 {
-			column += strings.Repeat("\n", filler)
-		}
+func (m Model) cockpitView() string {
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	content := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.railView(layout),
+		strings.Repeat(" ", gridGap),
+		m.contentView(layout),
+	)
+	view := strings.Join([]string{
+		m.topBarView(layout),
+		m.summaryView(layout),
+		content,
+		m.footerView(layout),
+	}, "\n")
+	return frameBlock(view, layout)
+}
+
+func (m Model) topBarView(layout cockpitLayout) string {
+	active := ""
+	if page := m.activePage(); page != nil {
+		active = page.Title()
 	}
-	view := column + footer
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, lipgloss.NewStyle().Width(ContentWidth(m.request.Width)).Render(view))
+	left := m.render.Palette.Header().Render("tokenomnom") +
+		m.render.Palette.Subtle().Render("  /  ") +
+		m.render.Palette.Emphasis().Render(strings.ToUpper(active))
+	right := m.render.Palette.Subtle().Render("LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String()))
+	space := max(2, layout.innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
+	return fitLine(left+strings.Repeat(" ", space)+right, layout.innerWidth)
+}
+
+func (m Model) summaryView(layout cockpitLayout) string {
+	labels := [...]string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK"}
+	parts := make([]string, 0, len(labels))
+	separator := m.render.Palette.Subtle().Render("  ·  ")
+	for index, label := range labels {
+		metric := m.snapshot.Summary.Metrics[index]
+		if metric.Label == "" {
+			metric.Label = label
+		}
+		if metric.Value == "" {
+			metric.Value = "—"
+		}
+		parts = append(parts, m.render.Palette.Subtle().Render(metric.Label+" ")+m.summaryValueStyle(metric).Render(metric.Value))
+	}
+	return fitLine(strings.Join(parts, separator), layout.innerWidth)
+}
+
+func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
+	if metric.Kind == MetricMoney {
+		return m.render.Palette.Money().Bold(true)
+	}
+	return m.render.Palette.Emphasis().Bold(true)
+}
+
+func (m Model) contentView(layout cockpitLayout) string {
+	body := ""
+	if page := m.activePage(); page != nil {
+		body = page.View(PageContext{Render: m.render, Snapshot: m.snapshot, Request: m.request})
+	}
+	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
+	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)
 }
 
 // place centers transient states (loading, too-small) in the full window.
@@ -622,91 +627,6 @@ func splitTextWidth(value string, width int) (string, string) {
 	return string(runes[:end]), string(runes[end:])
 }
 
-const cardGap = 2
-
-func (m Model) cardsView() string {
-	content := ContentWidth(m.request.Width)
-	width := max(14, (content-(len(m.snapshot.Cards)-1)*cardGap)/len(m.snapshot.Cards))
-	parts := make([]string, 0, len(m.snapshot.Cards))
-	for index, card := range m.snapshot.Cards {
-		inner := width - 4 // border + padding
-		value := truncate(card.Value, inner)
-		label := m.render.Palette.Subtle().Render(truncate(card.Label, inner))
-		body := label + "\n" + m.cardValueStyle(card).Render(value)
-		style := m.render.Palette.Border().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(m.render.Palette.BorderColor()).
-			Padding(0, 1).Width(width - 2)
-		if index < len(m.snapshot.Cards)-1 {
-			style = style.MarginRight(cardGap)
-		}
-		parts = append(parts, style.Render(body))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "\n" + m.filtersView() + "\n\n"
-}
-
-func (m Model) cardValueStyle(card Card) lipgloss.Style {
-	switch card.Kind {
-	case CardMoney:
-		return m.render.Palette.Money().Bold(true)
-	case CardModel:
-		if card.Provider != "" {
-			return m.render.Palette.Provider(card.Provider, 0).Bold(true)
-		}
-	}
-	return m.render.Palette.Header()
-}
-
-// filtersView dims default filter values and lifts active ones.
-func (m Model) filtersView() string {
-	provider := m.render.Palette.Subtle().Render(m.request.Provider.String())
-	if m.request.Provider != AllProviders {
-		provider = m.render.Palette.Provider(m.request.Provider.String(), 0).Bold(true).Render(m.request.Provider.String())
-	}
-	dateRange := m.render.Palette.Subtle().Render(m.request.Range.String())
-	if m.request.Range != RangeAll && m.request.Range != Range30Days {
-		dateRange = m.render.Palette.Emphasis().Render(m.request.Range.String())
-	}
-	subtle := m.render.Palette.Subtle()
-	return subtle.Render("provider ") + provider + subtle.Render("  ·  range ") + dateRange
-}
-
-func (m Model) tabsView() string {
-	parts := make([]string, 0, tabCount)
-	for tab := Tab(0); tab < tabCount; tab++ {
-		style := m.render.Palette.Subtle().Padding(0, 1)
-		if tab == m.tab {
-			style = m.render.Palette.Emphasis().Underline(true).Bold(true).Padding(0, 1)
-		}
-		parts = append(parts, style.Render(tabNames[tab]))
-	}
-	rule := m.render.Palette.Border().Render(strings.Repeat("─", ContentWidth(m.request.Width)))
-	return strings.Join(parts, " ") + "\n" + rule + "\n\n"
-}
-
-var footerHints = [...][2]string{
-	{"tab", "views"}, {"p", "provider"}, {"r", "range"},
-	{"R", "refresh"}, {"?", "help"}, {"q", "quit"},
-}
-
-func (m Model) footerView() string {
-	subtle := m.render.Palette.Subtle()
-	parts := make([]string, 0, len(footerHints))
-	for _, hint := range footerHints {
-		parts = append(parts, m.render.Palette.Header().Bold(false).Render(hint[0])+" "+subtle.Render(hint[1]))
-	}
-	line := strings.Join(parts, subtle.Render(" · "))
-	status := m.statusView()
-	switch {
-	case status == "":
-	case lipgloss.Width(line)+lipgloss.Width(status)+3 <= ContentWidth(m.request.Width):
-		line += subtle.Render(" · ") + status
-	default:
-		line = status + "\n" + line
-	}
-	return "\n" + line + "\n" + subtle.Render("API list-price equivalents, not actual bills") + "\n"
-}
-
 func (m Model) statusView() string {
 	if m.warning != "" {
 		return m.render.Palette.Warning().Render(m.warning)
@@ -723,42 +643,6 @@ func (m Model) statusView() string {
 		return status + m.render.Palette.Subtle().Render(" · ") + syncing
 	}
 	return status
-}
-
-var helpRows = [...][2]string{
-	{"tab / shift+tab / 1-4", "switch view"},
-	{"← / →", "pan active timeline"},
-	{"home / end", "jump to range edge"},
-	{"↑ / ↓", "scroll models"},
-	{"s", "sort models"},
-	{"y", "calendar-year heatmap"},
-	{"p", "cycle provider"},
-	{"r", "cycle range"},
-	{"R", "refresh now"},
-	{"?", "close help"},
-	{"q / ctrl+c", "quit"},
-}
-
-func (m Model) helpView() string {
-	keyWidth := 0
-	for _, row := range helpRows {
-		keyWidth = max(keyWidth, lipgloss.Width(row[0]))
-	}
-	var body strings.Builder
-	body.WriteString(m.render.Palette.Header().Render("Keys"))
-	body.WriteString("\n\n")
-	for _, row := range helpRows {
-		key := row[0] + strings.Repeat(" ", keyWidth-lipgloss.Width(row[0]))
-		body.WriteString(m.render.Palette.Emphasis().Render(key))
-		body.WriteString("   ")
-		body.WriteString(m.render.Palette.Subtle().Render(row[1]))
-		body.WriteByte('\n')
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.render.Palette.BorderColor()).
-		Padding(0, 2).Render(strings.TrimRight(body.String(), "\n"))
-	return m.place(modal)
 }
 
 func truncate(value string, width int) string {
