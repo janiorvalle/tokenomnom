@@ -404,8 +404,8 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
 		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
 	}
-	if dashboardRequest.PageLoadToken == "" || dashboardRequest.PageLoadToken != model.request.PageLoadToken || !dashboardRequest.Sync {
-		t.Fatalf("dashboard refresh request lost page token: dashboard=%+v model=%+v", dashboardRequest, model.request)
+	if dashboardRequest.PageLoadToken != "" || !dashboardRequest.Sync || page.loadedRequest.PageLoadToken == "" {
+		t.Fatalf("dashboard refresh request leaked page token: dashboard=%+v page=%+v", dashboardRequest, page.loadedRequest)
 	}
 	updated, command = model.Update(keyMsg("p"))
 	model = updated.(Model)
@@ -428,8 +428,30 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if page.loads != 3 || page.loadedRequest.Provider != CodexProvider {
 		t.Fatalf("provider change loads=%d request=%+v", page.loads, page.loadedRequest)
 	}
-	if !dashboardLoaded || dashboardRequest.PageLoadToken == "" || dashboardRequest.PageLoadToken != model.request.PageLoadToken {
-		t.Fatalf("dashboard provider request lost page token: dashboard=%+v model=%+v", dashboardRequest, model.request)
+	if !dashboardLoaded || dashboardRequest.PageLoadToken != "" || page.loadedRequest.PageLoadToken == "" {
+		t.Fatalf("dashboard provider request leaked page token: dashboard=%+v page=%+v", dashboardRequest, page.loadedRequest)
+	}
+}
+
+func TestPageOnlyLoadDoesNotInvalidateDashboardResponse(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded = false, true
+	model.syncing = true
+	dashboardRequest := model.request
+	dashboardRequest.Sync = true
+	model.loadCmd(dashboardRequest)
+	dashboardGeneration := model.loadGeneration
+	model, _ = model.startPageLoad(page, model.request)
+	updated, _ := model.Update(loadedMsg{
+		request:    dashboardRequest,
+		generation: dashboardGeneration,
+		snapshot:   Snapshot{Views: [4]string{"fresh dashboard"}},
+	})
+	model = updated.(Model)
+	if model.snapshot.Views[0] != "fresh dashboard" || model.syncing {
+		t.Fatalf("page-only load invalidated dashboard response: snapshot=%+v syncing=%v request=%+v", model.snapshot, model.syncing, model.request)
 	}
 }
 

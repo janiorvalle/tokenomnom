@@ -299,8 +299,8 @@ func (m Model) loadPageCmd(page PageLoader, request Request) tea.Cmd {
 
 func (m Model) startPageLoad(page PageLoader, request Request) (Model, tea.Cmd) {
 	m.pageLoadAttempt++
-	request.PageLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
 	commandRequest := request
+	commandRequest.PageLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
 	request.Sync = false
 	if m.pageLoadTokens == nil {
 		m.pageLoadTokens = make(map[PageID]string)
@@ -310,6 +310,7 @@ func (m Model) startPageLoad(page PageLoader, request Request) (Model, tea.Cmd) 
 		tracker.BeginLoad(commandRequest)
 	}
 	m.request = request
+	m.request.PageLoadToken = ""
 	return m, m.loadPageCmd(page, commandRequest)
 }
 
@@ -514,8 +515,21 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func sameRequestIgnoringSync(left, right Request) bool {
+	// Dashboard loads do not own the history-search page's private state.
 	left.Sync = false
 	right.Sync = false
+	left.PageLoadToken = ""
+	right.PageLoadToken = ""
+	left.HistoryQuery = ""
+	right.HistoryQuery = ""
+	left.HistorySelect = 0
+	right.HistorySelect = 0
+	left.HistorySessionID = ""
+	right.HistorySessionID = ""
+	left.HistoryExportID = ""
+	right.HistoryExportID = ""
+	left.HistoryExportToken = ""
+	right.HistoryExportToken = ""
 	return left == right
 }
 
@@ -634,9 +648,7 @@ func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
 		if loader, ok := page.(PageLoader); ok {
 			var pageCommand tea.Cmd
 			m, pageCommand = m.startPageLoad(loader, request)
-			dashboardRequest := request
-			dashboardRequest.PageLoadToken = m.request.PageLoadToken
-			return m, tea.Batch(m.loadCmd(dashboardRequest), pageCommand)
+			return m, tea.Batch(m.loadCmd(request), pageCommand)
 		}
 	}
 	return m, m.loadCmd(request)

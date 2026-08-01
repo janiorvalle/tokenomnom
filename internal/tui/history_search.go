@@ -95,6 +95,7 @@ func (p *HistorySearchPage) BeginLoad(request Request) {
 	p.hasMore = false
 	p.warnings = nil
 	p.detail = nil
+	p.notIndexed = false
 	p.errorText = ""
 	p.clearExport()
 }
@@ -415,12 +416,14 @@ func (p *HistorySearchPage) Apply(request Request, value any, err error) {
 	}
 	p.loading = false
 	if err != nil {
+		p.notIndexed = false
 		p.errorText = "History search is unavailable. Try again."
 		p.hits, p.warnings, p.detail = nil, nil, nil
 		return
 	}
 	data, ok := value.(HistorySearchData)
 	if !ok {
+		p.notIndexed = false
 		p.errorText = "History search returned an unreadable result."
 		p.hits, p.warnings, p.detail = nil, nil, nil
 		return

@@ -371,6 +371,19 @@ func TestHistorySearchBeginLoadHidesStaleResults(t *testing.T) {
 	}
 }
 
+func TestHistorySearchBeginLoadClearsMissingIndexState(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30}
+	page.Apply(request, HistorySearchData{NotIndexed: true}, nil)
+	page.query = "prompt"
+	page.BeginLoad(Request{Width: request.Width, Height: request.Height, HistoryQuery: page.query, PageLoadToken: "2"})
+	page.Apply(Request{Width: request.Width, Height: request.Height, HistoryQuery: "prompt", PageLoadToken: "2"}, nil, errors.New("database is locked"))
+	view := page.View(pageContext(Request{Width: request.Width, Height: request.Height, HistoryQuery: "prompt"}))
+	if strings.Contains(view, "index is not available") || !strings.Contains(view, "History search is unavailable") {
+		t.Fatalf("stale missing-index state masked load error:\n%s", view)
+	}
+}
+
 func TestHistorySearchDetailEndStopsAtBottom(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 60, Height: 18}
