@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
@@ -459,6 +460,10 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	dailyRows, err := database.Daily(filter)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
 
 	ledgerFilter := filter
 	ledgerFilter.Since = ""
@@ -469,13 +474,22 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	}
 
 	render.Width = tui.ContentWidth(request.Width)
-	snapshot := tui.Snapshot{Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
+	snapshot := tui.Snapshot{
+		Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration,
+		DailyCursor: normalizedDailyCursor(dailyRows, request.DailyCursor),
+	}
 	snapshot.Summary = dashboardSummary(totals, costs)
-	snapshot.Views[tui.DailyTab], err = dashboardDailyView(database, filter, costs, request, render)
+	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	snapshot.Views[tui.DailyTab] = dailyView.view
+	snapshot.DailyDetailOffset = dailyView.detailOffset
 	snapshot.Ledger, err = dashboardLedgerData(database, ledgerFilter, ledgerCosts, request)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+	snapshot.Views[tui.MonthlyTab], err = dashboardMonthlyView(database, filter, costs, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -539,22 +553,264 @@ func dashboardFilter(request tui.Request, now time.Time) store.Filter {
 	return filter
 }
 
-func dashboardDailyView(database *store.Store, filter store.Filter, costs reportCosts, request tui.Request, render theme.Context) (string, error) {
-	rows, err := database.Daily(filter)
-	if err != nil {
-		return "", err
+const (
+	dailyDetailSideBySideMinWidth = 90
+	dailyDetailMinWidth           = 32
+	dailyDetailGap                = 2
+)
+
+type dashboardDailyDetail struct {
+	breakdown store.DailyBreakdown
+	costs     reportCosts
+}
+
+type dashboardDailyViewResult struct {
+	view         string
+	detailOffset int
+}
+
+func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
+	selectedIndex := dailyCursorIndex(allRows, request.DailyCursor)
+	rows := windowDailyRows(allRows, selectedIndex, dashboardRowCapacity(request.Height))
+	selectedDate := ""
+	if selectedIndex >= 0 {
+		selectedDate = allRows[selectedIndex].Date
 	}
-	rows = windowDailyRows(rows, request.DailyOffset, dashboardRowCapacity(request.Height))
 	periods := make([]chartPeriod, 0, len(rows))
 	for _, row := range rows {
-		periods = append(periods, chartPeriod{label: row.Date, values: costs.ByDateProvider[row.Date]})
+		periods = append(periods, chartPeriod{
+			label: row.Date, values: costs.ByDateProvider[row.Date], selected: row.Date == selectedDate,
+		})
 	}
-	chart := renderPeriodChart(render, periods, "day", "days", chartUsesTokens(costs))
-	tableRows := make([][]string, 0, len(rows))
-	for _, row := range rows {
-		tableRows = append(tableRows, []string{row.Date, formatNumber(row.Total), formatCost(costs.ByDate[row.Date])})
+	chartRender := render
+	if dailyDetailSideBySide(render.Width) {
+		chartRender.Width = dailyChartWidth(render.Width)
 	}
-	return chart + renderStyledTable(render, []string{"DATE", "TOKENS", "COST"}, tableRows, []bool{false, true, true}, tableStyle{moneyColumns: map[int]bool{2: true}}), nil
+	chart := ""
+	if len(periods) > 0 {
+		chart = renderPeriodChart(chartRender, periods, "day", "days", chartUsesTokens(costs))
+	}
+	if selectedDate == "" {
+		view, detailOffset := composeDailyView(render, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
+		return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
+	}
+	detail, err := loadDashboardDailyDetail(database, filter, selectedDate)
+	if err != nil {
+		return dashboardDailyViewResult{}, err
+	}
+	view, detailOffset := composeDailyView(render, chart, renderDailyDetail(render, detail, dailyDetailWidth(render.Width)), request.Height, request.DailyDetailOffset)
+	return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
+}
+
+func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date string) (dashboardDailyDetail, error) {
+	breakdown, err := database.DailyBreakdown(date, filter.Provider)
+	if err != nil {
+		return dashboardDailyDetail{}, err
+	}
+	detailFilter := filter
+	detailFilter.Since, detailFilter.Until = date, date
+	costs, err := loadReportCosts(database, detailFilter, nil)
+	if err != nil {
+		return dashboardDailyDetail{}, err
+	}
+	return dashboardDailyDetail{breakdown: breakdown, costs: costs}, nil
+}
+
+func composeDailyView(render theme.Context, chart, detail string, height, detailOffset int) (string, int) {
+	contentHeight := max(1, tui.ContentHeight(height))
+	if !dailyDetailSideBySide(render.Width) {
+		parts := make([]string, 0, 3)
+		if chart != "" {
+			chart = fitDashboardBlock(chart, render.Width)
+			parts = append(parts, chart)
+		}
+		parts = append(parts, render.Palette.Border().Render(strings.Repeat("-", max(1, render.Width))))
+		chartLines := len(strings.Split(strings.TrimSuffix(chart, "\n"), "\n"))
+		detailHeight := max(1, contentHeight-chartLines-1)
+		detailView, normalizedOffset := fitDashboardBlockWindow(detail, render.Width, detailHeight, detailOffset)
+		parts = append(parts, detailView)
+		return strings.Join(parts, "\n"), normalizedOffset
+	}
+	chartWidth := dailyChartWidth(render.Width)
+	detailWidth := dailyDetailWidth(render.Width)
+	detailView, normalizedOffset := fitDashboardBlockWindow(detail, detailWidth, contentHeight, detailOffset)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		fitDashboardBlock(chart, chartWidth),
+		render.Palette.Border().Render("│")+" ",
+		detailView,
+	), normalizedOffset
+}
+
+func dailyDetailSideBySide(width int) bool {
+	if width < dailyDetailSideBySideMinWidth {
+		return false
+	}
+	return dailyChartWidth(width) >= minimumChartWidth
+}
+
+func dailyDetailWidth(width int) int {
+	return min(38, max(dailyDetailMinWidth, width/3))
+}
+
+func dailyChartWidth(width int) int {
+	return width - dailyDetailWidth(width) - dailyDetailGap
+}
+
+func fitDashboardBlock(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSuffix(value, "\n"), "\n")
+	for index, line := range lines {
+		line = lipgloss.NewStyle().Inline(true).MaxWidth(width).Render(line)
+		lines[index] = line + strings.Repeat(" ", max(0, width-lipgloss.Width(line)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func fitDashboardBlockWindow(value string, width, height, offset int) (string, int) {
+	lines := strings.Split(strings.TrimSuffix(value, "\n"), "\n")
+	windowHeight := max(1, height)
+	maxOffset := max(0, len(lines)-windowHeight)
+	offset = min(max(0, offset), maxOffset)
+	end := min(len(lines), offset+windowHeight)
+	return fitDashboardBlock(strings.Join(lines[offset:end], "\n"), width), offset
+}
+
+func renderDailyEmptyDetail(render theme.Context, message string) string {
+	return strings.Join([]string{
+		render.Palette.Header().Render("DAY DETAIL"),
+		render.Palette.Subtle().Render(message),
+	}, "\n")
+}
+
+func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width int) string {
+	useTokenShares := chartUsesTokens(detail.costs) || detail.costs.Grand.Total == 0
+	metricLabel := "COST"
+	if useTokenShares {
+		metricLabel = "TOKENS"
+	}
+	metricTotal := int64(detail.costs.Grand.Total)
+	if useTokenShares {
+		metricTotal = detail.breakdown.Total
+	}
+
+	totalValue := formatCost(detail.costs.Grand)
+	valueStyle := render.Palette.Money()
+	if useTokenShares {
+		totalValue = formatNumber(detail.breakdown.Total) + " tokens"
+		valueStyle = render.Palette.Emphasis()
+	}
+	lines := []string{
+		render.Palette.Header().Render("DAY DETAIL"),
+		render.Palette.Emphasis().Render(detail.breakdown.Date),
+		render.Palette.Subtle().Render("TOTAL ") + valueStyle.Render(totalValue),
+		"",
+		render.Palette.Header().Render("PROVIDER SPLIT · " + metricLabel),
+	}
+	providerValues := make([]string, len(detail.breakdown.Providers))
+	maxProviderValueWidth := 0
+	for index, provider := range detail.breakdown.Providers {
+		cost := detail.costs.ByProvider[provider.Provider]
+		value := formatCost(cost)
+		if useTokenShares {
+			value = formatNumber(provider.Total)
+		}
+		providerValues[index] = value
+		maxProviderValueWidth = max(maxProviderValueWidth, lipgloss.Width(value))
+	}
+	barWidth := max(3, min(16, width-13-maxProviderValueWidth))
+	for index, provider := range detail.breakdown.Providers {
+		cost := detail.costs.ByProvider[provider.Provider]
+		metricValue := int64(cost.Total)
+		value := providerValues[index]
+		if useTokenShares {
+			metricValue = provider.Total
+			value = formatNumber(provider.Total)
+		}
+		percent := dailyDetailPercent(metricValue, metricTotal)
+		bar := dailyDetailBar(percent, barWidth)
+		line := fmt.Sprintf("%-6s %3d%% %s %s", providerName(provider.Provider), percent, bar, value)
+		lines = append(lines, render.Palette.Provider(string(provider.Provider), index).Render(line))
+	}
+	if len(detail.breakdown.Providers) == 0 {
+		lines = append(lines, render.Palette.Subtle().Render("No usage recorded."))
+	}
+
+	lines = append(lines, "")
+	modelHeading := "TOP MODELS BY COST"
+	if useTokenShares {
+		modelHeading = "TOP MODELS BY TOKENS"
+	}
+	lines = append(lines, render.Palette.Header().Render(modelHeading))
+	models := append([]store.DailyModelRow(nil), detail.breakdown.Models...)
+	sort.SliceStable(models, func(i, j int) bool {
+		left := detail.costs.ByModel[modelCostKey{Provider: models[i].Provider, Model: models[i].Model}]
+		right := detail.costs.ByModel[modelCostKey{Provider: models[j].Provider, Model: models[j].Model}]
+		if left.Total != right.Total {
+			return left.Total > right.Total
+		}
+		if models[i].Total != models[j].Total {
+			return models[i].Total > models[j].Total
+		}
+		return models[i].Model < models[j].Model
+	})
+	for index, model := range models[:min(5, len(models))] {
+		cost := detail.costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
+		value := formatCost(cost)
+		if useTokenShares {
+			value = formatNumber(model.Total)
+		}
+		nameWidth := max(8, width-lipgloss.Width(value)-1)
+		name := truncateDashboardText(model.Model, nameWidth)
+		line := render.Palette.Provider(string(model.Provider), index).Render(name)
+		padding := max(1, width-lipgloss.Width(name)-lipgloss.Width(value))
+		line += strings.Repeat(" ", padding) + valueStyle.Render(value)
+		lines = append(lines, line)
+	}
+	if len(models) == 0 {
+		lines = append(lines, render.Palette.Subtle().Render("No models recorded."))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func dailyDetailPercent(value, total int64) int {
+	if value <= 0 || total <= 0 {
+		return 0
+	}
+	percent := int(float64(value)/float64(total)*100 + 0.5)
+	return min(100, percent)
+}
+
+func dailyDetailBar(percent, width int) string {
+	filled := (percent*width + 50) / 100
+	if percent > 0 {
+		filled = max(1, filled)
+	}
+	filled = min(width, filled)
+	return strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
+}
+
+func truncateDashboardText(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	if width <= 3 {
+		runes := []rune(value)
+		for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+			runes = runes[:len(runes)-1]
+		}
+		return string(runes)
+	}
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width(string(runes)+"...") > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "..."
 }
 
 func dashboardLedgerData(database *store.Store, filter store.Filter, costs reportCosts, request tui.Request) (tuipages.Data, error) {
@@ -741,11 +997,31 @@ func dashboardRowCapacity(height int) int {
 	return max(3, min(10, tui.ContentHeight(height)-10))
 }
 
-func windowDailyRows(rows []store.DailyRow, offset, capacity int) []store.DailyRow {
+func dailyCursorIndex(rows []store.DailyRow, cursor int) int {
+	if len(rows) == 0 {
+		return -1
+	}
+	return max(0, len(rows)-1-max(0, cursor))
+}
+
+func normalizedDailyCursor(rows []store.DailyRow, cursor int) int {
+	selectedIndex := dailyCursorIndex(rows, cursor)
+	if selectedIndex < 0 {
+		return 0
+	}
+	return len(rows) - 1 - selectedIndex
+}
+
+func windowDailyRows(rows []store.DailyRow, selectedIndex, capacity int) []store.DailyRow {
 	if len(rows) == 0 {
 		return rows
 	}
-	end := min(len(rows), max(min(capacity, len(rows)), len(rows)+offset))
-	start := max(0, end-capacity)
+	capacity = max(1, capacity)
+	selectedIndex = min(len(rows)-1, max(0, selectedIndex))
+	start := max(0, selectedIndex-capacity+1)
+	end := min(len(rows), start+capacity)
+	if end-start < capacity {
+		start = max(0, end-capacity)
+	}
 	return rows[start:end]
 }

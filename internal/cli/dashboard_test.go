@@ -46,7 +46,7 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 		}
 	}
 	viewFragments := map[int][]string{
-		int(tui.DailyTab):   {"cost/day", "DATE"},
+		int(tui.DailyTab):   {"cost/day", "DAY DETAIL", "PROVIDER SPLIT", "TOP MODELS BY"},
 		int(tui.ModelsTab):  {"PROVIDER", "MODEL"},
 		int(tui.HeatmapTab): {"Less", "active days"},
 	}
@@ -409,6 +409,41 @@ func TestQuest115AfterSnapshot(t *testing.T) {
 func renderDashboardLedger(snapshot tui.Snapshot, request tui.Request, render theme.Context) string {
 	render.Width = tui.ContentWidth(request.Width)
 	return tuipages.Render(render, snapshot.Ledger, request.Ledger, request.Height)
+}
+
+func TestDashboardDailyCursorSelectsDetailAndCollapsesBelowChart(t *testing.T) {
+	stateDir, _, _ := seedReportStore(t)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	render := styledRenderContext(120)
+	wide, err := dashboardSnapshot(database, tui.Request{DailyCursor: 1, Range: tui.RangeAll, Width: 120, Height: 35}, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily := wide.Views[tui.DailyTab]
+	for _, fragment := range []string{"DAY DETAIL", "2026-02-01", "PROVIDER SPLIT", "TOP MODELS BY COST", "^"} {
+		if !strings.Contains(daily, fragment) {
+			t.Errorf("wide daily view missing %q:\n%s", fragment, daily)
+		}
+	}
+	if strings.Contains(daily, "DATE") {
+		t.Fatalf("daily detail retained the redundant date table:\n%s", daily)
+	}
+
+	narrow, err := dashboardSnapshot(database, tui.Request{DailyCursor: 1, Range: tui.RangeAll, Width: 100, Height: 35}, render, time.UTC, syncSummaryForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wideLines := len(strings.Split(strings.TrimRight(daily, "\n"), "\n"))
+	narrowDaily := narrow.Views[tui.DailyTab]
+	narrowLines := len(strings.Split(strings.TrimRight(narrowDaily, "\n"), "\n"))
+	if narrowLines <= wideLines || !strings.Contains(narrowDaily, "PROVIDER SPLIT") {
+		t.Fatalf("narrow daily view did not collapse below chart (wide=%d narrow=%d):\n%s", wideLines, narrowLines, narrowDaily)
+	}
 }
 
 func TestBareStyledInvocationLaunchesDashboard(t *testing.T) {

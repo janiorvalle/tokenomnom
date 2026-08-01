@@ -64,12 +64,17 @@ func (r Range) String() string {
 
 // Request describes the data and render state needed for one snapshot.
 type Request struct {
-	Provider             Provider
-	Range                Range
-	Width                int
-	Height               int
-	DailyOffset          int
-	Ledger               tuipages.State
+	Provider    Provider
+	Range       Range
+	Width       int
+	Height      int
+	DailyOffset int
+	Ledger      tuipages.State
+	// DailyCursor is the number of active daily bars to move back from the
+	// newest active day. Zero always means the newest active day.
+	DailyCursor          int
+	DailyDetailOffset    int
+	MonthlyOffset        int
 	ModelOffset          int
 	ModelSort            int
 	HeatmapOffset        int
@@ -107,15 +112,18 @@ type Summary struct {
 
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
-	Summary      Summary
-	Views        [4]string
-	Sessions     tuipages.SessionPageData
-	StatusBar    StatusBar
-	Ledger       tuipages.Data
-	Empty        bool
-	FilesScanned int
-	SyncDuration time.Duration
-	Warning      string
+	Summary   Summary
+	Views     [4]string
+	Sessions  tuipages.SessionPageData
+	StatusBar StatusBar
+	Ledger    tuipages.Data
+	// DailyCursor is the normalized distance from the newest active daily bar.
+	DailyCursor       int
+	DailyDetailOffset int
+	Empty             bool
+	FilesScanned      int
+	SyncDuration      time.Duration
+	Warning           string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -289,6 +297,19 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
 	case loadedMsg:
+		if msg.request.Sync && m.syncing && !sameRequestIgnoringSync(msg.request, m.request) {
+			if msg.err != nil {
+				m.syncing = false
+				m.warning = msg.err.Error()
+				return m, nil
+			}
+			m.syncing = false
+			m.loading = true
+			return m, m.loadCmd(m.request)
+		}
+		if !sameRequestIgnoringSync(msg.request, m.request) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.loading, m.syncing, m.syncFresh = false, false, false
 			m.warning = msg.err.Error()
@@ -296,6 +317,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
+		if msg.request == m.request {
+			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
+		}
 		m.loading = false
 		m.loaded = true
 		m.warning = msg.snapshot.Warning
@@ -353,6 +378,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func sameRequestIgnoringSync(left, right Request) bool {
+	left.Sync = false
+	right.Sync = false
+	return left == right
+}
+
 func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	value := key.String()
 	if m.offerState != skillOfferHidden {
@@ -378,10 +409,14 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
+		m.request.DailyCursor = 0
+		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
 		return m, m.loadCmd(m.request)
 	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
+		m.request.DailyCursor = 0
+		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
 		return m, m.loadCmd(m.request)
 	case keyActionRefresh:

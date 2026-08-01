@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
@@ -35,6 +36,21 @@ type TokenTotals struct {
 type DailyRow struct {
 	Date string
 	TokenTotals
+}
+
+// DailyModelRow is one provider/model contribution for a single date.
+type DailyModelRow struct {
+	Provider discover.Provider
+	Model    string
+	TokenTotals
+}
+
+// DailyBreakdown contains the provider and model contributions for one date.
+type DailyBreakdown struct {
+	Date string
+	TokenTotals
+	Providers []ProviderTotals
+	Models    []DailyModelRow
 }
 
 // MonthlyRow is usage aggregated across one calendar month.
@@ -96,6 +112,48 @@ func (s *Store) Daily(filter Filter) ([]DailyRow, error) {
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// DailyBreakdown returns one day's usage grouped by provider and model.
+func (s *Store) DailyBreakdown(date string, provider discover.Provider) (DailyBreakdown, error) {
+	if strings.TrimSpace(date) == "" {
+		return DailyBreakdown{}, fmt.Errorf("query daily breakdown: date must not be empty")
+	}
+	filter := Filter{Since: date, Until: date, Provider: provider}
+	where, args := filterSQL(filter)
+	rows, err := s.db.Query(`SELECT provider, model, `+aggregateColumns+` FROM usage_daily `+where+` GROUP BY provider, model ORDER BY SUM(input + output) DESC, provider, model`, args...)
+	if err != nil {
+		return DailyBreakdown{}, fmt.Errorf("query daily breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	result := DailyBreakdown{Date: date}
+	providerIndexes := make(map[discover.Provider]int)
+	for rows.Next() {
+		var row DailyModelRow
+		if err := scanTokens(rows, []any{&row.Provider, &row.Model}, &row.TokenTotals); err != nil {
+			return DailyBreakdown{}, fmt.Errorf("scan daily breakdown: %w", err)
+		}
+		result.Models = append(result.Models, row)
+		result.TokenTotals = addTokenTotals(result.TokenTotals, row.TokenTotals)
+		index, found := providerIndexes[row.Provider]
+		if !found {
+			index = len(result.Providers)
+			providerIndexes[row.Provider] = index
+			result.Providers = append(result.Providers, ProviderTotals{Provider: row.Provider})
+		}
+		result.Providers[index].TokenTotals = addTokenTotals(result.Providers[index].TokenTotals, row.TokenTotals)
+	}
+	if err := rows.Err(); err != nil {
+		return DailyBreakdown{}, fmt.Errorf("iterate daily breakdown: %w", err)
+	}
+	sort.SliceStable(result.Providers, func(i, j int) bool {
+		if result.Providers[i].Total != result.Providers[j].Total {
+			return result.Providers[i].Total > result.Providers[j].Total
+		}
+		return result.Providers[i].Provider < result.Providers[j].Provider
+	})
+	return result, nil
 }
 
 // Monthly returns one aggregate per calendar month, oldest first.
@@ -202,6 +260,20 @@ func scanTokens(source scanner, prefix []any, totals *TokenTotals, suffix ...any
 	)
 	dest = append(dest, suffix...)
 	return source.Scan(dest...)
+}
+
+func addTokenTotals(left, right TokenTotals) TokenTotals {
+	return TokenTotals{
+		Input:                  left.Input + right.Input,
+		CacheRead:              left.CacheRead + right.CacheRead,
+		CacheWrite5m:           left.CacheWrite5m + right.CacheWrite5m,
+		CacheWrite1h:           left.CacheWrite1h + right.CacheWrite1h,
+		CacheWriteUnclassified: left.CacheWriteUnclassified + right.CacheWriteUnclassified,
+		CacheWrite:             left.CacheWrite + right.CacheWrite,
+		Output:                 left.Output + right.Output,
+		Reasoning:              left.Reasoning + right.Reasoning,
+		Total:                  left.Total + right.Total,
+	}
 }
 
 func filterSQL(filter Filter) (string, []any) {

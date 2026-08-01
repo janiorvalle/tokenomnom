@@ -406,20 +406,31 @@ func (r PageRouter) groups() []pageGroup {
 }
 
 func updateDailyPage(request Request, key string) (Request, bool) {
-	previous := request.DailyOffset
+	previousCursor, previousDetailOffset := request.DailyCursor, request.DailyDetailOffset
 	switch key {
 	case "left":
-		request.DailyOffset -= 7
+		request.DailyCursor++
+		request.DailyDetailOffset = 0
 	case "right":
-		request.DailyOffset += 7
+		request.DailyCursor = max(0, request.DailyCursor-1)
+		request.DailyDetailOffset = 0
+	case "up":
+		if request.DailyDetailOffset == 0 {
+			return request, false
+		}
+		request.DailyDetailOffset--
+	case "down":
+		request.DailyDetailOffset++
 	case "home":
-		request.DailyOffset = -1000000
+		request.DailyCursor = 1_000_000
+		request.DailyDetailOffset = 0
 	case "end":
-		request.DailyOffset = 0
+		request.DailyCursor = 0
+		request.DailyDetailOffset = 0
 	default:
 		return request, false
 	}
-	return request, previous != request.DailyOffset
+	return request, previousCursor != request.DailyCursor || previousDetailOffset != request.DailyDetailOffset
 }
 
 func updateModelsPage(request Request, key string) (Request, bool) {
