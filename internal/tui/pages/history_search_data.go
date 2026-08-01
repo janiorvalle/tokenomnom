@@ -4,12 +4,14 @@ import historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 
 // SearchHit is the presentation-ready shape for one indexed prompt match.
 type SearchHit struct {
-	PromptID  string
-	SessionID string
-	Provider  string
-	Date      string
-	Project   string
-	Snippet   string
+	PromptID          string
+	SessionID         string
+	Provider          string
+	Date              string
+	Project           string
+	Snippet           string
+	SnippetMatchStart string
+	SnippetMatchEnd   string
 }
 
 // SearchResult contains one bounded search response.

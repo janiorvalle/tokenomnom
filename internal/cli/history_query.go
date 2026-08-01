@@ -100,6 +100,7 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, cl
 		data.Search.Hits = append(data.Search.Hits, pages.SearchHit{
 			PromptID: hit.PromptID, SessionID: hit.SessionID, Provider: string(hit.Provider),
 			Date: historyPageDate(hit.Timestamp), Project: hit.Project, Snippet: safePrettySearchSnippet(hit.Snippet),
+			SnippetMatchStart: result.SnippetMatchStart, SnippetMatchEnd: result.SnippetMatchEnd,
 		})
 	}
 	return data, nil
@@ -206,11 +207,12 @@ func historySearchJSONPage(page historystore.SearchPage) historystore.SearchPage
 	if page.Hits != nil {
 		page.Hits = append([]historystore.PromptResult{}, page.Hits...)
 	}
+	matchStart, matchEnd := page.SnippetMatchStart, page.SnippetMatchEnd
+	if matchStart == "" || matchEnd == "" {
+		matchStart, matchEnd = string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
 	for index := range page.Hits {
-		page.Hits[index].Snippet = strings.NewReplacer(
-			string(history.SearchSnippetMatchStart), "[",
-			string(history.SearchSnippetMatchEnd), "]",
-		).Replace(page.Hits[index].Snippet)
+		page.Hits[index].Snippet = strings.NewReplacer(matchStart, "[", matchEnd, "]").Replace(page.Hits[index].Snippet)
 	}
 	return page
 }
@@ -383,9 +385,9 @@ func newHistorySearchCommand() *cobra.Command {
 					rank = fmt.Sprintf("%.8g", *hit.Rank)
 				}
 				if flags.role == "user" {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettySearchOutput(hit.Snippet))
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettySearchOutput(hit.Snippet, page.SnippetMatchStart, page.SnippetMatchEnd))
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, hit.Role, timestamp, rank, safePrettySearchOutput(hit.Snippet))
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, hit.Role, timestamp, rank, safePrettySearchOutput(hit.Snippet, page.SnippetMatchStart, page.SnippetMatchEnd))
 				}
 				if includeText && hit.Text != nil {
 					fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*hit.Text))

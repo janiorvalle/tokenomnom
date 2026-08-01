@@ -359,11 +359,11 @@ func safePrettySearchSnippet(value string) string {
 	return result.String()
 }
 
-func safePrettySearchOutput(value string) string {
-	value = strings.NewReplacer(
-		string(history.SearchSnippetMatchStart), "[",
-		string(history.SearchSnippetMatchEnd), "]",
-	).Replace(value)
+func safePrettySearchOutput(value, matchStart, matchEnd string) string {
+	if matchStart == "" || matchEnd == "" {
+		matchStart, matchEnd = string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
+	value = strings.NewReplacer(matchStart, "[", matchEnd, "]").Replace(value)
 	return safePrettyPreview(value)
 }
 

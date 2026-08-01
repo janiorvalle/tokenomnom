@@ -186,7 +186,7 @@ func TestHistorySearchSelectedHighlightKeepsBoldSuffix(t *testing.T) {
 	})
 	plain := render.Palette.Emphasis().Bold(true)
 	match := plain.Underline(true)
-	value := highlightSnippet("before "+marked("match")+" after", plain, match)
+	value := highlightSnippet("before "+marked("match")+" after", "", "", plain, match)
 	if !strings.Contains(value, plain.Render(" after")) {
 		t.Fatalf("selected suffix lost its bold style: %q", value)
 	}

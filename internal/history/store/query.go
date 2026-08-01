@@ -207,11 +207,13 @@ func (value PromptResult) MarshalJSON() ([]byte, error) {
 
 // SearchPage is one generation-bound FTS result page.
 type SearchPage struct {
-	Hits       []PromptResult `json:"hits"`
-	Page       PageMetadata   `json:"page"`
-	Coverage   QueryCoverage  `json:"coverage"`
-	Warnings   []string       `json:"-"`
-	Generation int64          `json:"index_generation"`
+	Hits              []PromptResult `json:"hits"`
+	Page              PageMetadata   `json:"page"`
+	Coverage          QueryCoverage  `json:"coverage"`
+	Warnings          []string       `json:"-"`
+	Generation        int64          `json:"index_generation"`
+	SnippetMatchStart string         `json:"-"`
+	SnippetMatchEnd   string         `json:"-"`
 }
 
 // PromptsPage is one generation-bound prompt enumeration page.
@@ -284,8 +286,12 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	if err != nil {
 		return SearchPage{}, err
 	}
+	matchStart, matchEnd, err := s.searchSnippetMarkers()
+	if err != nil {
+		return SearchPage{}, err
+	}
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
-	args = append([]any{string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd), query.IncludeText, match}, args...)
+	args = append([]any{matchStart, matchEnd, query.IncludeText, match}, args...)
 	statement := `WITH matched AS (
 		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
 			s.repository_name,s.project,s.project_source,s.cwd,s.branch,bm25(prompt_fts) AS rank,
@@ -320,7 +326,11 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	if err != nil {
 		return SearchPage{}, err
 	}
-	page := SearchPage{Hits: hits, Coverage: coverage, Warnings: warnings, Generation: generation, Page: PageMetadata{Limit: query.Limit}}
+	page := SearchPage{
+		Hits: hits, Coverage: coverage, Warnings: warnings, Generation: generation,
+		SnippetMatchStart: matchStart, SnippetMatchEnd: matchEnd,
+		Page: PageMetadata{Limit: query.Limit},
+	}
 	if len(page.Hits) > query.Limit {
 		page.Hits = page.Hits[:query.Limit]
 		page.Page.HasMore = true
@@ -334,6 +344,30 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 		page.Hits = []PromptResult{}
 	}
 	return page, nil
+}
+
+func (s *Store) searchSnippetMarkers() (string, string, error) {
+	for attempt := uint64(0); ; attempt++ {
+		start, end := searchSnippetMarkerCandidate(attempt)
+		var present bool
+		if err := s.runner.QueryRow(`SELECT EXISTS(
+			SELECT 1 FROM prompts WHERE instr(clean_text, ?) > 0 OR instr(clean_text, ?) > 0
+		)`, start, end).Scan(&present); err != nil {
+			return "", "", fmt.Errorf("find collision-free history search snippet markers: %w", err)
+		}
+		if !present {
+			return start, end, nil
+		}
+	}
+}
+
+func searchSnippetMarkerCandidate(attempt uint64) (string, string) {
+	if attempt == 0 {
+		return string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
+	suffix := strconv.FormatUint(attempt-1, 36)
+	return string(history.SearchSnippetMatchStart) + suffix + string(history.SearchSnippetMatchEnd),
+		string(history.SearchSnippetMatchEnd) + suffix + string(history.SearchSnippetMatchStart)
 }
 
 // ListPrompts returns clean logical human prompts without FTS ranking.

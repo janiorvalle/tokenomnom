@@ -558,7 +558,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 			if selected {
 				matchStyle = style.Underline(true)
 			}
-			lines = append(lines, prefix+highlightSnippet(snippet, plainStyle, matchStyle))
+			lines = append(lines, prefix+highlightSnippet(snippet, hit.SnippetMatchStart, hit.SnippetMatchEnd, plainStyle, matchStyle))
 			project := oneLine(hit.Project)
 			if project == "" {
 				project = "unknown project"
@@ -658,50 +658,28 @@ func appendPageStatus(lines []string, render theme.Context, warnings []string, e
 	return lines
 }
 
-func highlightSnippet(value string, plainStyle, matchStyle lipgloss.Style) string {
+func highlightSnippet(value, matchStart, matchEnd string, plainStyle, matchStyle lipgloss.Style) string {
+	if matchStart == "" || matchEnd == "" {
+		matchStart, matchEnd = string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
 	var result strings.Builder
-	var plain, match strings.Builder
-	inMatch := false
-	flushPlain := func() {
-		if plain.Len() > 0 {
-			result.WriteString(plainStyle.Render(plain.String()))
-			plain.Reset()
+	for len(value) > 0 {
+		start := strings.Index(value, matchStart)
+		if start < 0 {
+			result.WriteString(plainStyle.Render(value))
+			break
 		}
-	}
-	flushMatch := func() {
-		if match.Len() > 0 {
-			result.WriteString(matchStyle.Render(match.String()))
-			match.Reset()
+		if start > 0 {
+			result.WriteString(plainStyle.Render(value[:start]))
 		}
-	}
-	for _, current := range value {
-		switch current {
-		case history.SearchSnippetMatchStart:
-			if inMatch {
-				match.WriteRune(current)
-				continue
-			}
-			flushPlain()
-			inMatch = true
-		case history.SearchSnippetMatchEnd:
-			if !inMatch {
-				plain.WriteRune(current)
-				continue
-			}
-			flushMatch()
-			inMatch = false
-		default:
-			if inMatch {
-				match.WriteRune(current)
-			} else {
-				plain.WriteRune(current)
-			}
+		value = value[start+len(matchStart):]
+		end := strings.Index(value, matchEnd)
+		if end < 0 {
+			result.WriteString(matchStyle.Render(value))
+			break
 		}
-	}
-	if inMatch {
-		flushMatch()
-	} else {
-		flushPlain()
+		result.WriteString(matchStyle.Render(value[:end]))
+		value = value[end+len(matchEnd):]
 	}
 	return result.String()
 }
