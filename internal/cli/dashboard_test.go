@@ -14,11 +14,13 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
@@ -154,6 +156,118 @@ func TestDashboardAmbientCacheRefreshesOnlyForSyncLoads(t *testing.T) {
 	status, files = cache.snapshot(tui.Request{}, refresh)
 	if status.Sessions != 2 || files != 2 || calls != 2 {
 		t.Fatalf("post-sync cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+}
+
+func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
+	cache := dashboardSessionCache{}
+	calls := 0
+	refresh := func() tuipages.SessionPageData {
+		calls++
+		return tuipages.SessionPageData{Warning: []string{"", "one", "two", "three", "four"}[calls]}
+	}
+	request := tui.Request{Provider: tui.CodexProvider, Range: tui.Range30Days}
+
+	data := cache.snapshot(request, refresh)
+	if data.Warning != "one" || calls != 1 {
+		t.Fatalf("initial session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionOffset = 1
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "one" || calls != 1 {
+		t.Fatalf("selection-only session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionCursor = "next"
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "two" || calls != 2 {
+		t.Fatalf("cursor session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionProject, request.SessionProjectActive = "tokenomnom", true
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "three" || calls != 3 {
+		t.Fatalf("project-filter session snapshot = %+v calls=%d", data, calls)
+	}
+	request.Sync = true
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "four" || calls != 4 {
+		t.Fatalf("sync session snapshot = %+v calls=%d", data, calls)
+	}
+	request.Sync = false
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "four" || calls != 4 {
+		t.Fatalf("post-sync session snapshot = %+v calls=%d", data, calls)
+	}
+}
+
+func TestLoadDashboardHistoryReadsCatalogAndProjectOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), historystore.DatabaseName)
+	database, err := historystore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	source := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationProviderLive, Path: "/history/session.jsonl"}
+	prompt := history.Prompt{
+		LogicalKey: "prompt-1", Role: history.RoleUser, CleanText: "show the session detail", Classification: history.ClassificationHuman,
+		PromptKind: history.PromptKindHuman, Searchable: true, Timestamp: &when,
+	}
+	_, err = database.ApplySource(history.Extraction{
+		Provider: history.ProviderCodex, Source: source,
+		Session: history.Session{
+			IdentityKey: "session-1", NativeSessionID: "native-session-1", CWD: "/workspace/tokenomnom",
+			RepositoryName: "tokenomnom", FirstTimestamp: &when, LastTimestamp: &when,
+		},
+		Prompts:     []history.Prompt{prompt},
+		Occurrences: []history.Occurrence{{PromptKey: prompt.LogicalKey, Variant: prompt, LineNumber: 1, EndOffset: 10}},
+	}, history.SourceHead{Source: source, ContentSHA256: "session-hash", Size: 10, CompleteOffset: 10, LineCount: 1, Available: true}, historystore.ApplyReplace)
+	if err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data := loadDashboardHistory(path, tui.Request{Range: tui.RangeAll}, time.UTC)
+	if !data.IndexAvailable || len(data.Sessions) != 1 || data.Sessions[0].Project != "tokenomnom" {
+		t.Fatalf("dashboard history = %+v", data)
+	}
+	if len(data.Projects) != 1 || data.Projects[0].Key != "tokenomnom" || data.Projects[0].Label != "tokenomnom" {
+		t.Fatalf("dashboard project options = %v", data.Projects)
+	}
+}
+
+func TestLoadDashboardHistoryMissingIndexShowsNoFalseWarning(t *testing.T) {
+	data := loadDashboardHistory(filepath.Join(t.TempDir(), historystore.DatabaseName), tui.Request{}, time.UTC)
+	if data.IndexAvailable || data.Warning != "" || len(data.Sessions) != 0 {
+		t.Fatalf("missing history index = %+v", data)
+	}
+}
+
+func TestDashboardHistoryWindowUsesInclusiveDateBounds(t *testing.T) {
+	now := time.Date(2026, time.August, 1, 14, 30, 0, 0, time.UTC)
+	since, until := dashboardHistoryWindow(tui.Range30Days, time.UTC, now)
+	if since == nil || until == nil || !since.Equal(time.Date(2026, time.July, 3, 0, 0, 0, 0, time.UTC)) || !until.Equal(time.Date(2026, time.August, 1, 23, 59, 59, 999999999, time.UTC)) {
+		t.Fatalf("history window = %v, %v", since, until)
+	}
+	allSince, allUntil := dashboardHistoryWindow(tui.RangeAll, time.UTC, now)
+	if allSince != nil || allUntil != nil {
+		t.Fatalf("all history window = %v, %v", allSince, allUntil)
+	}
+	springForwardNow := time.Date(2026, time.March, 8, 14, 30, 0, 0, time.UTC)
+	springForwardLocation, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, springForwardUntil := dashboardHistoryWindow(tui.Range30Days, springForwardLocation, springForwardNow)
+	wantSpringForwardUntil := time.Date(2026, time.March, 9, 0, 0, 0, 0, springForwardLocation).Add(-time.Nanosecond)
+	if springForwardUntil == nil || !springForwardUntil.Equal(wantSpringForwardUntil) {
+		t.Fatalf("spring-forward history window until = %v, want %v", springForwardUntil, wantSpringForwardUntil)
+	}
+	leapDayNow := time.Date(2024, time.February, 29, 14, 30, 0, 0, time.UTC)
+	leapSince, _ := dashboardHistoryWindow(tui.RangeYear, time.UTC, leapDayNow)
+	if leapSince == nil || !leapSince.Equal(time.Date(2023, time.March, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("leap-day history window since = %v", leapSince)
 	}
 }
 

@@ -1,15 +1,22 @@
 package tui
 
-import "github.com/janiorvalle/tokenomnom/internal/theme"
+import (
+	"strings"
+
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/theme"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
+)
 
 // PageID is the stable identity used by the sidebar and page router.
 type PageID string
 
 const (
-	DailyPageID   PageID = "daily"
-	MonthlyPageID PageID = "monthly"
-	ModelsPageID  PageID = "models"
-	HeatmapPageID PageID = "heatmap"
+	DailyPageID    PageID = "daily"
+	MonthlyPageID  PageID = "monthly"
+	ModelsPageID   PageID = "models"
+	HeatmapPageID  PageID = "heatmap"
+	SessionsPageID PageID = "sessions"
 )
 
 // PageSection is a navigation group in the sidebar.
@@ -29,6 +36,8 @@ type PageContext struct {
 	Render   theme.Context
 	Snapshot Snapshot
 	Request  Request
+	Width    int
+	Height   int
 }
 
 // Page is one isolated destination in the dashboard.
@@ -50,6 +59,13 @@ type snapshotPage struct {
 	title      string
 	viewIndex  int
 	keyHandler pageKeyHandler
+}
+
+// contextualPage can inspect the current snapshot before handling a key. The
+// original Page.Update contract stays small for existing report pages, while
+// interactive pages can open detail views without duplicating data elsewhere.
+type contextualPage interface {
+	UpdateContext(PageContext, string) (Request, bool)
 }
 
 func (p snapshotPage) ID() PageID           { return p.id }
@@ -88,7 +104,180 @@ func newRouter() PageRouter {
 		snapshotPage{id: MonthlyPageID, section: SpendSection, title: "Monthly", viewIndex: int(MonthlyTab), keyHandler: updateMonthlyPage},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
+		sessionsPage{},
 	)
+}
+
+type sessionsPage struct{}
+
+func (sessionsPage) ID() PageID           { return SessionsPageID }
+func (sessionsPage) Section() PageSection { return HistorySection }
+func (sessionsPage) Title() string        { return "Sessions" }
+
+func (sessionsPage) View(context PageContext) string {
+	return tuipages.RenderSessions(context.Render, context.Snapshot.Sessions, tuipages.SessionViewState{
+		SelectedIndex: context.Request.SessionOffset,
+		DetailID:      context.Request.SessionDetailID,
+		DetailOffset:  context.Request.SessionDetailOffset,
+		Provider:      context.Request.Provider.String(),
+		Project:       context.Request.SessionProject,
+		ProjectActive: context.Request.SessionProjectActive,
+		DateRange:     context.Request.Range.String(),
+		SelectLast:    context.Request.SessionReturnToEnd,
+	}, context.Width, context.Height)
+}
+
+func (sessionsPage) Update(request Request, key string) (Request, bool) {
+	return updateSessionsRequest(request, tuipages.SessionPageData{}, key)
+}
+
+func (sessionsPage) UpdateContext(context PageContext, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(context, key)
+}
+
+func updateSessionsRequest(request Request, data tuipages.SessionPageData, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(PageContext{Request: request, Snapshot: Snapshot{Sessions: data}}, key)
+}
+
+func updateSessionsRequestWithContext(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	data := context.Snapshot.Sessions
+	if request.SessionDetailID != "" {
+		switch key {
+		case "esc", "left":
+			request.SessionDetailID = ""
+			request.SessionDetailOffset = 0
+			return request, true
+		case "up", "down", "home", "end":
+			if context.Width <= 0 || context.Height <= 0 {
+				return request, false
+			}
+			session, ok := sessionByID(data.Sessions, request.SessionDetailID)
+			if !ok {
+				return request, false
+			}
+			maxOffset := tuipages.SessionDetailMaxOffset(context.Render, session, context.Width, context.Height, data.Location)
+			nextOffset := request.SessionDetailOffset
+			switch key {
+			case "up":
+				nextOffset = max(0, nextOffset-1)
+			case "down":
+				nextOffset = min(maxOffset, nextOffset+1)
+			case "home":
+				nextOffset = 0
+			case "end":
+				nextOffset = maxOffset
+			}
+			if nextOffset != request.SessionDetailOffset {
+				request.SessionDetailOffset = nextOffset
+				return request, true
+			}
+		}
+		return request, false
+	}
+	normalizedReturn := false
+	if request.SessionReturnToEnd {
+		switch key {
+		case "up", "down", "home", "end", "enter", "f":
+			request.SessionOffset = max(0, len(data.Sessions)-1)
+			request.SessionReturnToEnd = false
+			normalizedReturn = true
+		}
+	}
+
+	switch key {
+	case "up":
+		if request.SessionOffset > 0 {
+			request.SessionOffset--
+			return request, true
+		}
+		if request.SessionCursorStack != "" {
+			last := strings.LastIndexByte(request.SessionCursorStack, '\x00')
+			if last < 0 {
+				return request, false
+			}
+			request.SessionCursor = request.SessionCursorStack[last+1:]
+			request.SessionCursorStack = request.SessionCursorStack[:last]
+			request.SessionOffset = 0
+			request.SessionReturnToEnd = true
+			return request, true
+		}
+	case "down":
+		if request.SessionOffset+1 < len(data.Sessions) {
+			request.SessionOffset++
+			return request, true
+		}
+		if data.HasMore && data.NextCursor != "" {
+			request.SessionCursorStack += "\x00" + request.SessionCursor
+			request.SessionCursor = data.NextCursor
+			request.SessionOffset = 0
+			request.SessionReturnToEnd = false
+			return request, true
+		}
+	case "home":
+		if request.SessionOffset != 0 {
+			request.SessionOffset = 0
+			return request, true
+		}
+	case "end":
+		last := max(0, len(data.Sessions)-1)
+		if request.SessionOffset != last {
+			request.SessionOffset = last
+			return request, true
+		}
+	case "enter":
+		if len(data.Sessions) == 0 {
+			return request, false
+		}
+		index := min(max(request.SessionOffset, 0), len(data.Sessions)-1)
+		request.SessionOffset = index
+		request.SessionDetailID = data.Sessions[index].SessionID
+		request.SessionDetailOffset = 0
+		return request, true
+	case "f":
+		next, active := nextProject(request.SessionProject, request.SessionProjectActive, data.Projects)
+		if next == request.SessionProject && active == request.SessionProjectActive {
+			return request, false
+		}
+		request.SessionProject = next
+		request.SessionProjectActive = active
+		request.SessionCursor = ""
+		request.SessionCursorStack = ""
+		request.SessionOffset = 0
+		request.SessionReturnToEnd = false
+		return request, true
+	case "esc":
+		return request, false
+	}
+	return request, normalizedReturn
+}
+
+func sessionByID(sessions []historystore.CatalogSession, id string) (historystore.CatalogSession, bool) {
+	for _, session := range sessions {
+		if session.SessionID == id {
+			return session, true
+		}
+	}
+	return historystore.CatalogSession{}, false
+}
+
+func nextProject(current string, active bool, projects []tuipages.ProjectOption) (string, bool) {
+	if len(projects) == 0 {
+		return "", false
+	}
+	if !active {
+		return projects[0].Key, true
+	}
+	for index, project := range projects {
+		if project.Key != current {
+			continue
+		}
+		if index+1 < len(projects) {
+			return projects[index+1].Key, true
+		}
+		return "", false
+	}
+	return projects[0].Key, true
 }
 
 func newPageRouter(pages ...Page) PageRouter {

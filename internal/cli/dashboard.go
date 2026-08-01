@@ -14,6 +14,7 @@ import (
 
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/history"
 	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
@@ -22,6 +23,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 	"github.com/janiorvalle/tokenomnom/internal/vault"
 	"github.com/janiorvalle/tokenomnom/internal/version"
 	"github.com/janiorvalle/tokenomnom/internal/xdg"
@@ -118,6 +120,7 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
 	var ambient dashboardAmbientCache
+	var sessions dashboardSessionCache
 
 	return func(request tui.Request) (tui.Snapshot, error) {
 		home, err := os.UserHomeDir()
@@ -177,7 +180,17 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			}
 		}
 		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
-		snapshot.Warning = backupWarning
+		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
+			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
+		})
+		warnings := []string{}
+		if backupWarning != "" {
+			warnings = append(warnings, backupWarning)
+		}
+		if snapshot.Sessions.Warning != "" {
+			warnings = append(warnings, snapshot.Sessions.Warning)
+		}
+		snapshot.Warning = strings.Join(warnings, "; ")
 		if err != nil {
 			return snapshot, err
 		}
@@ -190,6 +203,95 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		})
 		return snapshot, err
 	}
+}
+
+const (
+	dashboardHistoryPageSize = 100
+)
+
+func loadDashboardHistory(path string, request tui.Request, location *time.Location) tuipages.SessionPageData {
+	info, err := historystore.Inspect(path)
+	if err != nil {
+		return tuipages.SessionPageData{Warning: "History index unavailable; run tokenomnom history index to rebuild it."}
+	}
+	if !info.Exists {
+		return tuipages.SessionPageData{}
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		return tuipages.SessionPageData{Warning: "History index unavailable; run tokenomnom history index to rebuild it."}
+	}
+	defer database.Close()
+
+	since, until := dashboardHistoryWindow(request.Range, location, time.Now())
+	baseQuery := historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider),
+		Since:    since, Until: until, Source: historystore.CatalogSourceAny,
+	}
+	query := baseQuery
+	query.Project = request.SessionProject
+	query.ProjectSet = request.SessionProjectActive
+	query.Limit = dashboardHistoryPageSize
+	query.Cursor = request.SessionCursor
+	page, err := database.ListCatalog(query)
+	if err != nil {
+		return tuipages.SessionPageData{Warning: "History sessions could not be read; press R to retry or run tokenomnom history index."}
+	}
+	projects, err := database.ListCatalogProjects(baseQuery)
+	if err != nil {
+		return tuipages.SessionPageData{Warning: "History project filters could not be read; press R to retry or run tokenomnom history index."}
+	}
+	return tuipages.SessionPageData{
+		Sessions: page.Sessions, Projects: tuipages.ProjectOptionsFromKeys(projects),
+		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
+		Warning: strings.Join(uniqueStrings(page.Warnings), "; "), Location: location,
+	}
+}
+
+func historyProvider(provider tui.Provider) history.Provider {
+	switch provider {
+	case tui.CodexProvider:
+		return history.ProviderCodex
+	case tui.ClaudeProvider:
+		return history.ProviderClaude
+	default:
+		return ""
+	}
+}
+
+func dashboardHistoryWindow(value tui.Range, location *time.Location, now time.Time) (*time.Time, *time.Time) {
+	if value == tui.RangeAll {
+		return nil, nil
+	}
+	if location == nil {
+		location = time.Local
+	}
+	today := now.In(location)
+	start := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, location)
+	until := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
+	var since time.Time
+	switch value {
+	case tui.Range90Days:
+		since = start.AddDate(0, 0, -89)
+	case tui.RangeYear:
+		since = start.AddDate(0, 0, 1).AddDate(-1, 0, 0)
+	default:
+		since = start.AddDate(0, 0, -29)
+	}
+	return &since, &until
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 // dashboardAmbientCache keeps facts that change on sync out of keypress loads.
@@ -210,6 +312,43 @@ func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func()
 	cache.status, cache.filesScanned = refresh()
 	cache.initialized = true
 	return cache.status, cache.filesScanned
+}
+
+// dashboardSessionCache keeps history I/O out of loads that only change a
+// report page or a selection. Sync is a refresh boundary: it bypasses the
+// cached query and replaces it so the next keypress sees freshly indexed data.
+type dashboardSessionCache struct {
+	mu          sync.Mutex
+	key         dashboardSessionCacheKey
+	data        tuipages.SessionPageData
+	initialized bool
+}
+
+type dashboardSessionCacheKey struct {
+	provider      tui.Provider
+	dateRange     tui.Range
+	project       string
+	projectActive bool
+	cursor        string
+}
+
+func (cache *dashboardSessionCache) snapshot(request tui.Request, refresh func() tuipages.SessionPageData) tuipages.SessionPageData {
+	key := dashboardSessionCacheKey{
+		provider:      request.Provider,
+		dateRange:     request.Range,
+		project:       request.SessionProject,
+		projectActive: request.SessionProjectActive,
+		cursor:        request.SessionCursor,
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync && cache.key == key {
+		return cache.data
+	}
+	cache.data = refresh()
+	cache.key = key
+	cache.initialized = true
+	return cache.data
 }
 
 func countDashboardFiles(roots []discover.Root) int {

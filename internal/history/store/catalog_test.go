@@ -119,6 +119,32 @@ func TestListCatalogRejectsCursorFilterReuseAndBounds(t *testing.T) {
 	}
 }
 
+func TestListCatalogProjectsPreservesKeysAndExplicitEmptyFilters(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	for index, project := range []string{"empty", "spaced"} {
+		source := sourceRef(fmt.Sprintf("/provider/project-%d.jsonl", index), history.LocationProviderLive)
+		extract := extraction(fmt.Sprintf("native:project-%d", index), fmt.Sprintf("project-%d", index), source, prompt("native:p", "p", "project", 1))
+		if _, err := database.ApplySource(extract, head(source, fmt.Sprintf("project-%d", index), 10, 1), ApplyReplace); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.db.Exec("UPDATE sessions SET project=? WHERE native_session_id=?", project, fmt.Sprintf("project-%d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec("UPDATE sessions SET project='' WHERE native_session_id=?", "project-0"); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := database.ListCatalogProjects(CatalogQuery{Source: CatalogSourceAny})
+	if err != nil || len(projects) != 2 || projects[0] != "" || projects[1] != "spaced" {
+		t.Fatalf("project keys err=%v values=%q", err, projects)
+	}
+	page, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, ProjectSet: true, Limit: 10})
+	if err != nil || len(page.Sessions) != 1 || page.Sessions[0].Project != "" {
+		t.Fatalf("explicit empty project filter err=%v page=%+v", err, page)
+	}
+}
+
 func TestListCatalogSourceFiltersRequireAvailabilityAndArchiveIsNotLive(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()
