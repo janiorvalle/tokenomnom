@@ -1,12 +1,33 @@
 package cli
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	historymodel "github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
 )
+
+func TestHistorySearchExportFailureStaysOutOfDashboardStderr(t *testing.T) {
+	t.Setenv("TOKENOMNOM_STATE_DIR", t.TempDir())
+	command := NewRootCommand()
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+
+	page := newHistorySearchPage(command, "", "")
+	_, err := page.Export(tui.Request{HistoryExportID: "missing-session"})
+	if err == nil {
+		t.Fatal("missing history export unexpectedly succeeded")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("history export corrupted dashboard stderr:\n%s", stderr.String())
+	}
+	if strings.Contains(err.Error(), "Usage:") {
+		t.Fatalf("history export error included Cobra usage:\n%s", err)
+	}
+}
 
 func TestHistorySearchPageReportsMissingIndexWithoutCreatingIt(t *testing.T) {
 	t.Setenv("TOKENOMNOM_STATE_DIR", t.TempDir())

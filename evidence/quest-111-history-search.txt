@@ -188,3 +188,22 @@ Command: go test -v ./internal/cli -run 'TestHistorySearch|TestHistoryExport' -c
 --- PASS: TestHistoryExportDirectoryTargetUsesPlatformSeparators (0.00s)
 PASS
 ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.262s
+
+PR review regression: export failures stay inside the alternate-screen TUI
+
+Before (`2f1f5eb^`):
+
+    Command: go test ./internal/cli -run TestHistorySearchExportFailureStaysOutOfDashboardStderr -count=1 -v
+    history_query_test.go:25: history export corrupted dashboard stderr:
+        tokenomnom history search: history export failed: history index does not exist; run tokenomnom history index first: Error: history index does not exist; run tokenomnom history index first
+        Usage:
+          export <session-id|prompt-id> [flags]
+    --- FAIL: TestHistorySearchExportFailureStaysOutOfDashboardStderr (0.00s)
+
+After (`56f1aae` plus the committed regression test):
+
+    Command: go test ./internal/cli -run TestHistorySearchExportFailureStaysOutOfDashboardStderr -count=1 -v
+    === RUN   TestHistorySearchExportFailureStaysOutOfDashboardStderr
+    --- PASS: TestHistorySearchExportFailureStaysOutOfDashboardStderr (0.00s)
+    PASS
+    ok github.com/janiorvalle/tokenomnom/internal/cli 0.010s
