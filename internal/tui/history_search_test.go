@@ -339,6 +339,23 @@ func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 	}
 }
 
+func TestHistorySearchEscapeStartsReplacementLoadWhileDetailIsLoading(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30}
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_1", Snippet: "prompt"}}}}, nil)
+	open := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter})
+	if !open.Changed || open.Action != PageActionLoad || open.Request.HistorySessionID != "ses_1" {
+		t.Fatalf("open detail result = %+v", open)
+	}
+	page.BeginLoad(Request{Width: request.Width, Height: request.Height, HistorySessionID: "ses_1", PageLoadToken: "detail"})
+	back := page.HandleKey(Request{
+		Width: request.Width, Height: request.Height, HistorySessionID: "ses_1", PageLoadToken: "detail",
+	}, tea.KeyMsg{Type: tea.KeyEsc})
+	if !back.Handled || !back.Changed || back.Action != PageActionLoad || back.Request.HistorySessionID != "" {
+		t.Fatalf("escape during detail load = %+v", back)
+	}
+}
+
 func TestHistorySearchBeginLoadHidesStaleResults(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 100, Height: 30, HistoryQuery: "prompt"}

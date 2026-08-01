@@ -119,7 +119,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	}
 	value := key.String()
 	result := PageKeyResult{Request: request}
-	if p.loading {
+	if p.loading && value != "esc" {
 		result.Handled = true
 		return result
 	}
