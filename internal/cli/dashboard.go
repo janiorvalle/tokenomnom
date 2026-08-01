@@ -360,6 +360,7 @@ func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh 
 		return data, err
 	}
 	if data.NotIndexed {
+		cache.data, cache.err, cache.key, cache.initialized = tuipages.HistorySearchData{}, nil, dashboardHistorySearchCacheKey{}, false
 		return data, nil
 	}
 	cache.data, cache.err, cache.key, cache.initialized = data, nil, key, true

@@ -255,7 +255,7 @@ func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
 	}
 }
 
-func TestDashboardHistorySearchCacheDoesNotCacheMissingIndex(t *testing.T) {
+func TestDashboardHistorySearchCacheInvalidatesMissingIndex(t *testing.T) {
 	cache := dashboardHistorySearchCache{}
 	indexed := false
 	calls := 0
@@ -276,6 +276,17 @@ func TestDashboardHistorySearchCacheDoesNotCacheMissingIndex(t *testing.T) {
 	data, err = cache.snapshot(request, refresh)
 	if err != nil || data.NotIndexed || len(data.Search.Hits) != 1 || calls != 2 {
 		t.Fatalf("post-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	indexed = false
+	request.Sync = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 3 {
+		t.Fatalf("removed-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = false
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 4 {
+		t.Fatalf("post-removal snapshot resurrected cached data = %+v err=%v calls=%d", data, err, calls)
 	}
 }
 
