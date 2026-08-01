@@ -344,8 +344,8 @@ func TestSessionsPageShowsIndexHintWhenHistoryIsAbsent(t *testing.T) {
 	view := model.View()
 	if !strings.Contains(view, "No history index is available.") || !strings.Contains(view, "tokenomnom history index") {
 		t.Fatalf("empty history hint missing:\n%s", view)
-		}
 	}
+}
 
 func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
 	model := loadedTestModel()

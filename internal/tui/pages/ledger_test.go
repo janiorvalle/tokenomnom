@@ -80,7 +80,7 @@ func TestLedgerIgnoresStaleRowsDuringZoom(t *testing.T) {
 
 func TestLedgerRenderShowsProvidersDeltaActivityAndTotal(t *testing.T) {
 	data := ledgerTestData()
-	view := Render(testRender(), data, State{Cursor: -1}, 30)
+	view := Render(ledgerTestRender(), data, State{Cursor: -1}, 30)
 	for _, fragment := range []string{"ALL YEARS", "PERIOD", "CODEX", "CLAUDE", "DELTA", "› 2026", "+$2.00", "TOTAL", "█", "▓"} {
 		if !strings.Contains(view, fragment) {
 			t.Errorf("ledger view missing %q:\n%s", fragment, view)
@@ -102,12 +102,12 @@ func TestLedgerRenderShowsProvidersDeltaActivityAndTotal(t *testing.T) {
 		t.Fatalf("ledger columns shifted between rows: starts=%d,%d,%d\n%s", rowActivityStart, smallActivityStart, totalActivityStart, view)
 	}
 	maxTokens := maxRowTokens(data.Rows)
-	largeBar := lipgloss.Width(activityBar(testRender(), data.Rows[0], 18, maxTokens, false))
-	smallBar := lipgloss.Width(activityBar(testRender(), data.Rows[1], 18, maxTokens, false))
+	largeBar := lipgloss.Width(activityBar(ledgerTestRender(), data.Rows[0], 18, maxTokens, false))
+	smallBar := lipgloss.Width(activityBar(ledgerTestRender(), data.Rows[1], 18, maxTokens, false))
 	if smallBar >= largeBar {
 		t.Fatalf("activity bar did not encode row magnitude: large=%d small=%d\n%s", largeBar, smallBar, view)
 	}
-	if totalBar := lipgloss.Width(activityBar(testRender(), data.Total, 18, maxTokens, true)); totalBar != 18 {
+	if totalBar := lipgloss.Width(activityBar(ledgerTestRender(), data.Total, 18, maxTokens, true)); totalBar != 18 {
 		t.Fatalf("total activity bar width = %d, want 18", totalBar)
 	}
 }
@@ -139,7 +139,7 @@ func TestLedgerMarksPartiallyPricedCosts(t *testing.T) {
 		{Key: "2026-07-13", Label: "Jul 13", Codex: ProviderTotals{Cost: pricing.Money(500_000_000), Tokens: 100, PricedTokens: 60, UnpricedTokens: 40}},
 	}}
 	data.Total = data.Rows[0].Add(data.Rows[1])
-	view := Render(testRender(), data, State{Zoom: ZoomDay, Month: "2026-07", Cursor: -1}, 30)
+	view := Render(ledgerTestRender(), data, State{Zoom: ZoomDay, Month: "2026-07", Cursor: -1}, 30)
 	for _, fragment := range []string{"~$1.00", "+~$0.50"} {
 		if !strings.Contains(view, fragment) {
 			t.Errorf("partial ledger value missing %q:\n%s", fragment, view)
@@ -182,6 +182,6 @@ func ledgerTestData() Data {
 	return Data{Available: true, Zoom: ZoomYear, Rows: rows, Total: total}
 }
 
-func testRender() theme.Context {
+func ledgerTestRender() theme.Context {
 	return theme.Context{Mode: theme.Plain, Width: 90, Palette: theme.NewPalette(nil)}
 }
