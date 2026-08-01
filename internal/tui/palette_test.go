@@ -132,6 +132,43 @@ func TestCommandPaletteDoesNotOpenDuringDashboardWork(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteReloadsAfterBusyResize(t *testing.T) {
+	for _, state := range []struct {
+		name       string
+		busy       bool
+		syncing    bool
+		completion tea.Msg
+	}{
+		{name: "command", busy: true, completion: commandFinishedMsg{command: paletteCommand{title: "Vault verify"}}},
+		{name: "sync", syncing: true, completion: loadedMsg{request: Request{Sync: true}, snapshot: Snapshot{}}},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			var got Request
+			model := loadedTestModel()
+			model.loader = func(request Request) (Snapshot, error) {
+				got = request
+				return Snapshot{}, nil
+			}
+			model.commandBusy, model.syncing = state.busy, state.syncing
+
+			updated, command := model.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
+			model = updated.(Model)
+			if command != nil || !model.pendingResize {
+				t.Fatalf("resize was not deferred during %s: command=%v pending=%v", state.name, command != nil, model.pendingResize)
+			}
+			updated, command = model.Update(state.completion)
+			model = updated.(Model)
+			if command == nil || model.pendingResize {
+				t.Fatalf("resize did not resume after %s: command=%v pending=%v", state.name, command != nil, model.pendingResize)
+			}
+			command()
+			if got.Width != 120 || got.Height != 35 {
+				t.Fatalf("deferred resize request=%+v", got)
+			}
+		})
+	}
+}
+
 func TestCommandPaletteTranslatesActionFailure(t *testing.T) {
 	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
 		ID: CommandPricingID,

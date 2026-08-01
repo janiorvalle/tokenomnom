@@ -243,6 +243,7 @@ type Model struct {
 	palette                  paletteState
 	commandBusy              bool
 	commandOutput            string
+	pendingResize            bool
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -399,6 +400,35 @@ func (m *Model) resumeInitialSync() tea.Cmd {
 	return m.loadCmd(next)
 }
 
+func (m *Model) resumePendingResize() tea.Cmd {
+	if !m.pendingResize || m.commandBusy || m.syncing {
+		return nil
+	}
+	if m.request.Width < minimumWidth || m.request.Height < minimumHeight {
+		m.pendingResize = false
+		return nil
+	}
+	m.pendingResize = false
+	return m.loadCmd(m.request)
+}
+
+func combineCommands(commands ...tea.Cmd) tea.Cmd {
+	available := make([]tea.Cmd, 0, len(commands))
+	for _, command := range commands {
+		if command != nil {
+			available = append(available, command)
+		}
+	}
+	switch len(available) {
+	case 0:
+		return nil
+	case 1:
+		return available[0]
+	default:
+		return tea.Batch(available...)
+	}
+}
+
 // Update handles navigation and background snapshot results.
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
@@ -407,9 +437,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.render.Width = msg.Width
 		m.palette.resize(msg.Width)
 		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing {
+			m.pendingResize = false
 			command := m.loadCmd(m.request)
 			return m, command
 		}
+		m.pendingResize = msg.Width >= minimumWidth && msg.Height >= minimumHeight
 		return m, nil
 	case spinner.TickMsg:
 		var command tea.Cmd
@@ -468,7 +500,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncing = false
 			}
 			m.warning = msg.err.Error()
-			return m, nil
+			return m, m.resumePendingResize()
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
@@ -498,7 +530,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
 			}
-			return m, m.maybeCheckSkillOffer()
+			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingResize())
 		}
 		if !initial {
 			return m, nil
@@ -555,12 +587,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.commandOutput = msg.err.Error()
 			}
 			m.warning = paletteActionFailure(msg.command, msg.err)
-			return m, nil
+			return m, m.resumePendingResize()
 		}
 		m.warning = ""
 		m.commandOutput = msg.result.Output
 		m.status = strings.ToLower(msg.command.title) + " complete"
-		return m, nil
+		return m, m.resumePendingResize()
 	case tea.KeyMsg:
 		if m.palette.active {
 			return m.updatePaletteKey(msg)
