@@ -22,6 +22,13 @@ type jsonFilters struct {
 	Model          *string `json:"model"`
 	Since          *string `json:"since"`
 	Until          *string `json:"until"`
+	CWD            *string `json:"cwd,omitempty"`
+	Repo           *string `json:"repo,omitempty"`
+	Project        *string `json:"project,omitempty"`
+	Branch         *string `json:"branch,omitempty"`
+	Source         *string `json:"source,omitempty"`
+	Cursor         *string `json:"cursor,omitempty"`
+	Limit          *int    `json:"limit,omitempty"`
 	ThreadKind     *string `json:"thread_kind,omitempty"`
 	Role           *string `json:"role,omitempty"`
 	PromptKind     *string `json:"prompt_kind,omitempty"`

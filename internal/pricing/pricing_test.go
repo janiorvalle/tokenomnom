@@ -116,6 +116,30 @@ func TestCostMathAndDiagnostics(t *testing.T) {
 	}
 }
 
+func TestCostRowsSumsIndependentEffectiveDateBuckets(t *testing.T) {
+	table, err := Load(strings.NewReader(`{"test-model":[
+		{"base_input":1,"output":2,"status":"published","source":"https://example.com/old","effective_until":"2026-07-31"},
+		{"base_input":3,"output":4,"status":"published","source":"https://example.com/new","effective_from":"2026-08-01"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []store.Usage{
+		{Date: "2026-07-31", Model: "test-model", Input: 1_000_000},
+		{Date: "2026-08-01", Model: "test-model", Input: 1_000_000, Output: 1_000_000},
+	}
+	want := table.Cost(rows[0])
+	newCost := table.Cost(rows[1])
+	want.Total += newCost.Total
+	want.BaseInput += newCost.BaseInput
+	want.Output += newCost.Output
+	want.PricedTokens += newCost.PricedTokens
+	got := table.CostRows(rows)
+	if got != want {
+		t.Fatalf("CostRows() = %+v, want %+v", got, want)
+	}
+}
+
 func TestEffectiveDateBoundaries(t *testing.T) {
 	table, err := Load()
 	if err != nil {
