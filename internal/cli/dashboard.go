@@ -48,7 +48,8 @@ func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) err
 	case "claude":
 		provider = tui.ClaudeProvider
 	}
-	return runDashboardProgram(cmd, tui.NewWithProvider(render, loader, offer, provider))
+	historyPage := newHistorySearchPage(cmd, *codexDir, *claudeDir)
+	return runDashboardProgram(cmd, tui.NewWithProviderAndPages(render, loader, offer, provider, historyPage))
 }
 
 func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
@@ -324,6 +325,46 @@ type dashboardSessionCache struct {
 	key         dashboardSessionCacheKey
 	data        tuipages.SessionPageData
 	initialized bool
+}
+
+// dashboardHistorySearchCache keeps repeated page visits from reopening the
+// history index. Sync is the refresh boundary so a search can still see newly
+// indexed prompts after an explicit refresh.
+type dashboardHistorySearchCache struct {
+	mu          sync.Mutex
+	key         dashboardHistorySearchCacheKey
+	data        tuipages.HistorySearchData
+	err         error
+	initialized bool
+}
+
+type dashboardHistorySearchCacheKey struct {
+	query     string
+	sessionID string
+	provider  tui.Provider
+	dateRange tui.Range
+}
+
+func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh func() (tuipages.HistorySearchData, error)) (tuipages.HistorySearchData, error) {
+	key := dashboardHistorySearchCacheKey{
+		query: request.HistoryQuery, sessionID: request.HistorySessionID,
+		provider: request.Provider, dateRange: request.Range,
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !request.Sync && cache.key == key {
+		return cache.data, cache.err
+	}
+	data, err := refresh()
+	if err != nil {
+		return data, err
+	}
+	if data.NotIndexed {
+		cache.data, cache.err, cache.key, cache.initialized = tuipages.HistorySearchData{}, nil, dashboardHistorySearchCacheKey{}, false
+		return data, nil
+	}
+	cache.data, cache.err, cache.key, cache.initialized = data, nil, key, true
+	return cache.data, nil
 }
 
 type dashboardSessionCacheKey struct {

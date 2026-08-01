@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
@@ -49,7 +51,54 @@ type Page interface {
 	Section() PageSection
 	Title() string
 	View(PageContext) string
-	Update(Request, string) (Request, bool)
+	Update(PageContext, string) (Request, bool)
+	NeedsReload(PageContext, Request) bool
+}
+
+// PageAction tells the app whether a handled key needs background work.
+type PageAction uint8
+
+const (
+	PageActionNone PageAction = iota
+	PageActionLoad
+	PageActionExport
+)
+
+// PageKeyResult is the result of a page-owned key interaction.
+type PageKeyResult struct {
+	Request Request
+	Handled bool
+	Changed bool
+	Action  PageAction
+}
+
+// InteractivePage can claim keys that are not global dashboard bindings, such
+// as text input, Enter, and page-local export commands.
+type InteractivePage interface {
+	Page
+	HandleKey(Request, tea.KeyMsg) PageKeyResult
+	Editing() bool
+}
+
+// PageLoader owns data retrieval for a page. The app runs Load outside the
+// Bubble Tea update loop and applies the result back on the update loop.
+type PageLoader interface {
+	Page
+	Load(Request) (any, error)
+	Apply(Request, any, error)
+}
+
+// PageLoadTracker receives a load token on the update loop before the app
+// starts a PageLoader command, so the page can reject stale responses safely.
+type PageLoadTracker interface {
+	BeginLoad(Request)
+}
+
+// PageExporter owns a page-local export action.
+type PageExporter interface {
+	Page
+	Export(Request) (string, error)
+	ApplyExport(Request, string, error)
 }
 
 type pageKeyHandler func(Request, string) (Request, bool)
@@ -64,13 +113,6 @@ type snapshotPage struct {
 	keyHandler pageKeyHandler
 }
 
-// contextualPage can inspect the current snapshot before handling a key. The
-// original Page.Update contract stays small for existing report pages, while
-// interactive pages can open detail views without duplicating data elsewhere.
-type contextualPage interface {
-	UpdateContext(PageContext, string) (Request, bool)
-}
-
 func (p snapshotPage) ID() PageID           { return p.id }
 func (p snapshotPage) Section() PageSection { return p.section }
 func (p snapshotPage) Title() string        { return p.title }
@@ -82,12 +124,14 @@ func (p snapshotPage) View(context PageContext) string {
 	return context.Snapshot.Views[p.viewIndex]
 }
 
-func (p snapshotPage) Update(request Request, key string) (Request, bool) {
+func (p snapshotPage) Update(context PageContext, key string) (Request, bool) {
 	if p.keyHandler == nil {
-		return request, false
+		return context.Request, false
 	}
-	return p.keyHandler(request, key)
+	return p.keyHandler(context.Request, key)
 }
+
+func (snapshotPage) NeedsReload(PageContext, Request) bool { return true }
 
 type ledgerPage struct{}
 
@@ -101,11 +145,9 @@ func (ledgerPage) View(context PageContext) string {
 	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
 }
 
-func (ledgerPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
-}
+func (ledgerPage) NeedsReload(PageContext, Request) bool { return true }
 
-func (ledgerPage) UpdateContext(context PageContext, key string) (Request, bool) {
+func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
 	if key == "left" || key == "right" {
 		return context.Request, false
 	}
@@ -129,26 +171,29 @@ type pageGroup struct {
 	pages   []Page
 }
 
-func newRouter() PageRouter {
-	return newPageRouter(
+func newRouter(extra ...Page) PageRouter {
+	pages := []Page{
 		dailyPage{snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage}},
 		ledgerPage{},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
 		sessionsPage{},
-	)
+	}
+	return newPageRouter(append(pages, extra...)...)
 }
 
 type dailyPage struct {
 	snapshotPage
 }
 
-func (dailyPage) UpdateContext(context PageContext, key string) (Request, bool) {
+func (dailyPage) Update(context PageContext, key string) (Request, bool) {
 	if key == "down" && context.Request.DailyDetailOffset >= max(0, context.Snapshot.DailyDetailMaxOffset) {
 		return context.Request, false
 	}
 	return updateDailyPage(context.Request, key)
 }
+
+func (dailyPage) NeedsReload(PageContext, Request) bool { return true }
 
 type sessionsPage struct{}
 
@@ -169,12 +214,16 @@ func (sessionsPage) View(context PageContext) string {
 	}, context.Width, context.Height)
 }
 
-func (sessionsPage) Update(request Request, key string) (Request, bool) {
-	return updateSessionsRequest(request, tuipages.SessionPageData{}, key)
+func (sessionsPage) Update(context PageContext, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(context, key)
 }
 
-func (sessionsPage) UpdateContext(context PageContext, key string) (Request, bool) {
-	return updateSessionsRequestWithContext(context, key)
+func (sessionsPage) NeedsReload(context PageContext, request Request) bool {
+	return context.Request.SessionProject != request.SessionProject ||
+		context.Request.SessionProjectActive != request.SessionProjectActive ||
+		context.Request.SessionCursor != request.SessionCursor ||
+		context.Request.SessionCursorStack != request.SessionCursorStack ||
+		context.Request.SessionDetailID != request.SessionDetailID
 }
 
 func updateSessionsRequest(request Request, data tuipages.SessionPageData, key string) (Request, bool) {

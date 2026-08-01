@@ -208,20 +208,6 @@ func clampIndex(index, length int) int {
 	return min(max(index, 0), length-1)
 }
 
-func max(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
-}
-
-func min(left, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
 // ProjectOptions returns stable project keys and display labels for a catalog.
 // The history query already bounds the input page; this keeps keyboard
 // filtering deterministic without doing unbounded work in the TUI.

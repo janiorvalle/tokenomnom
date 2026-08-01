@@ -342,6 +342,31 @@ func safePrettyPreview(value string) string {
 	return result.String()
 }
 
+func safePrettySearchSnippet(value string) string {
+	var result strings.Builder
+	for _, current := range value {
+		switch {
+		case current == history.SearchSnippetMatchStart || current == history.SearchSnippetMatchEnd:
+			result.WriteRune(current)
+		case current == '\n' || current == '\r':
+			result.WriteByte(' ')
+		case unicode.IsControl(current):
+			fmt.Fprintf(&result, "\\u%04x", current)
+		default:
+			result.WriteRune(current)
+		}
+	}
+	return result.String()
+}
+
+func safePrettySearchOutput(value, matchStart, matchEnd string) string {
+	if matchStart == "" || matchEnd == "" {
+		matchStart, matchEnd = string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
+	value = strings.NewReplacer(matchStart, "[", matchEnd, "]").Replace(value)
+	return safePrettyPreview(value)
+}
+
 func newHistoryStatusCommand(codexDir, claudeDir *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",

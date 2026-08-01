@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,85 @@ func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
 	data = cache.snapshot(request, refresh)
 	if data.Warning != "four" || calls != 4 {
 		t.Fatalf("post-sync session snapshot = %+v calls=%d", data, calls)
+	}
+}
+
+func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
+	cache := dashboardHistorySearchCache{}
+	calls := 0
+	refresh := func() (tuipages.HistorySearchData, error) {
+		calls++
+		return tuipages.HistorySearchData{Search: tuipages.SearchResult{Warnings: []string{fmt.Sprintf("load-%d", calls)}}}, nil
+	}
+	request := tui.Request{HistoryQuery: "do not implement", Provider: tui.AllProviders, Range: tui.Range30Days}
+
+	data, err := cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-1" || calls != 1 {
+		t.Fatalf("initial search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-1" || calls != 1 {
+		t.Fatalf("cached search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Provider = tui.CodexProvider
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-2" || calls != 2 {
+		t.Fatalf("provider-filtered search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Range = tui.Range90Days
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-3" || calls != 3 {
+		t.Fatalf("range-filtered search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.HistorySessionID = "ses_example"
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-4" || calls != 4 {
+		t.Fatalf("session detail snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-5" || calls != 5 {
+		t.Fatalf("sync search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = false
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-5" || calls != 5 {
+		t.Fatalf("post-sync cached search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+}
+
+func TestDashboardHistorySearchCacheInvalidatesMissingIndex(t *testing.T) {
+	cache := dashboardHistorySearchCache{}
+	indexed := false
+	calls := 0
+	refresh := func() (tuipages.HistorySearchData, error) {
+		calls++
+		if !indexed {
+			return tuipages.HistorySearchData{NotIndexed: true}, nil
+		}
+		return tuipages.HistorySearchData{Search: tuipages.SearchResult{Hits: []tuipages.SearchHit{{SessionID: "ses_ready"}}}}, nil
+	}
+	request := tui.Request{HistoryQuery: "prompt", Provider: tui.AllProviders, Range: tui.Range30Days}
+
+	data, err := cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 1 {
+		t.Fatalf("missing-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	indexed = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.NotIndexed || len(data.Search.Hits) != 1 || calls != 2 {
+		t.Fatalf("post-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	indexed = false
+	request.Sync = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 3 {
+		t.Fatalf("removed-index snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.Sync = false
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || !data.NotIndexed || calls != 4 {
+		t.Fatalf("post-removal snapshot resurrected cached data = %+v err=%v calls=%d", data, err, calls)
 	}
 }
 

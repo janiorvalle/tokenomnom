@@ -187,6 +187,15 @@ func TestSyncRefreshInvalidatesPreSyncLoads(t *testing.T) {
 	}
 }
 
+func TestDashboardRequestMatchIgnoresHistoryDetailOffset(t *testing.T) {
+	left := Request{Width: 100, Height: 30, SessionDetailOffset: 0}
+	right := left
+	right.SessionDetailOffset = 7
+	if !sameRequestIgnoringSync(left, right) {
+		t.Fatal("history detail scrolling invalidated the dashboard request match")
+	}
+}
+
 func TestSyncSurvivesInterveningLoadError(t *testing.T) {
 	model := loadedTestModel()
 	model.syncing = true
@@ -362,12 +371,156 @@ func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
 	}
 }
 
+func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded = false, true
+	updated, command := model.Update(keyMsg("6"))
+	model = updated.(Model)
+	if model.activePage().ID() != page.id || command == nil {
+		t.Fatalf("page selection active=%v command=%v", model.activePage(), command != nil)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if page.applied != "loaded" || page.loadedRequest.HistoryQuery != "" {
+		t.Fatalf("page load result=%q request=%+v", page.applied, page.loadedRequest)
+	}
+	updated, command = model.Update(keyMsg("R"))
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("page refresh did not schedule a page load")
+	}
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("page refresh commands = %T %v, want two commands", message, batch)
+	}
+	dashboardLoaded := false
+	dashboardRequest := Request{}
+	for _, refreshCommand := range batch {
+		message := refreshCommand()
+		updated, _ = model.Update(message)
+		model = updated.(Model)
+		if _, ok := message.(loadedMsg); ok {
+			dashboardLoaded = true
+			dashboardRequest = message.(loadedMsg).request
+		}
+		if _, ok := message.(pageLoadedMsg); ok && !dashboardLoaded && !model.syncing {
+			t.Fatal("page load cleared global refresh state before dashboard load completed")
+		}
+	}
+	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
+		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
+	}
+	if dashboardRequest.PageLoadToken != "" || !dashboardRequest.Sync || page.loadedRequest.PageLoadToken == "" {
+		t.Fatalf("dashboard refresh request leaked page token: dashboard=%+v page=%+v", dashboardRequest, page.loadedRequest)
+	}
+	updated, command = model.Update(keyMsg("p"))
+	model = updated.(Model)
+	message = command()
+	batch, ok = message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("provider change commands = %T %v, want two commands", message, batch)
+	}
+	dashboardLoaded = false
+	dashboardRequest = Request{}
+	for _, providerCommand := range batch {
+		message := providerCommand()
+		if loaded, ok := message.(loadedMsg); ok {
+			dashboardLoaded = true
+			dashboardRequest = loaded.request
+		}
+		updated, _ = model.Update(message)
+		model = updated.(Model)
+	}
+	if page.loads != 3 || page.loadedRequest.Provider != CodexProvider {
+		t.Fatalf("provider change loads=%d request=%+v", page.loads, page.loadedRequest)
+	}
+	if !dashboardLoaded || dashboardRequest.PageLoadToken != "" || page.loadedRequest.PageLoadToken == "" {
+		t.Fatalf("dashboard provider request leaked page token: dashboard=%+v page=%+v", dashboardRequest, page.loadedRequest)
+	}
+}
+
+func TestPageOnlyLoadDoesNotInvalidateDashboardResponse(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded = false, true
+	model.syncing = true
+	dashboardRequest := model.request
+	dashboardRequest.Sync = true
+	model.loadCmd(dashboardRequest)
+	dashboardGeneration := model.loadGeneration
+	model, _ = model.startPageLoad(page, model.request)
+	updated, _ := model.Update(loadedMsg{
+		request:    dashboardRequest,
+		generation: dashboardGeneration,
+		snapshot:   Snapshot{Views: [4]string{"fresh dashboard"}},
+	})
+	model = updated.(Model)
+	if model.snapshot.Views[0] != "fresh dashboard" || model.syncing {
+		t.Fatalf("page-only load invalidated dashboard response: snapshot=%+v syncing=%v request=%+v", model.snapshot, model.syncing, model.request)
+	}
+}
+
+func TestHelpStillAllowsQuit(t *testing.T) {
+	model := loadedTestModel()
+	updated, _ := model.Update(keyMsg("?"))
+	model = updated.(Model)
+	if !model.help {
+		t.Fatal("help did not open")
+	}
+	updated, command := model.Update(keyMsg("q"))
+	if command == nil {
+		t.Fatalf("quit was blocked by help: help=%v command=%v", updated.(Model).help, command != nil)
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T", command())
+	}
+}
+
+func TestEditingPageDoesNotLoseGlobalNavigation(t *testing.T) {
+	page := &interactiveTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := loadedTestModel()
+	model.router = newPageRouter(append(model.router.Pages(), page)...)
+	if !model.router.Select(page.id) {
+		t.Fatal("could not select interactive page")
+	}
+
+	updated, command := model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if page.lastKey != "" || model.request.Provider != CodexProvider || command == nil {
+		t.Fatalf("global key was not preserved: last=%q provider=%v command=%v", page.lastKey, model.request.Provider, command != nil)
+	}
+
+	page.editing = true
+	before := model.request
+	updated, command = model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if page.lastKey != "p" || model.request != before || command != nil {
+		t.Fatalf("editing key escaped page: last=%q request=%+v command=%v", page.lastKey, model.request, command != nil)
+	}
+	updated, command = model.Update(keyMsg("?"))
+	model = updated.(Model)
+	if page.lastKey != "?" || model.help || model.request != before || command != nil {
+		t.Fatalf("question mark escaped editor: last=%q help=%v request=%+v command=%v", page.lastKey, model.help, model.request, command != nil)
+	}
+
+	page.editing = false
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	if page.lastKey != "left" || command != nil {
+		t.Fatalf("page-local special key was not delivered: last=%q command=%v", page.lastKey, command != nil)
+	}
+}
+
 func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 	model := loadedTestModel()
 	footer := model.footerHintsView(newCockpitLayout(model.request.Width, model.request.Height).innerWidth)
 	model = updateKeyForTest(t, model, "?")
 	help := model.View()
-	for _, binding := range KeyBindings() {
+	for _, binding := range helpBindings() {
 		if binding.Footer != "" && !strings.Contains(footer, binding.FooterKey+" "+binding.Footer) {
 			t.Errorf("footer missing %q binding: %s", binding.FooterKey, footer)
 		}
@@ -375,6 +528,9 @@ func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 		if !strings.Contains(help, display) || !strings.Contains(help, binding.Description) {
 			t.Errorf("help missing registry binding %q / %q:\n%s", display, binding.Description, help)
 		}
+	}
+	if !strings.Contains(help, "e export") {
+		t.Fatalf("help omitted the export shortcut:\n%s", help)
 	}
 }
 
@@ -737,6 +893,22 @@ func TestSkillOfferCheckWaitsForInitialData(t *testing.T) {
 	}
 }
 
+func TestHistorySearchArrowKeysStayInInput(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	model := loadedTestModel()
+	model.router = newRouter(page)
+	if !model.router.Select(HistorySearchPageID) {
+		t.Fatal("history search page was not registered")
+	}
+
+	model = updateKeyForTest(t, model, "/")
+	model = updateKeyForTest(t, model, "d")
+	model = updateKeyForTest(t, model, "left")
+	if model.request.HistoryQuery != "d" || !page.Editing() {
+		t.Fatalf("arrow key changed query or focus: query=%q editing=%v", model.request.HistoryQuery, page.Editing())
+	}
+}
+
 func TestSkillOfferFitsMinimumTerminal(t *testing.T) {
 	model := offerTestModel(nil, nil)
 	model.request.Width, model.request.Height = minimumWidth, minimumHeight
@@ -838,9 +1010,10 @@ func (p testPage) Title() string        { return p.title }
 func (p testPage) View(PageContext) string {
 	return p.title
 }
-func (p testPage) Update(request Request, _ string) (Request, bool) {
-	return request, false
+func (p testPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
 }
+func (p testPage) NeedsReload(PageContext, Request) bool { return true }
 
 func testSessionPageData() tuipages.SessionPageData {
 	return tuipages.SessionPageData{
@@ -852,3 +1025,55 @@ func testSessionPageData() tuipages.SessionPageData {
 		},
 	}
 }
+
+type asyncTestPage struct {
+	id            PageID
+	section       PageSection
+	title         string
+	loadedRequest Request
+	applied       string
+	loads         int
+}
+
+func (p *asyncTestPage) ID() PageID           { return p.id }
+func (p *asyncTestPage) Section() PageSection { return p.section }
+func (p *asyncTestPage) Title() string        { return p.title }
+func (p *asyncTestPage) View(PageContext) string {
+	return p.title
+}
+func (p *asyncTestPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
+}
+func (p *asyncTestPage) NeedsReload(PageContext, Request) bool { return true }
+func (p *asyncTestPage) Load(request Request) (any, error) {
+	p.loads++
+	p.loadedRequest = request
+	return "loaded", nil
+}
+func (p *asyncTestPage) Apply(_ Request, value any, _ error) {
+	p.applied, _ = value.(string)
+}
+
+type interactiveTestPage struct {
+	id      PageID
+	section PageSection
+	title   string
+	editing bool
+	lastKey string
+}
+
+func (p *interactiveTestPage) ID() PageID           { return p.id }
+func (p *interactiveTestPage) Section() PageSection { return p.section }
+func (p *interactiveTestPage) Title() string        { return p.title }
+func (p *interactiveTestPage) View(PageContext) string {
+	return p.title
+}
+func (p *interactiveTestPage) Update(context PageContext, _ string) (Request, bool) {
+	return context.Request, false
+}
+func (p *interactiveTestPage) NeedsReload(PageContext, Request) bool { return true }
+func (p *interactiveTestPage) HandleKey(request Request, key tea.KeyMsg) PageKeyResult {
+	p.lastKey = key.String()
+	return PageKeyResult{Request: request, Handled: true}
+}
+func (p *interactiveTestPage) Editing() bool { return p.editing }

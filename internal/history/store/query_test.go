@@ -141,6 +141,39 @@ func TestSearchLiteralPhraseEscapesPunctuationOperatorsAndRequiresAdjacency(t *t
 	if err != nil || len(punctuation.Hits) != 0 {
 		t.Fatalf("punctuation-only literal became syntax: err=%v page=%+v", err, punctuation)
 	}
+	bracketSource := sourceRef("/provider/brackets.jsonl", history.LocationProviderLive)
+	bracketPrompt := prompt("native:brackets", "brackets", "array items[0] remains literal", 1)
+	bracketExtract := extraction("native:brackets", "brackets", bracketSource, bracketPrompt)
+	if _, err := database.ApplySource(bracketExtract, head(bracketSource, "brackets", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	brackets, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "items"})
+	if err != nil || len(brackets.Hits) != 1 || !strings.Contains(brackets.Hits[0].Snippet, "[0]") || brackets.SnippetMatchStart == "" || !strings.Contains(brackets.Hits[0].Snippet, brackets.SnippetMatchStart) {
+		t.Fatalf("bracket-preserving snippet err=%v page=%+v", err, brackets)
+	}
+}
+
+func TestSearchSnippetMarkersAvoidIndexedPromptText(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/marker-collision.jsonl", history.LocationProviderLive)
+	literalMarkers := string(history.SearchSnippetMatchStart) + " " + string(history.SearchSnippetMatchEnd) + " " +
+		string(history.SearchSnippetMatchStart) + "0" + string(history.SearchSnippetMatchEnd)
+	promptValue := prompt("native:marker-collision", "marker-collision", literalMarkers+" needle", 1)
+	if _, err := database.ApplySource(extraction("native:marker-collision", "marker-collision", source, promptValue), head(source, "marker-collision", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "needle"})
+	if err != nil || len(page.Hits) != 1 {
+		t.Fatalf("marker collision search err=%v page=%+v", err, page)
+	}
+	if page.SnippetMatchStart == "" || page.SnippetMatchEnd == "" || page.SnippetMatchStart == string(history.SearchSnippetMatchStart) || page.SnippetMatchEnd == string(history.SearchSnippetMatchEnd) || strings.Contains(literalMarkers, page.SnippetMatchStart) || strings.Contains(literalMarkers, page.SnippetMatchEnd) {
+		t.Fatalf("search markers are missing or collide with indexed prompt text: start=%q end=%q", page.SnippetMatchStart, page.SnippetMatchEnd)
+	}
+	if !strings.Contains(page.Hits[0].Snippet, literalMarkers) || !strings.Contains(page.Hits[0].Snippet, page.SnippetMatchStart) || !strings.Contains(page.Hits[0].Snippet, page.SnippetMatchEnd) {
+		t.Fatalf("snippet lost literal or generated markers: %q", page.Hits[0].Snippet)
+	}
 }
 
 func TestSearchDeduplicatesAndBoundsOccurrenceMetadata(t *testing.T) {
