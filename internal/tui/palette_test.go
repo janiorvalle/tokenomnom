@@ -152,6 +152,22 @@ func TestCommandPaletteDoesNotOpenDuringDashboardWork(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteDefersToSkillOffer(t *testing.T) {
+	model := loadedTestModel()
+	model = openPaletteForTest(t, model)
+
+	updated, _ := model.Update(skillOfferCheckedMsg{check: SkillOfferCheck{HasRoots: true}})
+	model = updated.(Model)
+	if model.offerState != skillOfferPrompt || model.palette.active || !strings.Contains(model.View(), "Teach your agents") {
+		t.Fatalf("skill offer did not take precedence: offer=%v palette=%v\n%s", model.offerState, model.palette.active, model.View())
+	}
+	updated, _ = model.Update(keyMsg("x"))
+	model = updated.(Model)
+	if model.offerState != skillOfferPrompt {
+		t.Fatalf("offer lost key ownership: state=%v", model.offerState)
+	}
+}
+
 func TestCommandPaletteReloadsAfterBusyResize(t *testing.T) {
 	for _, state := range []struct {
 		name       string
@@ -186,6 +202,33 @@ func TestCommandPaletteReloadsAfterBusyResize(t *testing.T) {
 				t.Fatalf("deferred resize request=%+v", got)
 			}
 		})
+	}
+}
+
+func TestCommandPaletteKeepsSuccessfulResultAfterResizeFailure(t *testing.T) {
+	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
+		ID:  CommandVaultVerifyID,
+		Run: func() (CommandResult, error) { return CommandResult{Output: "verified 3 archived files"}, nil },
+	}}})
+	model = openPaletteForTest(t, model)
+	for _, runeValue := range []rune("vault") {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{runeValue}})
+		model = updated.(Model)
+	}
+	updated, action := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	model.pendingResize = true
+	model.loader = func(Request) (Snapshot, error) { return Snapshot{}, errors.New("resize reload failed") }
+	updated, reload := model.Update(action())
+	model = updated.(Model)
+	if reload == nil {
+		t.Fatal("successful command did not schedule deferred resize reload")
+	}
+	updated, _ = model.Update(reload())
+	model = updated.(Model)
+	view := model.View()
+	if !strings.Contains(view, "COMMAND RESULT") || strings.Contains(view, "COMMAND FAILED") || !strings.Contains(view, "verified 3 archived files") || model.warning != "resize reload failed" {
+		t.Fatalf("resize failure corrupted command result: warning=%q\n%s", model.warning, view)
 	}
 }
 

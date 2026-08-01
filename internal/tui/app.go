@@ -245,6 +245,8 @@ type Model struct {
 	commandOutput            string
 	pendingResize            bool
 	quitAfterCommand         bool
+	commandOutputFailure     bool
+	commandOutputHint        string
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -571,9 +573,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.check.Installed {
 			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
 		}
+		m.palette.close()
 		m.offerState = skillOfferPrompt
 		return m, nil
 	case skillOfferInstalledMsg:
+		m.palette.close()
 		m.offerState = skillOfferResult
 		m.offerResults = append([]string(nil), msg.results...)
 		if msg.err != nil {
@@ -597,7 +601,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.commandOutput == "" {
 				m.commandOutput = msg.err.Error()
 			}
-			m.warning = paletteActionFailure(msg.command, msg.err)
+			m.commandOutputFailure = true
+			m.commandOutputHint = paletteActionFailure(msg.command, msg.err)
+			m.warning = m.commandOutputHint
 			if quitAfterCommand {
 				return m, tea.Quit
 			}
@@ -605,12 +611,18 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.warning = ""
 		m.commandOutput = msg.result.Output
+		m.commandOutputFailure = false
+		m.commandOutputHint = ""
 		m.status = strings.ToLower(msg.command.title) + " complete"
 		if quitAfterCommand {
 			return m, tea.Quit
 		}
 		return m, m.resumePendingResize()
 	case tea.KeyMsg:
+		if m.offerState != skillOfferHidden {
+			m.palette.close()
+			return m.updateSkillOfferKey(msg.String())
+		}
 		if m.palette.active {
 			return m.updatePaletteKey(msg)
 		}
@@ -847,6 +859,7 @@ func (m Model) updateCommandOutputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.commandOutput, m.warning = "", ""
+	m.commandOutputFailure, m.commandOutputHint = false, ""
 	return m, nil
 }
 

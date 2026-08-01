@@ -145,9 +145,9 @@ func (m Model) commandOutputView() string {
 	}
 	title := m.render.Palette.Header().Render("COMMAND RESULT")
 	footer := m.render.Palette.Subtle().Render("Press any key to return")
-	if m.warning != "" {
+	if m.commandOutputFailure {
 		title = m.render.Palette.Warning().Render("COMMAND FAILED")
-		footer = m.render.Palette.Warning().Render(wrapText(m.warning, contentWidth)) + "\n" + footer
+		footer = m.render.Palette.Warning().Render(wrapText(m.commandOutputHint, contentWidth)) + "\n" + footer
 	}
 	body := title + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footer
 	modal := m.render.Palette.Surface().
