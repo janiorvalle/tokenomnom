@@ -138,6 +138,7 @@ func TestCommandPaletteDoesNotOpenDuringDashboardWork(t *testing.T) {
 	}{
 		{name: "loading", set: func(model *Model) { model.loading = true }},
 		{name: "syncing", set: func(model *Model) { model.syncing = true }},
+		{name: "pending startup sync", set: func(model *Model) { model.pendingSync = true }},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			model := loadedTestModel()
@@ -165,6 +166,26 @@ func TestCommandPaletteDefersToSkillOffer(t *testing.T) {
 	model = updated.(Model)
 	if model.offerState != skillOfferPrompt {
 		t.Fatalf("offer lost key ownership: state=%v", model.offerState)
+	}
+}
+
+func TestCommandPaletteDefersStartupSyncUntilActionCompletes(t *testing.T) {
+	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
+		ID:  CommandVaultVerifyID,
+		Run: func() (CommandResult, error) { return CommandResult{}, nil },
+	}}})
+	model.commandBusy = true
+	model.pendingSync = true
+
+	updated, command := model.Update(skillOfferRecordedMsg{})
+	model = updated.(Model)
+	if command != nil || !model.pendingSync {
+		t.Fatalf("startup sync was not deferred: command=%v pending=%v", command != nil, model.pendingSync)
+	}
+	updated, command = model.Update(commandFinishedMsg{command: paletteCommand{title: "Vault verify"}})
+	model = updated.(Model)
+	if command == nil || model.pendingSync || !model.syncing {
+		t.Fatalf("startup sync did not resume after action: command=%v pending=%v syncing=%v", command != nil, model.pendingSync, model.syncing)
 	}
 }
 

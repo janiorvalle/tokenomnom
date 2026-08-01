@@ -394,10 +394,12 @@ func (m *Model) maybeCheckSkillOffer() tea.Cmd {
 }
 
 func (m *Model) resumeInitialSync() tea.Cmd {
-	if !m.pendingSync {
+	if !m.pendingSync || m.commandBusy {
 		return nil
 	}
 	m.pendingSync = false
+	m.pendingResize = false
+	m.syncing = true
 	next := m.request
 	next.Sync = true
 	return m.loadCmd(next)
@@ -413,6 +415,13 @@ func (m *Model) resumePendingResize() tea.Cmd {
 	}
 	m.pendingResize = false
 	return m.loadCmd(m.request)
+}
+
+func (m *Model) resumePendingWork() tea.Cmd {
+	if command := m.resumeInitialSync(); command != nil {
+		return command
+	}
+	return m.resumePendingResize()
 }
 
 func combineCommands(commands ...tea.Cmd) tea.Cmd {
@@ -439,7 +448,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
 		m.palette.resize(msg.Width)
-		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing {
+		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing && !m.pendingSync {
 			m.pendingResize = false
 			command := m.loadCmd(m.request)
 			return m, command
@@ -507,7 +516,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.warning = msg.err.Error()
-			return m, m.resumePendingResize()
+			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
@@ -567,8 +576,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, checkCommand
 	case skillOfferCheckedMsg:
 		if msg.err != nil || msg.check.Answered || !msg.check.HasRoots {
-			command := m.resumeInitialSync()
-			return m, command
+			return m, m.resumePendingWork()
 		}
 		if msg.check.Installed {
 			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
@@ -589,8 +597,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.recordSkillOfferCmd(SkillOfferAccepted)
 	case skillOfferRecordedMsg:
 		// Offer bookkeeping is intentionally best effort and never blocks the TUI.
-		command := m.resumeInitialSync()
-		return m, command
+		return m, m.resumePendingWork()
 	case commandFinishedMsg:
 		m.commandBusy = false
 		quitAfterCommand := m.quitAfterCommand
@@ -607,7 +614,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if quitAfterCommand {
 				return m, tea.Quit
 			}
-			return m, m.resumePendingResize()
+			return m, m.resumePendingWork()
 		}
 		m.warning = ""
 		m.commandOutput = msg.result.Output
@@ -617,7 +624,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if quitAfterCommand {
 			return m, tea.Quit
 		}
-		return m, m.resumePendingResize()
+		return m, m.resumePendingWork()
 	case tea.KeyMsg:
 		if m.offerState != skillOfferHidden {
 			m.palette.close()
@@ -726,7 +733,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		return m, nil
 	}
 	if binding.Action == keyActionOpenPalette {
-		if m.commandBusy || m.loading || m.syncing {
+		if m.commandBusy || m.loading || m.syncing || m.pendingSync {
 			return m, nil
 		}
 		m.help = false
@@ -827,7 +834,7 @@ func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
 		}
 		return tea.Quit
 	}
-	if m.commandBusy || m.loading || m.syncing {
+	if m.commandBusy || m.loading || m.syncing || m.pendingSync {
 		m.warning = "dashboard is busy; wait for the current operation to finish"
 		m.status = ""
 		return nil
