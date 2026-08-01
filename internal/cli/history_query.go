@@ -47,9 +47,6 @@ func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.H
 }
 
 func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string) (pages.HistorySearchData, error) {
-	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
-		return pages.HistorySearchData{}, nil
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return pages.HistorySearchData{}, fmt.Errorf("find user home directory: %w", err)
@@ -64,6 +61,9 @@ func loadHistorySearchPage(cmd *cobra.Command, request tui.Request, codexDir, cl
 	}
 	if !info.Exists {
 		return pages.HistorySearchData{NotIndexed: true}, nil
+	}
+	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
+		return pages.HistorySearchData{}, nil
 	}
 	freshnessWarnings := historySearchFreshnessWarnings(cmd, path, codexDir, claudeDir, home)
 	database, err := historystore.OpenReadOnly(path)

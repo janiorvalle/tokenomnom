@@ -89,6 +89,14 @@ func (p *HistorySearchPage) Editing() bool {
 // background history query starts.
 func (p *HistorySearchPage) BeginLoad(request Request) {
 	p.loadToken = request.PageLoadToken
+	p.loading = true
+	p.inputMode = false
+	p.hits = nil
+	p.hasMore = false
+	p.warnings = nil
+	p.detail = nil
+	p.errorText = ""
+	p.clearExport()
 }
 
 // Update preserves the base Page contract for page-command dispatch.
@@ -111,6 +119,10 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	}
 	value := key.String()
 	result := PageKeyResult{Request: request}
+	if p.loading {
+		result.Handled = true
+		return result
+	}
 	if p.inputMode && key.Type != tea.KeyRunes && key.Type != tea.KeySpace {
 		switch value {
 		case "enter", "esc", "backspace", "ctrl+u":

@@ -322,6 +322,22 @@ func TestHistorySearchPageRejectsOlderLoadForSameRequest(t *testing.T) {
 	}
 }
 
+func TestHistorySearchBeginLoadHidesStaleResults(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30, HistoryQuery: "prompt"}
+	page.query = request.HistoryQuery
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_old", Snippet: "stale result"}}}}, nil)
+	page.BeginLoad(Request{HistoryQuery: request.HistoryQuery, PageLoadToken: "2"})
+	view := page.View(pageContext(request))
+	if !strings.Contains(view, "Searching local history") || strings.Contains(view, "stale result") {
+		t.Fatalf("stale results remained actionable during load:\n%s", view)
+	}
+	key := page.HandleKey(request, keyMsg("e"))
+	if !key.Handled || key.Changed || key.Action != PageActionNone {
+		t.Fatalf("loading page accepted export action: %+v", key)
+	}
+}
+
 func TestHistorySearchDetailEndStopsAtBottom(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 60, Height: 18}

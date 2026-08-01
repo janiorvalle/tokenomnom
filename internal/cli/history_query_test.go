@@ -20,6 +20,18 @@ func TestHistorySearchPageReportsMissingIndexWithoutCreatingIt(t *testing.T) {
 	}
 }
 
+func TestHistorySearchPageReportsMissingIndexForEmptyQuery(t *testing.T) {
+	t.Setenv("TOKENOMNOM_STATE_DIR", t.TempDir())
+	command := NewRootCommand()
+	data, err := loadHistorySearchPage(command, tui.Request{}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.NotIndexed {
+		t.Fatalf("empty-query missing index data = %+v", data)
+	}
+}
+
 func TestHistorySearchJSONPageKeepsBracketSnippetContract(t *testing.T) {
 	page := historySearchJSONPage(historystore.SearchPage{Hits: []historystore.PromptResult{{
 		Snippet: string(historymodel.SearchSnippetMatchStart) + "match" + string(historymodel.SearchSnippetMatchEnd),
