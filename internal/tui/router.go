@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
@@ -50,6 +52,52 @@ type Page interface {
 	Title() string
 	View(PageContext) string
 	Update(Request, string) (Request, bool)
+}
+
+// PageAction tells the app whether a handled key needs background work.
+type PageAction uint8
+
+const (
+	PageActionNone PageAction = iota
+	PageActionLoad
+	PageActionExport
+)
+
+// PageKeyResult is the result of a page-owned key interaction.
+type PageKeyResult struct {
+	Request Request
+	Handled bool
+	Changed bool
+	Action  PageAction
+}
+
+// InteractivePage can claim keys that are not global dashboard bindings, such
+// as text input, Enter, and page-local export commands.
+type InteractivePage interface {
+	Page
+	HandleKey(Request, tea.KeyMsg) PageKeyResult
+	Editing() bool
+}
+
+// PageLoader owns data retrieval for a page. The app runs Load outside the
+// Bubble Tea update loop and applies the result back on the update loop.
+type PageLoader interface {
+	Page
+	Load(Request) (any, error)
+	Apply(Request, any, error)
+}
+
+// PageLoadTracker receives a load token on the update loop before the app
+// starts a PageLoader command, so the page can reject stale responses safely.
+type PageLoadTracker interface {
+	BeginLoad(Request)
+}
+
+// PageExporter owns a page-local export action.
+type PageExporter interface {
+	Page
+	Export(Request) (string, error)
+	ApplyExport(Request, string, error)
 }
 
 type pageKeyHandler func(Request, string) (Request, bool)
@@ -129,14 +177,15 @@ type pageGroup struct {
 	pages   []Page
 }
 
-func newRouter() PageRouter {
-	return newPageRouter(
+func newRouter(extra ...Page) PageRouter {
+	pages := []Page{
 		dailyPage{snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage}},
 		ledgerPage{},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
 		sessionsPage{},
-	)
+	}
+	return newPageRouter(append(pages, extra...)...)
 }
 
 type dailyPage struct {

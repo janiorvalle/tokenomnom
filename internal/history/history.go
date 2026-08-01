@@ -17,6 +17,10 @@ const (
 	RelationshipRuleVersion = 2
 	// MaxPromptBytes is the largest prompt indexed as complete text.
 	MaxPromptBytes = 1 << 20
+	// SearchSnippetMatchStart and SearchSnippetMatchEnd delimit matches in
+	// SQLite snippets without colliding with ordinary bracket characters.
+	SearchSnippetMatchStart = '\ue000'
+	SearchSnippetMatchEnd   = '\ue001'
 )
 
 // Provider identifies the source transcript format.

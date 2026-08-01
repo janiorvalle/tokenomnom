@@ -1,0 +1,66 @@
+=== RUN   TestHistorySearchPageInputResultsDetailAndExport
+    history_search_test.go:65:
+        -- search --
+        FIND IN HISTORY
+        Search your indexed prompts by exact phrase.
+
+        SEARCH /de not?/█
+        ────────────────────────────────────────
+        › said do not implement
+            2026-07-01 · codex · tokenomnom
+          another do not implement
+            2026-07-02 · claude · other
+
+        ↑/↓  enter open  e export  / edit  esc
+    history_search_test.go:101:
+        -- detail --
+        SESSION DETAIL
+        ses_2
+
+        PROVENANCE claude · other
+        DATE 2026-07-02 → 2026-07-03
+
+        another prompt
+
+        PROMPTS
+        2026-07-02  another prompt
+
+        Exported to /tmp/tokenomnom-history
+
+        esc back  e export
+--- PASS: TestHistorySearchPageInputResultsDetailAndExport (0.00s)
+=== RUN   TestHistorySearchPageShowsIndexHint
+    history_search_test.go:133:
+        -- missing index --
+        FIND IN HISTORY
+        Search your indexed prompts by exact phrase.
+
+        SEARCH /█
+        ────────────────────────────────────────
+        History index is not available.
+        run `tokenomnom history index`, then search here.
+
+        / edit
+--- PASS: TestHistorySearchPageShowsIndexHint (0.00s)
+=== RUN   TestHistorySearchPageCancelsStaleExportWhenOpeningDetail
+--- PASS: TestHistorySearchPageCancelsStaleExportWhenOpeningDetail (0.00s)
+=== RUN   TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport
+--- PASS: TestHistorySearchPageRejectsStaleCompletionForRepeatedSessionExport (0.00s)
+=== RUN   TestHistorySearchPageRejectsOlderLoadForSameRequest
+--- PASS: TestHistorySearchPageRejectsOlderLoadForSameRequest (0.00s)
+=== RUN   TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues
+--- PASS: TestHistorySearchPageRejectsSpecialKeysAndSanitizesDisplayValues (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/tui/pages	0.005s
+=== RUN   TestAdditionalPageOwnsAsyncLoads
+--- PASS: TestAdditionalPageOwnsAsyncLoads (0.00s)
+=== RUN   TestHelpStillAllowsQuit
+--- PASS: TestHelpStillAllowsQuit (0.00s)
+=== RUN   TestEditingPageDoesNotLoseGlobalNavigation
+--- PASS: TestEditingPageDoesNotLoseGlobalNavigation (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.005s
+=== RUN   TestHistorySearchPageReportsMissingIndexWithoutCreatingIt
+--- PASS: TestHistorySearchPageReportsMissingIndexWithoutCreatingIt (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.009s

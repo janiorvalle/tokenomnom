@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -19,9 +21,156 @@ import (
 	appconfig "github.com/janiorvalle/tokenomnom/internal/config"
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/tui"
+	"github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 const maxHistoryRawJSONBytes int64 = 64 << 20
+
+func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *pages.HistorySearchPage {
+	return pages.NewHistorySearchPage(pages.HistorySearchOptions{
+		Load: func(request tui.Request) (pages.HistorySearchData, error) {
+			return loadHistorySearchPage(cmd, request)
+		},
+		Export: func(request tui.Request) (string, error) {
+			return exportHistorySearch(cmd, request, codexDir, claudeDir)
+		},
+	})
+}
+
+func loadHistorySearchPage(cmd *cobra.Command, request tui.Request) (pages.HistorySearchData, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return pages.HistorySearchData{}, fmt.Errorf("find user home directory: %w", err)
+	}
+	path, err := historyDatabasePath(home)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	info, err := historystore.Inspect(path)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	if !info.Exists {
+		return pages.HistorySearchData{NotIndexed: true}, nil
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	defer database.Close()
+	location, _ := historyPresentationTimezone(cmd)
+	if request.HistorySessionID != "" {
+		return loadHistorySessionPage(database, request.HistorySessionID, location)
+	}
+	data := pages.HistorySearchData{}
+	if strings.TrimSpace(request.HistoryQuery) == "" {
+		return data, nil
+	}
+	result, err := database.Search(historystore.SearchQuery{
+		PromptQuery: historystore.PromptQuery{Role: "user", Source: historystore.CatalogSourceAny, Limit: 50},
+		Query:       request.HistoryQuery,
+	})
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	presentHistorySearchPage(&result, location)
+	data.Search.HasMore, data.Search.Warnings = result.Page.HasMore, append([]string(nil), result.Warnings...)
+	data.Search.Hits = make([]pages.SearchHit, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		data.Search.Hits = append(data.Search.Hits, pages.SearchHit{
+			PromptID: hit.PromptID, SessionID: hit.SessionID, Provider: string(hit.Provider),
+			Date: historyPageDate(hit.Timestamp), Project: hit.Project, Snippet: safePrettySearchSnippet(hit.Snippet),
+		})
+	}
+	return data, nil
+}
+
+func loadHistorySessionPage(database *historystore.Store, sessionID string, location *time.Location) (pages.HistorySearchData, error) {
+	session, err := database.GetSession(sessionID)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	prompts, err := database.SessionPrompts(sessionID, historystore.PromptQuery{
+		Role: "user", Source: historystore.CatalogSourceAny, Limit: 12, IncludeText: true,
+	})
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	presentHistorySession(&session, location)
+	presentHistoryPromptPage(&prompts, location)
+	detail := &pages.SessionDetail{
+		SessionID: session.SessionID, Provider: string(session.Provider), Project: session.Project,
+		FirstDate: historyPageDate(session.FirstTimestamp), LastDate: historyPageDate(session.LastTimestamp),
+		Preview: safePrettyPreview(session.Preview), Prompts: make([]pages.SessionPrompt, 0, len(prompts.Prompts)),
+	}
+	for _, prompt := range prompts.Prompts {
+		detail.Prompts = append(detail.Prompts, pages.SessionPrompt{
+			PromptID: prompt.PromptID, Date: historyPageDate(prompt.Timestamp), Snippet: safePrettyPreview(prompt.Snippet),
+		})
+	}
+	return pages.HistorySearchData{
+		Search:  pages.SearchResult{Warnings: append([]string(nil), prompts.Warnings...)},
+		Session: detail,
+	}, nil
+}
+
+func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string) (string, error) {
+	if request.HistoryExportID == "" {
+		return "", errors.New("select a history result before exporting")
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("find current directory for history export: %w", err)
+	}
+	outputRoot := filepath.Join(workingDirectory, "tokenomnom-history")
+	if err := os.MkdirAll(outputRoot, 0o700); err != nil {
+		return "", fmt.Errorf("create history export directory: %w", err)
+	}
+	outputDirectory, err := os.MkdirTemp(outputRoot, "export-")
+	if err != nil {
+		return "", fmt.Errorf("create unique history export directory: %w", err)
+	}
+	codexRoot, claudeRoot := codexDir, claudeDir
+	exportCommand := newHistoryExportCommand(&codexRoot, &claudeRoot)
+	var output bytes.Buffer
+	exportCommand.SetOut(&output)
+	exportCommand.SetErr(&output)
+	exportCommand.SetContext(cmd.Context())
+	exportCommand.SetArgs([]string{
+		request.HistoryExportID,
+		"--out", outputDirectory + string(os.PathSeparator),
+	})
+	if err := exportCommand.Execute(); err != nil {
+		_ = os.RemoveAll(outputDirectory)
+		return "", err
+	}
+	return outputDirectory, nil
+}
+
+func historyPageDate(value *string) string {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return "-"
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, *value)
+	if err != nil {
+		return *value
+	}
+	return parsed.Format("2006-01-02")
+}
+
+func historySearchJSONPage(page historystore.SearchPage) historystore.SearchPage {
+	if page.Hits != nil {
+		page.Hits = append([]historystore.PromptResult{}, page.Hits...)
+	}
+	for index := range page.Hits {
+		page.Hits[index].Snippet = strings.NewReplacer(
+			string(history.SearchSnippetMatchStart), "[",
+			string(history.SearchSnippetMatchEnd), "]",
+		).Replace(page.Hits[index].Snippet)
+	}
+	return page
+}
 
 type historyQueryFlags struct {
 	provider       string
@@ -179,7 +328,7 @@ func newHistorySearchCommand() *cobra.Command {
 			location, _ := historyPresentationTimezone(cmd)
 			presentHistorySearchPage(&page, location)
 			if currentFormat(cmd) == "json" {
-				return writeHistoryJSONEnvelope(cmd, "history search", flags.jsonFilters(), page.Warnings, page)
+				return writeHistoryJSONEnvelope(cmd, "history search", flags.jsonFilters(), page.Warnings, historySearchJSONPage(page))
 			}
 			for _, hit := range page.Hits {
 				timestamp := "-"
@@ -191,9 +340,9 @@ func newHistorySearchCommand() *cobra.Command {
 					rank = fmt.Sprintf("%.8g", *hit.Rank)
 				}
 				if flags.role == "user" {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettyPreview(hit.Snippet))
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, timestamp, rank, safePrettySearchOutput(hit.Snippet))
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, hit.Role, timestamp, rank, safePrettyPreview(hit.Snippet))
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", hit.PromptID, hit.Provider, hit.Role, timestamp, rank, safePrettySearchOutput(hit.Snippet))
 				}
 				if includeText && hit.Text != nil {
 					fmt.Fprintln(cmd.OutOrStdout(), safePrettyText(*hit.Text))

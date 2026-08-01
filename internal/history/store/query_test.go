@@ -141,6 +141,16 @@ func TestSearchLiteralPhraseEscapesPunctuationOperatorsAndRequiresAdjacency(t *t
 	if err != nil || len(punctuation.Hits) != 0 {
 		t.Fatalf("punctuation-only literal became syntax: err=%v page=%+v", err, punctuation)
 	}
+	bracketSource := sourceRef("/provider/brackets.jsonl", history.LocationProviderLive)
+	bracketPrompt := prompt("native:brackets", "brackets", "array items[0] remains literal", 1)
+	bracketExtract := extraction("native:brackets", "brackets", bracketSource, bracketPrompt)
+	if _, err := database.ApplySource(bracketExtract, head(bracketSource, "brackets", 100, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	brackets, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "items"})
+	if err != nil || len(brackets.Hits) != 1 || !strings.Contains(brackets.Hits[0].Snippet, "[0]") || !strings.Contains(brackets.Hits[0].Snippet, string(history.SearchSnippetMatchStart)) {
+		t.Fatalf("bracket-preserving snippet err=%v page=%+v", err, brackets)
+	}
 }
 
 func TestSearchDeduplicatesAndBoundsOccurrenceMetadata(t *testing.T) {

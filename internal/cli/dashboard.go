@@ -48,7 +48,8 @@ func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) err
 	case "claude":
 		provider = tui.ClaudeProvider
 	}
-	return runDashboardProgram(cmd, tui.NewWithProvider(render, loader, offer, provider))
+	historyPage := newHistorySearchPage(cmd, *codexDir, *claudeDir)
+	return runDashboardProgram(cmd, tui.NewWithProviderAndPages(render, loader, offer, provider, historyPage))
 }
 
 func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {

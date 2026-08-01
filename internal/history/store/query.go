@@ -285,19 +285,17 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 		return SearchPage{}, err
 	}
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
-	args = append([]any{match, query.IncludeText}, args...)
+	args = append([]any{string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd), query.IncludeText, match}, args...)
 	statement := `WITH matched AS (
 		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
 			s.repository_name,s.project,s.project_source,s.cwd,s.branch,bm25(prompt_fts) AS rank,
 			` + sqliteTimestampKey("p.timestamp") + ` AS sort_ts,
-			snippet(prompt_fts,0,'[',']',' ... ',24) AS snippet,
-			CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
+				snippet(prompt_fts,0,?,?,' ... ',24) AS snippet,
+				CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
 		FROM prompt_fts JOIN prompts p ON p.id=prompt_fts.rowid JOIN sessions s ON s.id=p.session_id
 		WHERE prompt_fts MATCH ? AND ` + strings.Join(where, " AND ") + `)
 		SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,repository_name,project,project_source,cwd,branch,rank,sort_ts,snippet,full_text
 		FROM matched`
-	// IncludeText precedes MATCH in SQL, so repair the argument order.
-	args[0], args[1] = args[1], args[0]
 	if query.Cursor != "" {
 		rank, parseErr := cursor.rank()
 		if parseErr != nil {

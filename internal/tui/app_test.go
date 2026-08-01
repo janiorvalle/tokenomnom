@@ -362,6 +362,84 @@ func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
 	}
 }
 
+func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded = false, true
+	updated, command := model.Update(keyMsg("5"))
+	model = updated.(Model)
+	if model.activePage().ID() != page.id || command == nil {
+		t.Fatalf("page selection active=%v command=%v", model.activePage(), command != nil)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if page.applied != "loaded" || page.loadedRequest.HistoryQuery != "" {
+		t.Fatalf("page load result=%q request=%+v", page.applied, page.loadedRequest)
+	}
+	updated, command = model.Update(keyMsg("R"))
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("page refresh did not schedule a page load")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
+		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
+	}
+}
+
+func TestHelpStillAllowsQuit(t *testing.T) {
+	model := loadedTestModel()
+	updated, _ := model.Update(keyMsg("?"))
+	model = updated.(Model)
+	if !model.help {
+		t.Fatal("help did not open")
+	}
+	updated, command := model.Update(keyMsg("q"))
+	if command == nil {
+		t.Fatalf("quit was blocked by help: help=%v command=%v", updated.(Model).help, command != nil)
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T", command())
+	}
+}
+
+func TestEditingPageDoesNotLoseGlobalNavigation(t *testing.T) {
+	page := &interactiveTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := loadedTestModel()
+	model.router = newPageRouter(append(model.router.Pages(), page)...)
+	if !model.router.Select(page.id) {
+		t.Fatal("could not select interactive page")
+	}
+
+	updated, command := model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if page.lastKey != "" || model.request.Provider != CodexProvider || command == nil {
+		t.Fatalf("global key was not preserved: last=%q provider=%v command=%v", page.lastKey, model.request.Provider, command != nil)
+	}
+
+	page.editing = true
+	before := model.request
+	updated, command = model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if page.lastKey != "p" || model.request != before || command != nil {
+		t.Fatalf("editing key escaped page: last=%q request=%+v command=%v", page.lastKey, model.request, command != nil)
+	}
+	updated, command = model.Update(keyMsg("?"))
+	model = updated.(Model)
+	if page.lastKey != "?" || model.help || model.request != before || command != nil {
+		t.Fatalf("question mark escaped editor: last=%q help=%v request=%+v command=%v", page.lastKey, model.help, model.request, command != nil)
+	}
+
+	page.editing = false
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	if page.lastKey != "left" || command != nil {
+		t.Fatalf("page-local special key was not delivered: last=%q command=%v", page.lastKey, command != nil)
+	}
+}
+
 func TestKeyRegistryDrivesFooterAndHelp(t *testing.T) {
 	model := loadedTestModel()
 	footer := model.footerHintsView(newCockpitLayout(model.request.Width, model.request.Height).innerWidth)
@@ -852,3 +930,53 @@ func testSessionPageData() tuipages.SessionPageData {
 		},
 	}
 }
+
+type asyncTestPage struct {
+	id            PageID
+	section       PageSection
+	title         string
+	loadedRequest Request
+	applied       string
+	loads         int
+}
+
+func (p *asyncTestPage) ID() PageID           { return p.id }
+func (p *asyncTestPage) Section() PageSection { return p.section }
+func (p *asyncTestPage) Title() string        { return p.title }
+func (p *asyncTestPage) View(PageContext) string {
+	return p.title
+}
+func (p *asyncTestPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
+}
+func (p *asyncTestPage) Load(request Request) (any, error) {
+	p.loads++
+	p.loadedRequest = request
+	return "loaded", nil
+}
+func (p *asyncTestPage) Apply(_ Request, value any, _ error) {
+	p.applied, _ = value.(string)
+}
+
+type interactiveTestPage struct {
+	id      PageID
+	section PageSection
+	title   string
+	editing bool
+	lastKey string
+}
+
+func (p *interactiveTestPage) ID() PageID           { return p.id }
+func (p *interactiveTestPage) Section() PageSection { return p.section }
+func (p *interactiveTestPage) Title() string        { return p.title }
+func (p *interactiveTestPage) View(PageContext) string {
+	return p.title
+}
+func (p *interactiveTestPage) Update(request Request, _ string) (Request, bool) {
+	return request, false
+}
+func (p *interactiveTestPage) HandleKey(request Request, key tea.KeyMsg) PageKeyResult {
+	p.lastKey = key.String()
+	return PageKeyResult{Request: request, Handled: true}
+}
+func (p *interactiveTestPage) Editing() bool { return p.editing }

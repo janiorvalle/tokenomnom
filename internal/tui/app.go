@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,6 +89,12 @@ type Request struct {
 	SessionDetailID      string
 	SessionDetailOffset  int
 	Sync                 bool
+	HistoryQuery         string
+	HistorySelect        int
+	HistorySessionID     string
+	HistoryExportID      string
+	HistoryExportToken   string
+	HistoryLoadToken     string
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -161,6 +168,20 @@ type loadedMsg struct {
 	err        error
 }
 
+type pageLoadedMsg struct {
+	id      PageID
+	request Request
+	data    any
+	err     error
+}
+
+type pageExportedMsg struct {
+	id      PageID
+	request Request
+	path    string
+	err     error
+}
+
 type skillOfferCheckedMsg struct {
 	check SkillOfferCheck
 	err   error
@@ -208,6 +229,7 @@ type Model struct {
 	syncGeneration           uint64
 	syncInFlight             bool
 	syncCompletionGeneration uint64
+	pageLoadAttempt          uint64
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -217,12 +239,23 @@ func New(render theme.Context, loader Loader, offer SkillOffer) Model {
 
 // NewWithProvider creates a dashboard model with an initial provider filter.
 func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider) Model {
+	return newModel(render, loader, offer, provider)
+}
+
+// NewWithProviderAndPages creates a dashboard with additional registered
+// pages. The default spend pages remain first so existing numeric navigation
+// keeps its meaning while later sections can be supplied by their owners.
+func NewWithProviderAndPages(render theme.Context, loader Loader, offer SkillOffer, provider Provider, pages ...Page) Model {
+	return newModel(render, loader, offer, provider, pages...)
+}
+
+func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Provider, pages ...Page) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = render.Palette.Emphasis()
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
-		router:  newRouter(),
+		router:  newRouter(pages...),
 		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
 		loading: true, started: time.Now(),
 	}
@@ -252,6 +285,32 @@ func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
 		}
 		snapshot, err := m.loader(request)
 		return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
+	}
+}
+
+func (m Model) loadPageCmd(page PageLoader, request Request) tea.Cmd {
+	return func() tea.Msg {
+		data, err := page.Load(request)
+		return pageLoadedMsg{id: page.ID(), request: request, data: data, err: err}
+	}
+}
+
+func (m Model) startPageLoad(page PageLoader, request Request) (Model, tea.Cmd) {
+	m.pageLoadAttempt++
+	request.HistoryLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
+	commandRequest := request
+	request.Sync = false
+	if tracker, ok := page.(PageLoadTracker); ok {
+		tracker.BeginLoad(commandRequest)
+	}
+	m.request = request
+	return m, m.loadPageCmd(page, commandRequest)
+}
+
+func (m Model) exportPageCmd(page PageExporter, request Request) tea.Cmd {
+	return func() tea.Msg {
+		path, err := page.Export(request)
+		return pageExportedMsg{id: page.ID(), request: request, path: path, err: err}
 	}
 }
 
@@ -317,6 +376,24 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var command tea.Cmd
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
+	case pageLoadedMsg:
+		if msg.request.HistoryLoadToken != m.request.HistoryLoadToken {
+			return m, nil
+		}
+		m.syncing = false
+		if page := m.page(msg.id); page != nil {
+			if loader, ok := page.(PageLoader); ok {
+				loader.Apply(msg.request, msg.data, msg.err)
+			}
+		}
+		return m, nil
+	case pageExportedMsg:
+		if page := m.page(msg.id); page != nil {
+			if exporter, ok := page.(PageExporter); ok {
+				exporter.ApplyExport(msg.request, msg.path, msg.err)
+			}
+		}
+		return m, nil
 	case loadedMsg:
 		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
@@ -442,23 +519,68 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.offerState != skillOfferHidden {
 		return m.updateSkillOfferKey(value)
 	}
-	binding, ok := keyBindingFor(value, len(m.router.Pages()))
-	if !ok {
+	if value == "?" {
+		if m.help {
+			m.help = false
+			return m, nil
+		}
+		page := m.activePage()
+		interactive, ok := page.(InteractivePage)
+		if !ok || !interactive.Editing() || key.Type != tea.KeyRunes {
+			m.help = true
+			return m, nil
+		}
+	}
+	if m.help {
+		if binding, ok := keyBindingFor(value, len(m.router.Pages())); ok && binding.Action == keyActionQuit {
+			return m.updateBinding(binding, value)
+		}
 		return m, nil
 	}
+	binding, bound := keyBindingFor(value, len(m.router.Pages()))
+	page := m.activePage()
+	interactive, interactivePage := page.(InteractivePage)
+	globalFirst := bound && binding.Action != keyActionPageCommand &&
+		(!interactivePage || !interactive.Editing() || key.Type != tea.KeyRunes)
+	if globalFirst {
+		return m.updateBinding(binding, value)
+	}
+	if interactivePage {
+		result := interactive.HandleKey(m.request, key)
+		if result.Handled {
+			m.request = result.Request
+			switch result.Action {
+			case PageActionLoad:
+				if loader, ok := page.(PageLoader); ok {
+					return m.startPageLoad(loader, m.request)
+				}
+			case PageActionExport:
+				if exporter, ok := page.(PageExporter); ok {
+					return m, m.exportPageCmd(exporter, m.request)
+				}
+			}
+			return m, nil
+		}
+	}
+	if !bound {
+		return m, nil
+	}
+	return m.updateBinding(binding, value)
+}
+
+func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.Cmd) {
 	if binding.Action == keyActionQuit {
 		return m, tea.Quit
 	}
-	if binding.Action == keyActionToggleHelp {
-		m.help = !m.help
-		return m, nil
-	}
-	if m.help {
-		return m, nil
-	}
 	switch binding.Action {
 	case keyActionNavigatePages:
-		m.navigatePages(value)
+		if m.navigatePages(value) {
+			if page := m.activePage(); page != nil {
+				if loader, ok := page.(PageLoader); ok {
+					return m.startPageLoad(loader, m.request)
+				}
+			}
+		}
 		return m, nil
 	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
@@ -482,6 +604,11 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		request := m.request
 		request.Sync = true
 		command := m.loadCmd(request)
+		if page := m.activePage(); page != nil {
+			if loader, ok := page.(PageLoader); ok {
+				return m.startPageLoad(loader, request)
+			}
+		}
 		return m, command
 	case keyActionPageCommand:
 		page := m.activePage()
@@ -539,6 +666,10 @@ func (m *Model) resetSessionNavigation() {
 	m.request.SessionReturnToEnd = false
 	m.request.SessionDetailID = ""
 	m.request.SessionDetailOffset = 0
+}
+
+func (m Model) page(id PageID) Page {
+	return m.router.PageAt(m.router.IndexOf(id))
 }
 
 func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {

@@ -43,6 +43,7 @@ var keyRegistry = [...]KeyBinding{
 	{Display: "f", Keys: []string{"f"}, Description: "cycle project filter", Action: keyActionPageCommand},
 	{Display: "s", Keys: []string{"s"}, Description: "sort models", Action: keyActionPageCommand},
 	{Display: "y", Keys: []string{"y"}, Description: "calendar-year heatmap", Action: keyActionPageCommand},
+	{Display: "e", Keys: []string{"e"}, Description: "export session", Action: keyActionPageCommand},
 	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", FooterKey: "p", Footer: "provider", Action: keyActionProvider},
 	{Display: "r", Keys: []string{"r"}, Description: "cycle range", FooterKey: "r", Footer: "range", Action: keyActionRange},
 	{Display: "R", Keys: []string{"R"}, Description: "refresh now", FooterKey: "R", Footer: "refresh", Action: keyActionRefresh},
