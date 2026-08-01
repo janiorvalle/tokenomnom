@@ -244,6 +244,7 @@ type Model struct {
 	commandBusy              bool
 	commandOutput            string
 	pendingResize            bool
+	quitAfterCommand         bool
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -499,6 +500,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.syncInFlight {
 				m.syncing = false
 			}
+			if m.quitAfterCommand {
+				m.quitAfterCommand = false
+				return m, tea.Quit
+			}
 			m.warning = msg.err.Error()
 			return m, m.resumePendingResize()
 		}
@@ -526,6 +531,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncFresh = true
 			if msg.request.FullSync {
 				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
 				m.status = "full sync complete"
 			} else {
 				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
@@ -580,6 +589,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, command
 	case commandFinishedMsg:
 		m.commandBusy = false
+		quitAfterCommand := m.quitAfterCommand
+		m.quitAfterCommand = false
 		if msg.err != nil {
 			m.status = ""
 			m.commandOutput = strings.TrimSpace(msg.result.Output)
@@ -587,11 +598,17 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.commandOutput = msg.err.Error()
 			}
 			m.warning = paletteActionFailure(msg.command, msg.err)
+			if quitAfterCommand {
+				return m, tea.Quit
+			}
 			return m, m.resumePendingResize()
 		}
 		m.warning = ""
 		m.commandOutput = msg.result.Output
 		m.status = strings.ToLower(msg.command.title) + " complete"
+		if quitAfterCommand {
+			return m, tea.Quit
+		}
 		return m, m.resumePendingResize()
 	case tea.KeyMsg:
 		if m.palette.active {
@@ -685,6 +702,11 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.Cmd) {
 	if binding.Action == keyActionQuit {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return m, nil
+		}
 		return m, tea.Quit
 	}
 	if binding.Action == keyActionToggleHelp {
@@ -786,6 +808,11 @@ func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
 		return nil
 	}
 	if command.id == CommandQuitID {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return nil
+		}
 		return tea.Quit
 	}
 	if m.commandBusy || m.loading || m.syncing {

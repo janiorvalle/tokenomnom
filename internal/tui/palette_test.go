@@ -106,8 +106,28 @@ func TestCommandPaletteBlocksRefreshWhileActionRuns(t *testing.T) {
 		t.Fatalf("busy status disappeared after ignored refresh: %q", status)
 	}
 	updated, command = model.Update(keyMsg("q"))
-	if command == nil {
-		t.Fatal("quit was blocked while command ran")
+	model = updated.(Model)
+	if command != nil || !model.quitAfterCommand {
+		t.Fatalf("quit was not deferred while command ran: command=%v pending=%v", command != nil, model.quitAfterCommand)
+	}
+}
+
+func TestCommandPaletteQuitsAfterActionCompletes(t *testing.T) {
+	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
+		ID:  CommandVaultVerifyID,
+		Run: func() (CommandResult, error) { return CommandResult{}, nil },
+	}}})
+	model.commandBusy = true
+	model.quitAfterCommand = true
+
+	updated, command := model.Update(commandFinishedMsg{command: paletteCommand{title: "Vault verify"}})
+	model = updated.(Model)
+	if command == nil || model.commandBusy || model.quitAfterCommand {
+		t.Fatalf("quit did not wait for action completion: command=%v busy=%v pending=%v", command != nil, model.commandBusy, model.quitAfterCommand)
+	}
+	message := command()
+	if _, ok := message.(tea.QuitMsg); !ok {
+		t.Fatalf("completion command=%T, want tea.QuitMsg", message)
 	}
 }
 
