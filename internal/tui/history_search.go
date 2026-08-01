@@ -49,6 +49,7 @@ type HistorySearchPage struct {
 	inputMode       bool
 	exporting       bool
 	errorText       string
+	exportErrorText string
 	exportText      string
 	exportID        string
 	exportAttemptID string
@@ -136,12 +137,16 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		}
 		result.Handled = true
 		p.inputMode = false
-		if p.sessionID == "" && len(p.hits) > 0 && request.HistorySelect > 0 {
-			result.Request.HistorySelect--
-			result.Request.HistoryExportID = ""
-			result.Request.HistoryExportToken = ""
-			p.clearExport()
-			result.Changed = true
+		if p.sessionID == "" && len(p.hits) > 0 {
+			currentSelection := min(max(request.HistorySelect, 0), len(p.hits)-1)
+			nextSelection := max(0, currentSelection-1)
+			if nextSelection != request.HistorySelect {
+				result.Request.HistorySelect = nextSelection
+				result.Request.HistoryExportID = ""
+				result.Request.HistoryExportToken = ""
+				p.clearExport()
+				result.Changed = true
+			}
 		}
 		return result
 	case "down":
@@ -161,12 +166,16 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		}
 		result.Handled = true
 		p.inputMode = false
-		if p.sessionID == "" && len(p.hits) > 0 && request.HistorySelect < len(p.hits)-1 {
-			result.Request.HistorySelect++
-			result.Request.HistoryExportID = ""
-			result.Request.HistoryExportToken = ""
-			p.clearExport()
-			result.Changed = true
+		if p.sessionID == "" && len(p.hits) > 0 {
+			currentSelection := min(max(request.HistorySelect, 0), len(p.hits)-1)
+			nextSelection := min(len(p.hits)-1, currentSelection+1)
+			if nextSelection != request.HistorySelect {
+				result.Request.HistorySelect = nextSelection
+				result.Request.HistoryExportID = ""
+				result.Request.HistoryExportToken = ""
+				p.clearExport()
+				result.Changed = true
+			}
 		}
 		return result
 	case "home":
@@ -412,7 +421,7 @@ func (p *HistorySearchPage) Apply(request Request, value any, err error) {
 		p.hits, p.warnings, p.detail = nil, nil, nil
 		return
 	}
-	p.errorText, p.exportText = "", ""
+	p.errorText, p.exportErrorText, p.exportText = "", "", ""
 	p.notIndexed = data.NotIndexed
 	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) != "" {
 		p.searched = true
@@ -447,10 +456,10 @@ func (p *HistorySearchPage) ApplyExport(request Request, path string, err error)
 	p.exportID = ""
 	p.exportAttemptID = ""
 	if err != nil {
-		p.errorText = "Export failed. Check the history index and try again."
+		p.exportErrorText = "Export failed. Check the history index and try again."
 		return
 	}
-	p.errorText, p.exportText = "", "Exported to "+path
+	p.errorText, p.exportErrorText, p.exportText = "", "", "Exported to "+path
 }
 
 func (p *HistorySearchPage) exportTarget(request Request) string {
@@ -466,6 +475,7 @@ func (p *HistorySearchPage) exportTarget(request Request) string {
 
 func (p *HistorySearchPage) clearExport() {
 	p.exporting = false
+	p.exportErrorText = ""
 	p.exportText = ""
 	p.exportID = ""
 	p.exportAttemptID = ""
@@ -485,6 +495,7 @@ func (p *HistorySearchPage) resetSearch() {
 	p.searched = false
 	p.loading = false
 	p.errorText = ""
+	p.exportErrorText = ""
 	p.exportText = ""
 	p.exporting = false
 	p.exportID = ""
@@ -548,7 +559,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 			lines = append(lines, context.Render.Palette.Subtle().Render(truncateText("More results are available in `tokenomnom history search`.", width)))
 		}
 	}
-	lines = appendPageStatus(lines, context.Render, p.warnings, p.exporting, p.exportText)
+	lines = appendPageStatus(lines, context.Render, p.warnings, p.exporting, p.exportText, p.exportErrorText)
 	footer := "/ edit"
 	if p.inputMode {
 		footer = "type query  enter search  esc cancel"
@@ -601,6 +612,9 @@ func (p *HistorySearchPage) detailNotices() []string {
 	if p.exporting {
 		notices = append(notices, "Exporting session…")
 	}
+	if p.exportErrorText != "" {
+		notices = append(notices, p.exportErrorText)
+	}
 	if len(p.warnings) > 0 {
 		notices = append(notices, "Index note: "+p.warnings[0])
 	}
@@ -616,12 +630,15 @@ func (p *HistorySearchPage) detailMaxOffset(request Request) int {
 	return tuipages.HistorySearchSessionDetailMaxOffset(render, *p.detail, width, height, p.detailNotices())
 }
 
-func appendPageStatus(lines []string, render theme.Context, warnings []string, exporting bool, exported string) []string {
+func appendPageStatus(lines []string, render theme.Context, warnings []string, exporting bool, exported, exportError string) []string {
 	if exported != "" {
 		lines = append(lines, "", render.Palette.Success().Render(oneLine(exported)))
 	}
 	if exporting {
 		lines = append(lines, "", render.Palette.Subtle().Render("Exporting session…"))
+	}
+	if exportError != "" {
+		lines = append(lines, "", render.Palette.Warning().Render(oneLine(exportError)))
 	}
 	if len(warnings) > 0 {
 		lines = append(lines, "", render.Palette.Warning().Render("Index note: "+oneLine(warnings[0])))

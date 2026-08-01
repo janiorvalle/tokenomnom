@@ -53,6 +53,11 @@ func renderSessionDetail(render theme.Context, session historystore.CatalogSessi
 }
 
 func historySearchCatalogSession(detail SessionDetail) historystore.CatalogSession {
+	if detail.CatalogSession.SessionID != "" {
+		session := detail.CatalogSession
+		session.Preview = detail.Preview
+		return session
+	}
 	first, last := detail.FirstDate, detail.LastDate
 	return historystore.CatalogSession{
 		SessionID: detail.SessionID, Provider: historyProvider(detail.Provider), Project: detail.Project,

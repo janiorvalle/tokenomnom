@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 )
 
@@ -342,6 +343,55 @@ func TestHistorySearchDetailEndStopsAtBottom(t *testing.T) {
 	up := page.HandleKey(end.Request, tea.KeyMsg{Type: tea.KeyUp})
 	if !up.Handled || !up.Changed || up.Request.SessionDetailOffset != end.Request.SessionDetailOffset-1 {
 		t.Fatalf("up from detail end = %+v", up)
+	}
+}
+
+func TestHistorySearchSelectionNormalizesAfterShorterResults(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30, HistorySelect: 99}
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{
+		{SessionID: "ses_1", Snippet: "first"}, {SessionID: "ses_2", Snippet: "second"},
+	}}}, nil)
+	up := page.HandleKey(request, tea.KeyMsg{Type: tea.KeyUp})
+	if !up.Handled || !up.Changed || up.Request.HistorySelect != 0 {
+		t.Fatalf("stale selection was not normalized before moving: %+v", up)
+	}
+}
+
+func TestHistorySearchDetailPreservesCatalogProvenance(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30}
+	detail := SessionDetail{
+		CatalogSession: historystore.CatalogSession{
+			SessionID: "ses_provenance", Provider: history.ProviderCodex, Project: "tokenomnom",
+			ThreadKind: history.ThreadRoot, ThreadConfidence: history.ConfidenceExact,
+			Availability:             historystore.Availability{ProviderLive: 3, ProviderArchive: 2, Vault: 1},
+			PreferredRetrievalSource: "provider-live",
+			Relationships:            []historystore.SessionRelationship{{ChildSessionID: "ses_provenance"}},
+		},
+		SessionID: "ses_provenance", Provider: "codex", Project: "tokenomnom", Preview: "prompt",
+	}
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: detail.SessionID, Snippet: "prompt"}}}}, nil)
+	request = page.HandleKey(request, tea.KeyMsg{Type: tea.KeyEnter}).Request
+	page.Apply(request, HistorySearchData{Session: &detail}, nil)
+	view := page.View(pageContext(request))
+	for _, fragment := range []string{"root (exact confidence)", "provider-live", "3 live · 2 archive", "1 available", "1 recorded"} {
+		if !strings.Contains(view, fragment) {
+			t.Errorf("provenance detail missing %q:\n%s", fragment, view)
+		}
+	}
+}
+
+func TestHistorySearchExportFailureKeepsLoadedContent(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 100, Height: 30, HistoryQuery: "prompt"}
+	page.query = request.HistoryQuery
+	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_1", Snippet: "keep this result"}}}}, nil)
+	export := page.HandleKey(request, keyMsg("e"))
+	page.ApplyExport(export.Request, "", errors.New("permission denied"))
+	view := page.View(pageContext(export.Request))
+	if !strings.Contains(view, "keep this result") || !strings.Contains(view, "Export failed") {
+		t.Fatalf("export failure replaced loaded content:\n%s", view)
 	}
 }
 

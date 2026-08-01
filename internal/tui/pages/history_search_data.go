@@ -1,5 +1,7 @@
 package pages
 
+import historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+
 // SearchHit is the presentation-ready shape for one indexed prompt match.
 type SearchHit struct {
 	PromptID  string
@@ -26,6 +28,7 @@ type SessionPrompt struct {
 
 // SessionDetail is the presentation-ready session view opened from a result.
 type SessionDetail struct {
+	CatalogSession  historystore.CatalogSession
 	SessionID       string
 	Provider        string
 	Project         string

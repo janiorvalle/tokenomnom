@@ -132,7 +132,8 @@ func loadHistorySessionPage(database *historystore.Store, sessionID string, loca
 	presentHistorySession(&session, location)
 	presentHistoryPromptPage(&prompts, location)
 	detail := &pages.SessionDetail{
-		SessionID: session.SessionID, Provider: string(session.Provider), Project: session.Project, ProjectSource: string(session.ProjectSource),
+		CatalogSession: session,
+		SessionID:      session.SessionID, Provider: string(session.Provider), Project: session.Project, ProjectSource: string(session.ProjectSource),
 		FirstDate: historyPageDate(session.FirstTimestamp), LastDate: historyPageDate(session.LastTimestamp),
 		Preview: safePrettyPreview(session.Preview), PromptCount: session.LogicalPromptCount, OccurrenceCount: session.OccurrenceCount,
 		HasMore: prompts.Page.HasMore, Prompts: make([]pages.SessionPrompt, 0, len(prompts.Prompts)),
