@@ -1,0 +1,23 @@
+Quest 139 verification after fix
+
+Command:
+go build -buildvcs=false -o /tmp/tokenomnom-quest139-after ./cmd/tokenomnom
+
+The same fresh HOME, XDG_STATE_HOME, CODEX_HOME, CLAUDE_CONFIG_DIR, TERM, and
+continuously drained PTY probe were used as in quest-139-before.txt.
+
+Observed progress:
+
+  Syncing Codex + Claude · discovering files · 0s
+  Syncing Codex + Claude · preparing sync · 4,133 files found · 0s
+  Syncing Codex + Claude · ingesting 1/4,133 files · 3s
+  Syncing Codex + Claude · ingesting 811/4,133 files · 15s
+
+The output contained zero `starting sync` frames after the initial store load,
+23 preparation updates, and 345 ingesting updates. The initial result now
+survives a resize and starts the sync using the current terminal dimensions.
+
+Regression test:
+go test -buildvcs=false ./internal/tui -run 'TestInitialSnapshotSurvivesResizeBeforeLoadCompletes|TestInitialSnapshotShowsPendingOptionalSegments|TestSyncProgressLoadedAndFailureTransitions' -count=1 -v
+
+Result: PASS

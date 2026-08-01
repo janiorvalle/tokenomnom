@@ -378,6 +378,34 @@ func TestInitialSnapshotShowsPendingOptionalSegments(t *testing.T) {
 	t.Log("\n" + view)
 }
 
+func TestInitialSnapshotSurvivesResizeBeforeLoadCompletes(t *testing.T) {
+	model := New(testRender(), func(Request) (Snapshot, error) {
+		return Snapshot{}, nil
+	}, SkillOffer{})
+	initialRequest := model.request
+
+	updated, command := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = updated.(Model)
+	if command != nil || model.request.Height != 30 {
+		t.Fatalf("resize while initial load is busy = request=%+v command=%v", model.request, command != nil)
+	}
+
+	updated, command = model.Update(loadedMsg{
+		request:    initialRequest,
+		generation: model.loadGeneration,
+		snapshot:   Snapshot{Empty: true},
+	})
+	model = updated.(Model)
+	if command == nil || !model.loaded || !model.loading || !model.syncing {
+		t.Fatalf("initial load after resize = loaded=%v loading=%v syncing=%v command=%v", model.loaded, model.loading, model.syncing, command != nil)
+	}
+	message := command()
+	loaded, ok := message.(loadedMsg)
+	if !ok || loaded.request.Height != 30 {
+		t.Fatalf("initial sync used stale dimensions: message=%T request=%+v", message, loaded.request)
+	}
+}
+
 func TestEveryViewRendersStructure(t *testing.T) {
 	model := loadedTestModel()
 	for tab := Tab(0); tab < tabCount; tab++ {
