@@ -132,7 +132,7 @@ func SelectedIndex(data Data, state State) int {
 		return -1
 	}
 	if state.Cursor >= 0 {
-		return ledgerMin(state.Cursor, len(data.Rows)-1)
+		return min(state.Cursor, len(data.Rows)-1)
 	}
 	anchor := stateAnchor(state)
 	if anchor != "" {
@@ -169,7 +169,7 @@ func Update(state State, data Data, key string) (State, bool) {
 			return state, false
 		}
 		next := state
-		sessionIndex := ledgerMin(ledgerMax(0, state.SessionCursor), len(data.Sessions)-1)
+		sessionIndex := min(max(0, state.SessionCursor), len(data.Sessions)-1)
 		if state.SessionSelectLast {
 			sessionIndex = len(data.Sessions) - 1
 		}
@@ -304,7 +304,7 @@ func Update(state State, data Data, key string) (State, bool) {
 // Render draws the ledger with a dense table at normal widths and a two-line
 // row layout when the cockpit's content pane is narrow.
 func Render(render theme.Context, data Data, state State, height int) string {
-	width := ledgerMax(1, render.Width)
+	width := max(1, render.Width)
 	if height <= 0 {
 		height = 24
 	}
@@ -331,7 +331,7 @@ func Render(render theme.Context, data Data, state State, height int) string {
 	compact := width < 72
 	if compact {
 		lines = append(lines, compactHeader(render, width))
-		capacity := ledgerMax(1, (height-len(lines)-2)/2)
+		capacity := max(1, (height-len(lines)-2)/2)
 		start, end := visibleWindow(len(data.Rows), selected, capacity)
 		for index := start; index < end; index++ {
 			delta, pricedTokens, valid, partial := rowDelta(data.Rows, index)
@@ -344,7 +344,7 @@ func Render(render theme.Context, data Data, state State, height int) string {
 	} else {
 		periodWidth, moneyWidth, deltaWidth, barWidth := wideColumns(width)
 		lines = append(lines, wideHeader(render, periodWidth, moneyWidth, deltaWidth, barWidth))
-		capacity := ledgerMax(1, height-len(lines)-1)
+		capacity := max(1, height-len(lines)-1)
 		start, end := visibleWindow(len(data.Rows), selected, capacity)
 		for index := start; index < end; index++ {
 			delta, pricedTokens, valid, partial := rowDelta(data.Rows, index)
@@ -361,36 +361,36 @@ func Render(render theme.Context, data Data, state State, height int) string {
 func renderExpandedDay(render theme.Context, data Data, state State, width, height int) string {
 	lines := []string{fitLine(render.Palette.Subtle().Render(breadcrumb(state)+"  /  "+state.ExpandedDay), width)}
 	if data.SessionDay != state.ExpandedDay || data.SessionPageCursor != state.SessionPageCursor {
-		lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("Loading indexed sessions…", width)))
+		lines = append(lines, render.Palette.Subtle().Render(truncate("Loading indexed sessions…", width)))
 		return strings.Join(lines, "\n")
 	}
 	if data.SessionWarning != "" {
-		lines = append(lines, render.Palette.Warning().Render(ledgerTruncate(data.SessionWarning, width)))
+		lines = append(lines, render.Palette.Warning().Render(truncate(data.SessionWarning, width)))
 	}
 	if data.SessionDataUnavailable {
 		return strings.Join(lines, "\n")
 	}
 	if !data.SessionIndexAvailable {
 		lines = append(lines,
-			render.Palette.Warning().Render(ledgerTruncate("No history index is available.", width)),
-			render.Palette.Subtle().Render(ledgerTruncate("Run tokenomnom history index to inspect this day’s sessions.", width)),
+			render.Palette.Warning().Render(truncate("No history index is available.", width)),
+			render.Palette.Subtle().Render(truncate("Run tokenomnom history index to inspect this day’s sessions.", width)),
 		)
 		return strings.Join(lines, "\n")
 	}
 	day, ok := rowByKey(data.Rows, state.ExpandedDay)
 	if ok {
 		dayTotal := day.Total()
-		lines = append(lines, render.Palette.Emphasis().Bold(true).Render(ledgerTruncate(fmt.Sprintf("%s  %s  %s tokens", day.Label, formatMoney(dayTotal.Cost, dayTotal.PricedTokens, false, dayTotal.UnpricedTokens > 0), commaInteger(dayTotal.Tokens)), width)))
+		lines = append(lines, render.Palette.Emphasis().Bold(true).Render(truncate(fmt.Sprintf("%s  %s  %s tokens", day.Label, formatMoney(dayTotal.Cost, dayTotal.PricedTokens, false, dayTotal.UnpricedTokens > 0), commaInteger(dayTotal.Tokens)), width)))
 	}
 	if len(data.Sessions) == 0 {
 		lines = append(lines,
-			render.Palette.Warning().Render(ledgerTruncate("No indexed sessions match this day.", width)),
-			render.Palette.Subtle().Render(ledgerTruncate("Run tokenomnom history index to refresh the history index.", width)),
+			render.Palette.Warning().Render(truncate("No indexed sessions match this day.", width)),
+			render.Palette.Subtle().Render(truncate("Run tokenomnom history index to refresh the history index.", width)),
 		)
 		return strings.Join(lines, "\n")
 	}
 	lines = append(lines, expandedSessionHeader(render, width))
-	selected := ledgerMin(ledgerMax(0, state.SessionCursor), len(data.Sessions)-1)
+	selected := min(max(0, state.SessionCursor), len(data.Sessions)-1)
 	if state.SessionSelectLast {
 		selected = len(data.Sessions) - 1
 	}
@@ -403,18 +403,18 @@ func renderExpandedDay(render theme.Context, data Data, state State, width, heig
 	if selectedWarning != "" {
 		reservedLines++
 	}
-	capacity := ledgerMax(1, (height-len(lines)-reservedLines)/rowHeight)
+	capacity := max(1, (height-len(lines)-reservedLines)/rowHeight)
 	start, end := visibleWindow(len(data.Sessions), selected, capacity)
 	for index := start; index < end; index++ {
 		lines = append(lines, expandedSessionRow(render, data.Sessions[index], index == selected, width, data.Location)...)
 	}
 	if data.SessionsHaveMore {
-		lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("↓ more sessions", width)))
+		lines = append(lines, render.Palette.Subtle().Render(truncate("↓ more sessions", width)))
 	}
 	if selectedWarning != "" {
-		lines = append(lines, render.Palette.Warning().Render(ledgerTruncate("~ "+selectedWarning, width)))
+		lines = append(lines, render.Palette.Warning().Render(truncate("~ "+selectedWarning, width)))
 	}
-	lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("↑/↓ select  ·  enter open  ·  esc collapse", width)))
+	lines = append(lines, render.Palette.Subtle().Render(truncate("↑/↓ select  ·  enter open  ·  esc collapse", width)))
 	return strings.Join(lines, "\n")
 }
 
@@ -455,19 +455,19 @@ func expandedSessionRow(render theme.Context, session LedgerSession, selected bo
 	if width < 72 {
 		primary := marker + padRight(clock, 5) + "  " + padRight(provider, 8) + "  " + padLeft(commaInteger(session.Tokens), 9) + "  " + padLeft(cost, 9)
 		secondary := "    " + project + "  ·  " + preview
-		return []string{fitLine(primary, width), fitLine(ledgerTruncate(secondary, width), width)}
+		return []string{fitLine(primary, width), fitLine(truncate(secondary, width), width)}
 	}
 	timeWidth, providerWidth, projectWidth, tokensWidth, costWidth := expandedSessionColumns(width)
-	promptWidth := ledgerMax(1, width-(timeWidth+2)-providerWidth-projectWidth-tokensWidth-costWidth-10)
+	promptWidth := max(1, width-(timeWidth+2)-providerWidth-projectWidth-tokensWidth-costWidth-10)
 	line := marker + padRight(clock, timeWidth) + "  " +
 		render.Palette.Provider(provider, 0).Render(padRight(provider, providerWidth)) + "  " +
 		padRight(project, projectWidth) + "  " + padLeft(commaInteger(session.Tokens), tokensWidth) + "  " +
-		padLeft(cost, costWidth) + "  " + ledgerTruncate(preview, promptWidth)
+		padLeft(cost, costWidth) + "  " + truncate(preview, promptWidth)
 	return []string{fitLine(line, width)}
 }
 
 func expandedSessionColumns(width int) (int, int, int, int, int) {
-	return 5, 8, ledgerMin(22, ledgerMax(12, width/5)), 10, 9
+	return 5, 8, min(22, max(12, width/5)), 10, 9
 }
 
 func sessionClock(activity string, primary, fallback *string, location *time.Location) string {
@@ -526,8 +526,8 @@ func visibleWindow(length, selected, capacity int) (int, int) {
 	if length <= capacity {
 		return 0, length
 	}
-	selected = ledgerMin(ledgerMax(0, selected), length-1)
-	start := ledgerMin(ledgerMax(0, selected-capacity+1), length-capacity)
+	selected = min(max(0, selected), length-1)
+	start := min(max(0, selected-capacity+1), length-capacity)
 	return start, start + capacity
 }
 
@@ -550,7 +550,7 @@ func breadcrumb(state State) string {
 		return "ALL YEARS  /  YEAR"
 	case ZoomDay:
 		if state.Month != "" {
-			month := state.Month[:ledgerMin(len(state.Month), 7)]
+			month := state.Month[:min(len(state.Month), 7)]
 			if len(month) >= 4 {
 				return "ALL YEARS  /  " + month[:4] + "  /  " + month
 			}
@@ -570,7 +570,7 @@ func wideColumns(width int) (int, int, int, int) {
 		periodWidth, moneyWidth, deltaWidth = 8, 8, 8
 		barWidth = width - periodWidth - moneyWidth*3 - deltaWidth - separators
 	}
-	return periodWidth, moneyWidth, deltaWidth, ledgerMax(4, ledgerMin(18, barWidth))
+	return periodWidth, moneyWidth, deltaWidth, max(4, min(18, barWidth))
 }
 
 func wideHeader(render theme.Context, periodWidth, moneyWidth, deltaWidth, barWidth int) string {
@@ -585,14 +585,14 @@ func wideHeader(render theme.Context, periodWidth, moneyWidth, deltaWidth, barWi
 }
 
 func wideRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, periodWidth, moneyWidth, deltaWidth, barWidth int, maxTokens int64) string {
-	labelWidth := ledgerMax(1, periodWidth-2)
-	labelText := ledgerTruncate(row.Label, labelWidth)
+	labelWidth := max(1, periodWidth-2)
+	labelText := truncate(row.Label, labelWidth)
 	if selected {
 		labelText = "› " + labelText
-		labelText = render.Palette.Emphasis().Bold(true).Render(labelText) + strings.Repeat(" ", ledgerMax(0, periodWidth-lipgloss.Width(labelText)))
+		labelText = render.Palette.Emphasis().Bold(true).Render(labelText) + strings.Repeat(" ", max(0, periodWidth-lipgloss.Width(labelText)))
 	} else {
 		labelText = "  " + labelText
-		labelText += strings.Repeat(" ", ledgerMax(0, periodWidth-lipgloss.Width(labelText)))
+		labelText += strings.Repeat(" ", max(0, periodWidth-lipgloss.Width(labelText)))
 	}
 	return strings.Join([]string{
 		labelText,
@@ -616,7 +616,7 @@ func wideTotal(render theme.Context, row Row, periodWidth, moneyWidth, deltaWidt
 }
 
 func compactHeader(render theme.Context, width int) string {
-	labelWidth := ledgerMax(6, width-22)
+	labelWidth := max(6, width-22)
 	return fitLine(strings.Join([]string{
 		headerCell(render, "PERIOD", labelWidth+2, false),
 		headerCell(render, "TOTAL", 8, true),
@@ -625,23 +625,23 @@ func compactHeader(render theme.Context, width int) string {
 }
 
 func compactRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, width int, maxTokens int64) []string {
-	labelWidth := ledgerMax(6, width-22)
+	labelWidth := max(6, width-22)
 	marker := "  "
-	label := ledgerTruncate(row.Label, labelWidth)
+	label := truncate(row.Label, labelWidth)
 	if selected {
 		marker = render.Palette.Emphasis().Bold(true).Render("› ")
 	}
 	labelCell := aligned(marker+fitText(label, labelWidth), labelWidth+2, false)
 	primary := labelCell + "  " + moneyCell(render, row.Total(), 8) + "  " + deltaCell(render, delta, deltaPriced, deltaPartial, 8)
-	barWidth := ledgerMax(4, width-28)
+	barWidth := max(4, width-28)
 	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, barWidth, maxTokens, false)
 	return []string{fitLine(primary, width), fitLine(secondary, width)}
 }
 
 func compactTotal(render theme.Context, row Row, width int, maxTokens int64) []string {
-	labelWidth := ledgerMax(6, width-22)
+	labelWidth := max(6, width-22)
 	primary := headerCell(render, "TOTAL", labelWidth+2, false) + "  " + moneyCell(render, row.Total(), 8) + "  " + strings.Repeat(" ", 8)
-	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, ledgerMax(4, width-28), maxTokens, true)
+	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, max(4, width-28), maxTokens, true)
 	return []string{fitLine(primary, width), fitLine(secondary, width)}
 }
 
@@ -683,7 +683,7 @@ func activityBar(render theme.Context, row Row, width int, maxTokens int64, full
 		return render.Palette.Subtle().Render(strings.Repeat("·", width))
 	}
 	if !fullWidth && maxTokens > 0 && total < maxTokens {
-		width = ledgerMax(1, int(float64(total)/float64(maxTokens)*float64(width)))
+		width = max(1, int(float64(total)/float64(maxTokens)*float64(width)))
 	}
 	codexWidth, claudeWidth := 0, 0
 	switch {
@@ -693,7 +693,7 @@ func activityBar(render theme.Context, row Row, width int, maxTokens int64, full
 		codexWidth = width
 	default:
 		codexWidth = int(float64(codex) / float64(total) * float64(width))
-		codexWidth = ledgerMin(width-1, ledgerMax(1, codexWidth))
+		codexWidth = min(width-1, max(1, codexWidth))
 		claudeWidth = width - codexWidth
 	}
 	return render.Palette.Provider("codex", 0).Render(strings.Repeat("█", codexWidth)) +
@@ -702,7 +702,7 @@ func activityBar(render theme.Context, row Row, width int, maxTokens int64, full
 
 func aligned(value string, width int, right bool) string {
 	value = ansi.Truncate(value, width, "")
-	padding := ledgerMax(0, width-lipgloss.Width(value))
+	padding := max(0, width-lipgloss.Width(value))
 	if right {
 		return strings.Repeat(" ", padding) + value
 	}
@@ -726,7 +726,7 @@ func fitText(value string, width int) string {
 	return ansi.Truncate(value, width, "")
 }
 
-func ledgerTruncate(value string, width int) string {
+func truncate(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
@@ -806,18 +806,4 @@ func commaInteger(value int64) string {
 		text = text[:index] + "," + text[index:]
 	}
 	return text
-}
-
-func ledgerMin(left, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
-func ledgerMax(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

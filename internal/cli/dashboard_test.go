@@ -552,6 +552,9 @@ func TestQuest108AfterSnapshot(t *testing.T) {
 	if strings.Contains(daily, "DATE") {
 		t.Fatalf("daily detail retained the redundant date table:\n%s", daily)
 	}
+	if wide.DailyCursorMax != 2 {
+		t.Fatalf("daily cursor max = %d, want 2 for three active days", wide.DailyCursorMax)
+	}
 
 	narrow, err := dashboardSnapshot(database, tui.Request{DailyCursor: 1, Range: tui.RangeAll, Width: 100, Height: 35}, render, time.UTC, syncSummaryForTest())
 	if err != nil {

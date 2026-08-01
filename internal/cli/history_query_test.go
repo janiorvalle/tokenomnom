@@ -68,6 +68,30 @@ func TestHistoryExportDirectoryNameIsDeterministic(t *testing.T) {
 	if first == "" || first != second || first == historyExportDirectoryName("ses_other") {
 		t.Fatalf("export directory names are not stable: %q %q", first, second)
 	}
+	if !strings.HasPrefix(first, "ses_example-") || len(first) != len("ses_example-")+12 {
+		t.Fatalf("export directory name is not readable and bounded: %q", first)
+	}
+	if unsafe := historyExportDirectoryName("../../session"); strings.ContainsAny(unsafe, "/\\") {
+		t.Fatalf("export directory name escaped its parent: %q", unsafe)
+	}
+}
+
+func TestDashboardHistoryFreshnessCacheProbesOnceUntilSync(t *testing.T) {
+	cache := dashboardHistoryFreshnessCache{}
+	calls := 0
+	probe := func() []string {
+		calls++
+		return []string{"warning"}
+	}
+	if got := cache.snapshot(false, probe); len(got) != 1 {
+		t.Fatalf("first freshness result = %#v", got)
+	}
+	if got := cache.snapshot(false, probe); len(got) != 1 || calls != 1 {
+		t.Fatalf("freshness was reprobed for a new query: result=%#v calls=%d", got, calls)
+	}
+	if got := cache.snapshot(true, probe); len(got) != 1 || calls != 2 {
+		t.Fatalf("sync did not refresh freshness: result=%#v calls=%d", got, calls)
+	}
 }
 
 func TestHistoryExportCoordinatorRejectsConcurrentSession(t *testing.T) {

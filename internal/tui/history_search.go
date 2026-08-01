@@ -26,16 +26,14 @@ type HistorySearchData = tuipages.HistorySearchData
 // HistorySearchOptions supplies storage operations without coupling the page
 // to the history database or to CLI command state.
 type HistorySearchOptions struct {
-	Load        func(Request) (HistorySearchData, error)
-	Export      func(Request) (string, error)
-	ReportError func(error)
+	Load   func(Request) (HistorySearchData, error)
+	Export func(Request) (string, error)
 }
 
 // HistorySearchPage is the interactive local-history search destination.
 type HistorySearchPage struct {
-	load        func(Request) (HistorySearchData, error)
-	export      func(Request) (string, error)
-	reportError func(error)
+	load   func(Request) (HistorySearchData, error)
+	export func(Request) (string, error)
 
 	query           string
 	sessionID       string
@@ -59,7 +57,7 @@ type HistorySearchPage struct {
 
 // NewHistorySearchPage creates the page without opening the history index.
 func NewHistorySearchPage(options HistorySearchOptions) *HistorySearchPage {
-	return &HistorySearchPage{load: options.Load, export: options.Export, reportError: options.ReportError}
+	return &HistorySearchPage{load: options.Load, export: options.Export}
 }
 
 func (p *HistorySearchPage) ID() PageID           { return HistorySearchPageID }
@@ -401,9 +399,6 @@ func (p *HistorySearchPage) Load(request Request) (any, error) {
 		return nil, errors.New("history search loader is unavailable")
 	}
 	data, err := p.load(request)
-	if err != nil && p.reportError != nil {
-		p.reportError(err)
-	}
 	return data, err
 }
 
@@ -450,9 +445,6 @@ func (p *HistorySearchPage) Export(request Request) (string, error) {
 		return "", errors.New("select a history result before exporting")
 	}
 	path, err := p.export(request)
-	if err != nil && p.reportError != nil {
-		p.reportError(err)
-	}
 	return path, err
 }
 
@@ -537,7 +529,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 		context.Render.Palette.Subtle().Render(truncateText("Search your indexed prompts by exact phrase.", width)),
 		"",
 		context.Render.Palette.Subtle().Render("SEARCH ") + context.Render.Palette.Emphasis().Render("/"+query+"█"),
-		context.Render.Palette.Border().Render(strings.Repeat("─", min(width, 40))),
+		context.Render.Palette.Border().Render(strings.Repeat("─", width)),
 	}
 	switch {
 	case p.loading:

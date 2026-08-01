@@ -148,16 +148,12 @@ func TestHistorySearchPageKeepsMissingIndexHintWhileEditing(t *testing.T) {
 	}
 }
 
-func TestHistorySearchPageReportsLoaderErrors(t *testing.T) {
-	var reported error
+func TestHistorySearchPageReturnsLoaderErrors(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{
 		Load: func(Request) (HistorySearchData, error) { return HistorySearchData{}, errors.New("database is locked") },
-		ReportError: func(err error) {
-			reported = err
-		},
 	})
-	if _, err := page.Load(Request{}); err == nil || reported == nil || reported.Error() != "database is locked" {
-		t.Fatalf("loader error report = err %v reported %v", err, reported)
+	if _, err := page.Load(Request{}); err == nil || err.Error() != "database is locked" {
+		t.Fatalf("loader error = %v", err)
 	}
 }
 
@@ -176,6 +172,23 @@ func TestHistorySearchPageTruncatesProvenanceToPane(t *testing.T) {
 			t.Fatalf("line %d width=%d exceeds pane=%d:\n%s", index+1, width, ContentWidth(request.Width), page.View(pageContext(request)))
 		}
 	}
+}
+
+func TestHistorySearchDividerFillsPaneWidth(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 78, Height: 24}
+	context := pageContext(request)
+	context.Width = request.Width
+	view := page.View(context)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Trim(line, "─") == "" && line != "" {
+			if lipgloss.Width(line) != request.Width {
+				t.Fatalf("divider width=%d, want %d: %q", lipgloss.Width(line), request.Width, line)
+			}
+			return
+		}
+	}
+	t.Fatalf("search view did not render a divider:\n%s", view)
 }
 
 func TestHistorySearchStatusLinesTruncateToPane(t *testing.T) {

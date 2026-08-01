@@ -12,6 +12,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
@@ -141,6 +142,24 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	model = updated.(Model)
 	if command == nil || model.request.Width != 100 || model.request.Height != 30 {
 		t.Fatalf("resize state = %+v, command %v", model.request, command != nil)
+	}
+}
+
+func TestDailyPageStopsAtOldestActiveDay(t *testing.T) {
+	model := loadedTestModel()
+	model.request.DailyCursor = model.snapshot.DailyCursorMax
+	before := model.request
+	updated, command := model.Update(keyMsg("left"))
+	model = updated.(Model)
+	if command != nil || model.request != before {
+		t.Fatalf("left moved past oldest active day: request=%+v command=%v", model.request, command != nil)
+	}
+
+	model.request.DailyCursor--
+	updated, command = model.Update(keyMsg("left"))
+	model = updated.(Model)
+	if command == nil || model.request.DailyCursor != model.snapshot.DailyCursorMax {
+		t.Fatalf("left did not reach oldest active day: request=%+v command=%v", model.request, command != nil)
 	}
 }
 
@@ -318,6 +337,201 @@ func TestCockpitFillsTheWindow(t *testing.T) {
 	if ContentWidth(160) <= ContentWidth(100) {
 		t.Fatalf("content width does not grow with the terminal: 100=%d 160=%d", ContentWidth(100), ContentWidth(160))
 	}
+}
+
+func TestEveryDashboardPageFitsAtEightyByTwentyFour(t *testing.T) {
+	model := realisticEvidenceModel()
+	model.request.Width, model.request.Height = 80, 24
+	model.render.Width = 80
+	model.snapshot.Sessions = testSessionPageData()
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07"}
+	historyPage := NewHistorySearchPage(HistorySearchOptions{})
+	model.router = newRouter(historyPage)
+	model = updateKeyForTest(t, model, "?")
+	assertDashboardFrameFits(t, model, "Help")
+	model = updateKeyForTest(t, model, "?")
+
+	for index, page := range model.router.Pages() {
+		model.router.SelectIndex(index)
+		assertDashboardFrameFits(t, model, page.Title())
+	}
+
+	model.router.Select(SessionsPageID)
+	model.request.SessionDetailID = "ses_second"
+	model.snapshot.Sessions = testSessionPageData()
+	assertDashboardFrameFits(t, model, "Sessions detail")
+
+	model.router.Select(LedgerPageID)
+	model.request.SessionDetailID = ""
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07", ExpandedDay: "2026-07-14", DetailID: "ses_second"}
+	first := "2026-07-14T09:30:00Z"
+	model.snapshot.Ledger.SessionDay = "2026-07-14"
+	model.snapshot.Ledger.SessionIndexAvailable = true
+	model.snapshot.Ledger.Sessions = []tuipages.LedgerSession{{CatalogSession: historystore.CatalogSession{
+		SessionID: "ses_second", Provider: history.ProviderClaude, Project: "alpha", Preview: strings.Repeat("a long prompt ", 20), FirstTimestamp: &first,
+	}}}
+	assertDashboardFrameFits(t, model, "Ledger detail")
+
+	model.router.Select(HistorySearchPageID)
+	historyPage.query = "prompt"
+	historyPage.searched = true
+	historyPage.sessionID = "ses_second"
+	historyPage.detail = &SessionDetail{SessionID: "ses_second", Provider: "codex", Project: "tokenomnom", Preview: strings.Repeat("a long prompt ", 20)}
+	model.request.HistoryQuery = "prompt"
+	model.request.HistorySessionID = "ses_second"
+	assertDashboardFrameFits(t, model, "History search detail")
+}
+
+func assertDashboardFrameFits(t *testing.T, model Model, state string) {
+	t.Helper()
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 24 {
+		t.Fatalf("%s rendered %d lines at 80x24:\n%s", state, len(lines), view)
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width != 80 {
+			t.Fatalf("%s line %d rendered width %d at 80x24:\n%s", state, index+1, width, view)
+		}
+	}
+}
+
+func TestKeyboardOnlyWalkReachesAndExitsEveryPage(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{
+		Load: func(request Request) (HistorySearchData, error) {
+			if request.HistorySessionID != "" {
+				return HistorySearchData{Session: &SessionDetail{SessionID: request.HistorySessionID, Provider: "codex", Project: "tokenomnom", Preview: "prompt"}}, nil
+			}
+			return HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_walk", Provider: "codex", Project: "tokenomnom", Snippet: "walk prompt"}}}}, nil
+		},
+	})
+	model := loadedTestModel()
+	model.router = newRouter(page)
+	model.snapshot.Sessions = testSessionPageData()
+
+	expected := []PageID{DailyPageID, LedgerPageID, ModelsPageID, HeatmapPageID, SessionsPageID, HistorySearchPageID}
+	for index, pageID := range expected {
+		if got := model.router.ActivePage().ID(); got != pageID {
+			t.Fatalf("page %d = %q, want %q", index, got, pageID)
+		}
+		updated, command := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated.(Model)
+		if command != nil {
+			updated, _ = model.Update(command())
+			model = updated.(Model)
+		}
+	}
+	if model.router.ActivePage().ID() != DailyPageID {
+		t.Fatalf("tab did not wrap to daily page: %q", model.router.ActivePage().ID())
+	}
+
+	model.router.Select(SessionsPageID)
+	model = updateKeyForTest(t, model, "enter")
+	if model.request.SessionDetailID != "ses_first" {
+		t.Fatalf("sessions enter did not open the selected session: %+v", model.request)
+	}
+	model = updateKeyForTest(t, model, "esc")
+	if model.request.SessionDetailID != "" {
+		t.Fatalf("sessions escape did not return to the list: %+v", model.request)
+	}
+
+	model.router.Select(HistorySearchPageID)
+	if model.router.ActivePage().ID() != HistorySearchPageID {
+		t.Fatalf("history search page was not selected: %q", model.router.ActivePage().ID())
+	}
+	model = updateKeyForTest(t, model, "/")
+	model = updateKeyForTest(t, model, "p")
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatalf("history search did not schedule a load: request=%+v editing=%v loading=%v", model.request, page.Editing(), page.loading)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.request.HistorySessionID != "ses_walk" {
+		t.Fatalf("history search enter did not open the selected result: %+v", model.request)
+	}
+	if command == nil {
+		t.Fatal("history detail did not schedule a load")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.request.HistorySessionID != "" {
+		t.Fatalf("history search escape did not return to results: %+v", model.request)
+	}
+	if command == nil {
+		t.Fatal("history search escape did not schedule the result reload")
+	}
+
+	updated, command = model.Update(keyMsg("q"))
+	if command == nil {
+		t.Fatal("keyboard-only walk did not expose quit")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T", command())
+	}
+}
+
+func TestQuest117KeyboardWalkEvidence(t *testing.T) {
+	model := realisticEvidenceModel()
+	model.request.Width, model.request.Height = 80, 24
+	model.render.Width = 80
+	model.snapshot.Sessions = testSessionPageData()
+	historyPage := NewHistorySearchPage(HistorySearchOptions{})
+	model.router = newRouter(historyPage)
+
+	frames := make([]string, 0, len(model.router.Pages())+3)
+	model = updateKeyForTest(t, model, "?")
+	frames = append(frames, "FRAME: help overlay · 80x24\n"+model.View())
+	model = updateKeyForTest(t, model, "?")
+	for index, page := range model.router.Pages() {
+		model.router.SelectIndex(index)
+		frames = append(frames, "FRAME: "+page.Title()+" list · 80x24\n"+model.View())
+	}
+
+	model.router.Select(SessionsPageID)
+	model.request.SessionDetailID = "ses_second"
+	frames = append(frames, "FRAME: Sessions detail · 80x24\n"+model.View())
+
+	model.router.Select(LedgerPageID)
+	model.request.SessionDetailID = ""
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07", ExpandedDay: "2026-07-14", DetailID: "ses_second"}
+	first := "2026-07-14T09:30:00Z"
+	model.snapshot.Ledger.SessionDay = "2026-07-14"
+	model.snapshot.Ledger.SessionIndexAvailable = true
+	model.snapshot.Ledger.Sessions = []tuipages.LedgerSession{{CatalogSession: historystore.CatalogSession{
+		SessionID: "ses_second", Provider: history.ProviderClaude, Project: "alpha", ProjectSource: history.ProjectSourceGit,
+		Preview: "Prepare the migration rollout plan", FirstTimestamp: &first, LastTimestamp: &first,
+		LogicalPromptCount: 4, OccurrenceCount: 6, ThreadKind: history.ThreadRoot, ThreadConfidence: history.ConfidenceExact,
+		PreferredRetrievalSource: "provider-live", Availability: historystore.Availability{ProviderLive: 1, ProviderArchive: 1, Vault: 1},
+	}}}
+	frames = append(frames, "FRAME: Ledger session detail · 80x24\n"+model.View())
+
+	model.router.Select(HistorySearchPageID)
+	historyPage.query = "do not implement"
+	historyPage.searched = true
+	historyPage.hits = []SearchHit{{SessionID: "ses_search", Provider: "codex", Date: "2026-08-01", Project: "tokenomnom", Snippet: "said do not implement until the provenance view is ready"}}
+	model.request.HistoryQuery = historyPage.query
+	model.request.HistorySessionID = ""
+	frames = append(frames, "FRAME: History search results · 80x24\n"+model.View())
+	historyPage.sessionID = "ses_search"
+	historyPage.detail = &SessionDetail{
+		CatalogSession: historystore.CatalogSession{
+			SessionID: "ses_search", Provider: history.ProviderCodex, Project: "tokenomnom", ProjectSource: history.ProjectSourceGit,
+			FirstTimestamp: &first, LastTimestamp: &first, LogicalPromptCount: 3, OccurrenceCount: 5,
+			ThreadKind: history.ThreadRoot, ThreadConfidence: history.ConfidenceExact,
+			PreferredRetrievalSource: "provider-live", Availability: historystore.Availability{ProviderLive: 1, Vault: 1},
+		},
+		SessionID: "ses_search", Provider: "codex", Project: "tokenomnom", Preview: "do not implement until the provenance view is ready",
+	}
+	model.request.HistorySessionID = historyPage.sessionID
+	frames = append(frames, "FRAME: History session detail · 80x24\n"+model.View())
+
+	t.Log("Source: internal/tui/app_test.go::TestQuest117KeyboardWalkEvidence\nCommand: go test -v ./internal/tui -run TestQuest117KeyboardWalkEvidence -count=1\n\n" + strings.Join(frames, "\n\n"))
 }
 
 func TestRouterRegistersSpendPagesAndHidesEmptySections(t *testing.T) {
@@ -685,17 +899,17 @@ func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
 	}}
 	updated, command = model.Update(keyMsg("j"))
 	model = updated.(Model)
-	if command == nil || model.request.Ledger.Cursor != 1 {
+	if command != nil || model.request.Ledger.Cursor != 1 {
 		t.Fatalf("ledger j selection = %+v, command=%v", model.request.Ledger, command != nil)
 	}
 	updated, command = model.Update(keyMsg("home"))
 	model = updated.(Model)
-	if command == nil || model.request.Ledger.Cursor != 0 {
+	if command != nil || model.request.Ledger.Cursor != 0 {
 		t.Fatalf("ledger home selection = %+v, command=%v", model.request.Ledger, command != nil)
 	}
 	updated, command = model.Update(keyMsg("end"))
 	model = updated.(Model)
-	if command == nil || model.request.Ledger.Cursor != 1 {
+	if command != nil || model.request.Ledger.Cursor != 1 {
 		t.Fatalf("ledger end selection = %+v, command=%v", model.request.Ledger, command != nil)
 	}
 }
@@ -994,11 +1208,72 @@ func loadedTestModel() Model {
 			{Value: "$0.50", Kind: MetricMoney},
 			{Value: "$1.00", Kind: MetricMoney},
 		}},
-		Views: [4]string{"daily body", "", "models body", "heatmap body"},
+		DailyCursorMax: 2,
+		Views:          [4]string{"daily body", "", "models body", "heatmap body"},
 	}
 	ledgerRow := tuipages.Row{Key: "2026", Label: "2026", Codex: tuipages.ProviderTotals{Tokens: 100, PricedTokens: 100}}
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{ledgerRow}, Total: ledgerRow}
 	return model
+}
+
+func realisticEvidenceModel() Model {
+	model := loadedTestModel()
+	model.snapshot.Summary = Summary{Metrics: [5]SummaryMetric{
+		{Value: "$3,033.35", Kind: MetricMoney},
+		{Value: "178,000,000"},
+		{Value: "2"},
+		{Value: "$1,516.68", Kind: MetricMoney},
+		{Value: "$2,209.23", Kind: MetricMoney},
+	}}
+	model.snapshot.Views = [4]string{
+		realisticDailyEvidenceView(),
+		"",
+		"PROVIDER  MODEL                 TOKENS       COST\n" +
+			"codex     gpt-5.2             143,200,000  $2,408.35\n" +
+			"claude    claude-sonnet         34,800,000    $625.00",
+		"2026\nJul  ·······································\n" +
+			"Less ·░▒▓█ More\n2 active days · total cost $3,033.35",
+	}
+	model.snapshot.Sessions = testSessionPageData()
+	model.snapshot.Sessions.Sessions[0].Preview = "Investigate the production latency regression"
+	model.snapshot.Sessions.Sessions[1].Preview = "Prepare the migration rollout plan"
+	july14 := tuipages.Row{
+		Key: "2026-07-14", Label: "Jul 14",
+		Codex:  tuipages.ProviderTotals{Cost: pricing.Money(1_584_230_000_000), Tokens: 91_200_000, PricedTokens: 91_200_000},
+		Claude: tuipages.ProviderTotals{Cost: pricing.Money(625_000_000_000), Tokens: 34_800_000, PricedTokens: 34_800_000},
+	}
+	july13 := tuipages.Row{
+		Key: "2026-07-13", Label: "Jul 13",
+		Codex: tuipages.ProviderTotals{Cost: pricing.Money(824_120_000_000), Tokens: 52_000_000, PricedTokens: 52_000_000},
+	}
+	model.snapshot.Ledger = tuipages.Data{
+		Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{july14, july13},
+		Total: july14.Add(july13),
+	}
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07"}
+	return model
+}
+
+func realisticDailyEvidenceView() string {
+	return strings.Join([]string{
+		"■ Codex  ■ Claude  cost/day",
+		" $1,584.23       █████████████████████████████",
+		"   $824.12       ████████████",
+		"                 13       14       ^",
+		"                 Jul 2026",
+		"----------------------------------------------------------",
+		"DAY DETAIL",
+		"2026-07-14",
+		"TOTAL $2,209.23",
+		"",
+		"PROVIDER SPLIT · COST",
+		"Codex  72% ################ $1,584.23",
+		"Claude 28% ##########         $625.00",
+		"",
+		"TOP MODELS BY COST",
+		"gpt-5.2                  $1,584.23",
+		"claude-sonnet              $625.00",
+	}, "\n")
 }
 
 func loadedMessage(model Model, request Request, snapshot Snapshot) loadedMsg {
@@ -1070,12 +1345,23 @@ func (p testPage) Update(context PageContext, _ string) (Request, bool) {
 func (p testPage) NeedsReload(PageContext, Request) bool { return true }
 
 func testSessionPageData() tuipages.SessionPageData {
+	first, last := "2026-07-31T09:30:00Z", "2026-07-31T10:15:00Z"
 	return tuipages.SessionPageData{
 		IndexAvailable: true,
 		Projects:       []tuipages.ProjectOption{{Key: "alpha", Label: "alpha"}, {Key: "beta", Label: "beta"}},
 		Sessions: []historystore.CatalogSession{
-			{SessionID: "ses_first", Provider: history.ProviderCodex, Project: "beta", Preview: "first prompt", LogicalPromptCount: 2, OccurrenceCount: 3},
-			{SessionID: "ses_second", Provider: history.ProviderClaude, Project: "alpha", Preview: "second prompt", LogicalPromptCount: 4, OccurrenceCount: 6},
+			{
+				SessionID: "ses_first", Provider: history.ProviderCodex, Project: "beta", ProjectSource: history.ProjectSourceGit,
+				FirstTimestamp: &first, LastTimestamp: &last, Preview: "first prompt", LogicalPromptCount: 2, OccurrenceCount: 3,
+				ThreadKind: history.ThreadRoot, ThreadConfidence: history.ConfidenceExact,
+				PreferredRetrievalSource: "provider-live", Availability: historystore.Availability{ProviderLive: 1, Vault: 1},
+			},
+			{
+				SessionID: "ses_second", Provider: history.ProviderClaude, Project: "alpha", ProjectSource: history.ProjectSourceGit,
+				FirstTimestamp: &first, LastTimestamp: &last, Preview: "second prompt", LogicalPromptCount: 4, OccurrenceCount: 6,
+				ThreadKind: history.ThreadRoot, ThreadConfidence: history.ConfidenceExact,
+				PreferredRetrievalSource: "provider-live", Availability: historystore.Availability{ProviderLive: 1, ProviderArchive: 1, Vault: 1},
+			},
 		},
 	}
 }

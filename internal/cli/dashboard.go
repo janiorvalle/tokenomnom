@@ -418,6 +418,25 @@ type dashboardHistorySearchCache struct {
 	initialized bool
 }
 
+// dashboardHistoryFreshnessCache keeps the metadata-only source walk on the
+// session boundary instead of repeating it for every new search query.
+type dashboardHistoryFreshnessCache struct {
+	mu          sync.Mutex
+	warnings    []string
+	initialized bool
+}
+
+func (cache *dashboardHistoryFreshnessCache) snapshot(force bool, probe func() []string) []string {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.initialized && !force {
+		return append([]string(nil), cache.warnings...)
+	}
+	cache.warnings = append([]string(nil), probe()...)
+	cache.initialized = true
+	return append([]string(nil), cache.warnings...)
+}
+
 type dashboardHistorySearchCacheKey struct {
 	query     string
 	sessionID string
@@ -601,7 +620,8 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	render.Width = tui.ContentWidth(request.Width)
 	snapshot := tui.Snapshot{
 		Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration,
-		DailyCursor: normalizedDailyCursor(dailyRows, request.DailyCursor),
+		DailyCursor:    normalizedDailyCursor(dailyRows, request.DailyCursor),
+		DailyCursorMax: max(0, len(dailyRows)-1),
 	}
 	snapshot.Summary = dashboardSummary(totals, costs)
 	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render)

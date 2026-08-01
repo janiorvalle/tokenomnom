@@ -32,3 +32,19 @@ func TestRenderSessionDetailIncludesPromptCountsAndProvenance(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderHistorySearchSessionDetailKeepsNoticeSpacingTight(t *testing.T) {
+	view := RenderHistorySearchSessionDetail(testRender(), SessionDetail{
+		SessionID: "ses_notice", Provider: "codex", Project: "tokenomnom", Preview: "prompt",
+	}, 70, 40, 0, []string{"history index is stale"})
+	lines := strings.Split(view, "\n")
+	for index, line := range lines {
+		if line == "history index is stale" {
+			if index == 0 || lines[index-1] != "" || index > 1 && lines[index-2] == "" {
+				t.Fatalf("notice has redundant blank spacing at line %d:\n%s", index+1, view)
+			}
+			return
+		}
+	}
+	t.Fatalf("notice missing from detail:\n%s", view)
+}

@@ -126,6 +126,7 @@ type Snapshot struct {
 	Ledger    tuipages.Data
 	// DailyCursor is the normalized distance from the newest active daily bar.
 	DailyCursor          int
+	DailyCursorMax       int
 	DailyWindowStart     int
 	DailyDetailOffset    int
 	DailyDetailMaxOffset int
