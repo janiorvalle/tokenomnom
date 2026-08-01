@@ -131,12 +131,23 @@ type pageGroup struct {
 
 func newRouter() PageRouter {
 	return newPageRouter(
-		snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage},
+		dailyPage{snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage}},
 		ledgerPage{},
 		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
 		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
 		sessionsPage{},
 	)
+}
+
+type dailyPage struct {
+	snapshotPage
+}
+
+func (dailyPage) UpdateContext(context PageContext, key string) (Request, bool) {
+	if key == "down" && context.Request.DailyDetailOffset >= max(0, context.Snapshot.DailyDetailMaxOffset) {
+		return context.Request, false
+	}
+	return updateDailyPage(context.Request, key)
 }
 
 type sessionsPage struct{}
@@ -423,9 +434,11 @@ func updateDailyPage(request Request, key string) (Request, bool) {
 		request.DailyDetailOffset++
 	case "home":
 		request.DailyCursor = 1_000_000
+		request.DailyWindowStart = 0
 		request.DailyDetailOffset = 0
 	case "end":
 		request.DailyCursor = 0
+		request.DailyWindowStart = 0
 		request.DailyDetailOffset = 0
 	default:
 		return request, false

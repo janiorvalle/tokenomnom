@@ -488,12 +488,10 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		return tui.Snapshot{}, err
 	}
 	snapshot.Views[tui.DailyTab] = dailyView.view
+	snapshot.DailyWindowStart = dailyView.windowStart
 	snapshot.DailyDetailOffset = dailyView.detailOffset
+	snapshot.DailyDetailMaxOffset = dailyView.detailMaxOffset
 	snapshot.Ledger, err = dashboardLedgerData(database, ledgerFilter, ledgerCosts, request)
-	if err != nil {
-		return tui.Snapshot{}, err
-	}
-	snapshot.Views[tui.MonthlyTab], err = dashboardMonthlyView(database, filter, costs, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -569,13 +567,17 @@ type dashboardDailyDetail struct {
 }
 
 type dashboardDailyViewResult struct {
-	view         string
-	detailOffset int
+	view            string
+	windowStart     int
+	detailOffset    int
+	detailMaxOffset int
 }
 
 func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, pricingTable pricing.Table, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
 	selectedIndex := dailyCursorIndex(allRows, request.DailyCursor)
-	rows := windowDailyRows(allRows, selectedIndex, dashboardRowCapacity(request.Height))
+	capacity := dashboardRowCapacity(request.Height)
+	windowStart := normalizedDailyWindowStart(allRows, selectedIndex, capacity, request.DailyWindowStart)
+	rows := windowDailyRows(allRows, windowStart, capacity)
 	selectedDate := ""
 	if selectedIndex >= 0 {
 		selectedDate = allRows[selectedIndex].Date
@@ -592,18 +594,25 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 	}
 	chart := ""
 	if len(periods) > 0 {
-		chart = renderPeriodChart(chartRender, periods, "day", "days", chartUsesTokens(costs))
+		height := chartHeight
+		if !dailyDetailSideBySide(render.Width) {
+			height = dailyStackedChartHeight(chartRender, periods, chartUsesTokens(costs), tui.ContentHeight(request.Height))
+		}
+		if height > 0 {
+			chart = renderPeriodChartWithHeight(chartRender, periods, "day", "days", chartUsesTokens(costs), height)
+		}
 	}
 	if selectedDate == "" {
-		view, detailOffset := composeDailyView(render, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
-		return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
+		view, detailOffset, detailMaxOffset := composeDailyView(render, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
+		return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
 	}
 	detail, err := loadDashboardDailyDetail(database, filter, selectedDate, pricingTable)
 	if err != nil {
 		return dashboardDailyViewResult{}, err
 	}
-	view, detailOffset := composeDailyView(render, chart, renderDailyDetail(render, detail, dailyDetailWidth(render.Width)), request.Height, request.DailyDetailOffset)
-	return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
+	detailWidth := dailyDetailRenderWidth(render.Width)
+	view, detailOffset, detailMaxOffset := composeDailyView(render, chart, renderDailyDetail(render, detail, detailWidth), request.Height, request.DailyDetailOffset)
+	return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
 }
 
 func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date string, pricingTable pricing.Table) (dashboardDailyDetail, error) {
@@ -620,7 +629,19 @@ func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date s
 	return dashboardDailyDetail{breakdown: breakdown, costs: costs}, nil
 }
 
-func composeDailyView(render theme.Context, chart, detail string, height, detailOffset int) (string, int) {
+func dailyStackedChartHeight(render theme.Context, periods []chartPeriod, tokens bool, contentHeight int) int {
+	minimumDetailHeight := min(6, max(1, contentHeight-1))
+	for height := chartHeight; height >= 1; height-- {
+		chart := renderPeriodChartWithHeight(render, periods, "day", "days", tokens, height)
+		chartLines := dashboardBlockLineCount(chart)
+		if contentHeight-chartLines-1 >= minimumDetailHeight {
+			return height
+		}
+	}
+	return 0
+}
+
+func composeDailyView(render theme.Context, chart, detail string, height, detailOffset int) (string, int, int) {
 	contentHeight := max(1, tui.ContentHeight(height))
 	if !dailyDetailSideBySide(render.Width) {
 		parts := make([]string, 0, 3)
@@ -629,21 +650,24 @@ func composeDailyView(render theme.Context, chart, detail string, height, detail
 			parts = append(parts, chart)
 		}
 		parts = append(parts, render.Palette.Border().Render(strings.Repeat("-", max(1, render.Width))))
-		chartLines := len(strings.Split(strings.TrimSuffix(chart, "\n"), "\n"))
+		chartLines := dashboardBlockLineCount(chart)
 		detailHeight := max(1, contentHeight-chartLines-1)
-		detailView, normalizedOffset := fitDashboardBlockWindow(detail, render.Width, detailHeight, detailOffset)
+		if chartLines > 0 {
+			detailHeight = max(min(6, max(1, contentHeight-1)), detailHeight)
+		}
+		detailView, normalizedOffset, detailMaxOffset := renderDailyDetailWindow(render, detail, render.Width, detailHeight, detailOffset)
 		parts = append(parts, detailView)
-		return strings.Join(parts, "\n"), normalizedOffset
+		return strings.Join(parts, "\n"), normalizedOffset, detailMaxOffset
 	}
 	chartWidth := dailyChartWidth(render.Width)
 	detailWidth := dailyDetailWidth(render.Width)
-	detailView, normalizedOffset := fitDashboardBlockWindow(detail, detailWidth, contentHeight, detailOffset)
+	detailView, normalizedOffset, detailMaxOffset := renderDailyDetailWindow(render, detail, detailWidth, contentHeight, detailOffset)
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		fitDashboardBlock(chart, chartWidth),
 		render.Palette.Border().Render("│")+" ",
 		detailView,
-	), normalizedOffset
+	), normalizedOffset, detailMaxOffset
 }
 
 func dailyDetailSideBySide(width int) bool {
@@ -655,6 +679,13 @@ func dailyDetailSideBySide(width int) bool {
 
 func dailyDetailWidth(width int) int {
 	return min(38, max(dailyDetailMinWidth, width/3))
+}
+
+func dailyDetailRenderWidth(width int) int {
+	if !dailyDetailSideBySide(width) {
+		return width
+	}
+	return dailyDetailWidth(width)
 }
 
 func dailyChartWidth(width int) int {
@@ -673,13 +704,29 @@ func fitDashboardBlock(value string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func fitDashboardBlockWindow(value string, width, height, offset int) (string, int) {
+func renderDailyDetailWindow(render theme.Context, value string, width, height, offset int) (string, int, int) {
 	lines := strings.Split(strings.TrimSuffix(value, "\n"), "\n")
 	windowHeight := max(1, height)
 	maxOffset := max(0, len(lines)-windowHeight)
 	offset = min(max(0, offset), maxOffset)
 	end := min(len(lines), offset+windowHeight)
-	return fitDashboardBlock(strings.Join(lines[offset:end], "\n"), width), offset
+	viewport := append([]string(nil), lines[offset:end]...)
+	if windowHeight >= 3 {
+		if offset > 0 && len(viewport) > 0 {
+			viewport[0] = render.Palette.Subtle().Render("↑ more above")
+		}
+		if end < len(lines) && len(viewport) > 0 {
+			viewport[len(viewport)-1] = render.Palette.Subtle().Render("↓ more below")
+		}
+	}
+	return fitDashboardBlock(strings.Join(viewport, "\n"), width), offset, maxOffset
+}
+
+func dashboardBlockLineCount(value string) int {
+	if value == "" {
+		return 0
+	}
+	return len(strings.Split(strings.TrimSuffix(value, "\n"), "\n"))
 }
 
 func renderDailyEmptyDetail(render theme.Context, message string) string {
@@ -691,6 +738,7 @@ func renderDailyEmptyDetail(render theme.Context, message string) string {
 
 func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width int) string {
 	useTokenShares := chartUsesTokens(detail.costs) || detail.costs.Grand.Total == 0
+	dayIsUnpriced := useTokenShares && detail.breakdown.Total > 0 && detail.costs.Grand.PricedTokens == 0
 	metricLabel := "COST"
 	if useTokenShares {
 		metricLabel = "TOKENS"
@@ -707,6 +755,9 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 		render.Palette.Subtle().Render("TOTAL ") + valueStyle.Render(totalValue),
 		"",
 		render.Palette.Header().Render("PROVIDER SPLIT · " + metricLabel),
+	}
+	if dayIsUnpriced {
+		lines = append(lines, render.Palette.Subtle().Render("UNPRICED DAY · TOKEN SHARES"))
 	}
 	providerValues := make([]string, len(detail.breakdown.Providers))
 	maxProviderValueWidth := 0
@@ -756,7 +807,8 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 		}
 		return models[i].Model < models[j].Model
 	})
-	for index, model := range models[:min(5, len(models))] {
+	modelLimit := min(5, len(models))
+	for index, model := range models[:modelLimit] {
 		cost := detail.costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
 		value := formatCost(cost)
 		if useTokenShares {
@@ -768,6 +820,9 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 		padding := max(1, width-lipgloss.Width(name)-lipgloss.Width(value))
 		line += strings.Repeat(" ", padding) + valueStyle.Render(value)
 		lines = append(lines, line)
+	}
+	if len(models) > modelLimit {
+		lines = append(lines, render.Palette.Subtle().Render(fmt.Sprintf("+%d more models", len(models)-modelLimit)))
 	}
 	if len(models) == 0 {
 		lines = append(lines, render.Palette.Subtle().Render("No models recorded."))
@@ -1020,16 +1075,29 @@ func normalizedDailyCursor(rows []store.DailyRow, cursor int) int {
 	return len(rows) - 1 - selectedIndex
 }
 
-func windowDailyRows(rows []store.DailyRow, selectedIndex, capacity int) []store.DailyRow {
+func normalizedDailyWindowStart(rows []store.DailyRow, selectedIndex, capacity, requestedStart int) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	capacity = max(1, capacity)
+	selectedIndex = min(len(rows)-1, max(0, selectedIndex))
+	maxStart := max(0, len(rows)-capacity)
+	start := min(max(0, requestedStart), maxStart)
+	if selectedIndex < start {
+		return selectedIndex
+	}
+	if selectedIndex >= start+capacity {
+		return min(maxStart, selectedIndex-capacity+1)
+	}
+	return start
+}
+
+func windowDailyRows(rows []store.DailyRow, start, capacity int) []store.DailyRow {
 	if len(rows) == 0 {
 		return rows
 	}
 	capacity = max(1, capacity)
-	selectedIndex = min(len(rows)-1, max(0, selectedIndex))
-	start := max(0, selectedIndex-capacity+1)
+	start = min(max(0, start), max(0, len(rows)-capacity))
 	end := min(len(rows), start+capacity)
-	if end-start < capacity {
-		start = max(0, end-capacity)
-	}
 	return rows[start:end]
 }

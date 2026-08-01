@@ -1,5 +1,9 @@
-=== RUN   TestDashboardDailyCursorSelectsDetailAndCollapsesBelowChart
-    dashboard_test.go:197: wide daily cockpit:
+Quest 108 after snapshot
+Source: committed TestQuest108AfterSnapshot
+Command: go test ./internal/cli -run TestQuest108AfterSnapshot -count=1 -v
+
+=== RUN   TestQuest108AfterSnapshot
+    dashboard_test.go:307: wide daily cockpit:
         ■ Codex  ■ Claude  cost/day                                     │ DAY DETAIL
          $0.18       ██████                                               2026-02-01
                      ██████                                               TOTAL $0.18
@@ -29,12 +33,12 @@
         TOTAL $0.18
 
         PROVIDER SPLIT · COST
-        Codex  100% ############## $0.18
-        Claude   0% -------------- —
+        Codex  100% ################ $0.18
+        Claude   0% ---------------- —
 
         TOP MODELS BY COST
-        gpt-5.2                    $0.18
-        unknown                        —
---- PASS: TestDashboardDailyCursorSelectsDetailAndCollapsesBelowChart (0.01s)
+        gpt-5.2                                                                  $0.18
+        unknown                                                                      —
+--- PASS: TestQuest108AfterSnapshot (0.01s)
 PASS
 ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.018s

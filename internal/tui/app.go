@@ -64,15 +64,15 @@ func (r Range) String() string {
 
 // Request describes the data and render state needed for one snapshot.
 type Request struct {
-	Provider    Provider
-	Range       Range
-	Width       int
-	Height      int
-	DailyOffset int
-	Ledger      tuipages.State
+	Provider Provider
+	Range    Range
+	Width    int
+	Height   int
+	Ledger   tuipages.State
 	// DailyCursor is the number of active daily bars to move back from the
 	// newest active day. Zero always means the newest active day.
 	DailyCursor          int
+	DailyWindowStart     int
 	DailyDetailOffset    int
 	MonthlyOffset        int
 	ModelOffset          int
@@ -118,12 +118,14 @@ type Snapshot struct {
 	StatusBar StatusBar
 	Ledger    tuipages.Data
 	// DailyCursor is the normalized distance from the newest active daily bar.
-	DailyCursor       int
-	DailyDetailOffset int
-	Empty             bool
-	FilesScanned      int
-	SyncDuration      time.Duration
-	Warning           string
+	DailyCursor          int
+	DailyWindowStart     int
+	DailyDetailOffset    int
+	DailyDetailMaxOffset int
+	Empty                bool
+	FilesScanned         int
+	SyncDuration         time.Duration
+	Warning              string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -182,27 +184,30 @@ const (
 
 // Model is the pure dashboard state machine.
 type Model struct {
-	render         theme.Context
-	loader         Loader
-	offer          SkillOffer
-	spinner        spinner.Model
-	router         PageRouter
-	request        Request
-	snapshot       Snapshot
-	help           bool
-	loading        bool
-	syncing        bool
-	syncFresh      bool
-	loaded         bool
-	started        time.Time
-	status         string
-	warning        string
-	offerState     skillOfferState
-	offerChecked   bool
-	offerResults   []string
-	pendingSync    bool
-	loadGeneration uint64
-	syncGeneration uint64
+	render                   theme.Context
+	loader                   Loader
+	offer                    SkillOffer
+	spinner                  spinner.Model
+	router                   PageRouter
+	request                  Request
+	snapshot                 Snapshot
+	help                     bool
+	loading                  bool
+	syncing                  bool
+	syncFresh                bool
+	loaded                   bool
+	started                  time.Time
+	status                   string
+	warning                  string
+	offerState               skillOfferState
+	offerChecked             bool
+	offerResults             []string
+	pendingSync              bool
+	syncCompletionPending    bool
+	loadGeneration           uint64
+	syncGeneration           uint64
+	syncInFlight             bool
+	syncCompletionGeneration uint64
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -230,8 +235,12 @@ func (m Model) Init() tea.Cmd {
 
 func (m *Model) loadCmd(request Request) tea.Cmd {
 	m.loadGeneration++
+	if m.syncCompletionPending && m.loadGeneration != m.syncCompletionGeneration {
+		m.syncCompletionPending = false
+	}
 	if request.Sync {
 		m.syncGeneration = m.loadGeneration
+		m.syncInFlight = true
 	}
 	return m.loadCmdAt(request, m.loadGeneration)
 }
@@ -309,38 +318,62 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
 	case loadedMsg:
-		if msg.request.Sync && m.syncing && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
+		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
+				m.syncInFlight = false
 				m.syncing = false
 				m.warning = msg.err.Error()
 				return m, nil
 			}
+			m.syncInFlight = false
 			m.syncing = false
 			m.loading = true
+			m.syncCompletionPending = true
+			m.syncCompletionGeneration = m.loadGeneration + 1
 			command := m.loadCmd(m.request)
 			return m, command
 		}
 		if msg.generation != m.loadGeneration {
 			return m, nil
 		}
-		if !sameRequestIgnoringSync(msg.request, m.request) {
+		requestMatches := sameRequestIgnoringSync(msg.request, m.request)
+		if !requestMatches {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.loading, m.syncing, m.syncFresh = false, false, false
+			m.loading, m.syncFresh = false, false
+			if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
+				m.syncCompletionPending = false
+			}
+			if msg.request.Sync {
+				m.syncInFlight = false
+			}
+			if !m.syncInFlight {
+				m.syncing = false
+			}
 			m.warning = msg.err.Error()
 			return m, nil
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
-		if sameRequestIgnoringSync(msg.request, m.request) {
+		if requestMatches {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
 			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
 		}
 		m.loading = false
 		m.loaded = true
 		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
+			m.syncCompletionPending = false
+			m.syncInFlight = false
+			m.syncing = false
+			m.syncFresh = true
+			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
+			return m, m.maybeCheckSkillOffer()
+		}
+		if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
+			m.syncCompletionPending = false
 			m.syncing = false
 			m.syncFresh = true
 			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
@@ -430,6 +463,7 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
 		m.request.DailyCursor = 0
+		m.request.DailyWindowStart = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
 		command := m.loadCmd(m.request)
@@ -437,6 +471,7 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
 		m.request.DailyCursor = 0
+		m.request.DailyWindowStart = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
 		command := m.loadCmd(m.request)

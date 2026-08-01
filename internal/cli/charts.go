@@ -67,6 +67,10 @@ func writePeriodChart(cmd *cobra.Command, periods []chartPeriod, singular, plura
 
 // renderPeriodChart is pure string generation; terminal probing happens in theme.Resolve.
 func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, plural string, tokens bool) string {
+	return renderPeriodChartWithHeight(render, periods, singular, plural, tokens, chartHeight)
+}
+
+func renderPeriodChartWithHeight(render theme.Context, periods []chartPeriod, singular, plural string, tokens bool, height int) string {
 	unit := "cost/" + singular
 	if tokens {
 		unit = "tokens/" + singular + " (unpriced)"
@@ -101,7 +105,7 @@ func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, pl
 	if len(periods) > 0 {
 		barWidth = max(minimumBarWidth, min(maximumBarWidth, (plotWidth-(len(periods)-1)*barGap)/len(periods)))
 	}
-	chart := barchart.New(plotWidth, chartHeight,
+	chart := barchart.New(plotWidth, max(1, height),
 		barchart.WithNoAxis(),
 		barchart.WithNoAutoBarWidth(),
 		barchart.WithBarWidth(barWidth),
