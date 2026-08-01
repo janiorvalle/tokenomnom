@@ -100,6 +100,10 @@ func loadReportCosts(database *store.Store, filter store.Filter, keep func(store
 	if err != nil {
 		return reportCosts{}, err
 	}
+	return loadReportCostsWithTable(database, filter, keep, table)
+}
+
+func loadReportCostsWithTable(database *store.Store, filter store.Filter, keep func(store.Usage) bool, table pricing.Table) (reportCosts, error) {
 	rows, err := database.FilteredUsageRows(filter)
 	if err != nil {
 		return reportCosts{}, err

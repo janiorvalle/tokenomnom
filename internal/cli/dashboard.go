@@ -456,7 +456,11 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	costs, err := loadReportCosts(database, filter, nil)
+	pricingTable, err := loadPricingTable()
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+	costs, err := loadReportCostsWithTable(database, filter, nil, pricingTable)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -479,7 +483,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		DailyCursor: normalizedDailyCursor(dailyRows, request.DailyCursor),
 	}
 	snapshot.Summary = dashboardSummary(totals, costs)
-	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, request, render)
+	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -569,7 +573,7 @@ type dashboardDailyViewResult struct {
 	detailOffset int
 }
 
-func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
+func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, pricingTable pricing.Table, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
 	selectedIndex := dailyCursorIndex(allRows, request.DailyCursor)
 	rows := windowDailyRows(allRows, selectedIndex, dashboardRowCapacity(request.Height))
 	selectedDate := ""
@@ -594,7 +598,7 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 		view, detailOffset := composeDailyView(render, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
 		return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
 	}
-	detail, err := loadDashboardDailyDetail(database, filter, selectedDate)
+	detail, err := loadDashboardDailyDetail(database, filter, selectedDate, pricingTable)
 	if err != nil {
 		return dashboardDailyViewResult{}, err
 	}
@@ -602,14 +606,14 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 	return dashboardDailyViewResult{view: view, detailOffset: detailOffset}, nil
 }
 
-func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date string) (dashboardDailyDetail, error) {
+func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date string, pricingTable pricing.Table) (dashboardDailyDetail, error) {
 	breakdown, err := database.DailyBreakdown(date, filter.Provider)
 	if err != nil {
 		return dashboardDailyDetail{}, err
 	}
 	detailFilter := filter
 	detailFilter.Since, detailFilter.Until = date, date
-	costs, err := loadReportCosts(database, detailFilter, nil)
+	costs, err := loadReportCostsWithTable(database, detailFilter, nil, pricingTable)
 	if err != nil {
 		return dashboardDailyDetail{}, err
 	}
@@ -691,11 +695,6 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 	if useTokenShares {
 		metricLabel = "TOKENS"
 	}
-	metricTotal := int64(detail.costs.Grand.Total)
-	if useTokenShares {
-		metricTotal = detail.breakdown.Total
-	}
-
 	totalValue := formatCost(detail.costs.Grand)
 	valueStyle := render.Palette.Money()
 	if useTokenShares {
@@ -723,13 +722,14 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 	barWidth := max(3, min(16, width-13-maxProviderValueWidth))
 	for index, provider := range detail.breakdown.Providers {
 		cost := detail.costs.ByProvider[provider.Provider]
-		metricValue := int64(cost.Total)
 		value := providerValues[index]
 		if useTokenShares {
-			metricValue = provider.Total
 			value = formatNumber(provider.Total)
 		}
-		percent := dailyDetailPercent(metricValue, metricTotal)
+		percent := dailyDetailPercent(provider.Total, detail.breakdown.Total)
+		if !useTokenShares {
+			percent = dailyDetailCostPercent(cost.Total, detail.costs.Grand.Total)
+		}
 		bar := dailyDetailBar(percent, barWidth)
 		line := fmt.Sprintf("%-6s %3d%% %s %s", providerName(provider.Provider), percent, bar, value)
 		lines = append(lines, render.Palette.Provider(string(provider.Provider), index).Render(line))
@@ -776,6 +776,14 @@ func renderDailyDetail(render theme.Context, detail dashboardDailyDetail, width 
 }
 
 func dailyDetailPercent(value, total int64) int {
+	if value <= 0 || total <= 0 {
+		return 0
+	}
+	percent := int(float64(value)/float64(total)*100 + 0.5)
+	return min(100, percent)
+}
+
+func dailyDetailCostPercent(value, total pricing.Money) int {
 	if value <= 0 || total <= 0 {
 		return 0
 	}

@@ -1,5 +1,5 @@
 === RUN   TestDashboardDailyCursorSelectsDetailAndCollapsesBelowChart
-    dashboard_test.go:104: wide daily cockpit:
+    dashboard_test.go:197: wide daily cockpit:
         ■ Codex  ■ Claude  cost/day                                     │ DAY DETAIL
          $0.18       ██████                                               2026-02-01
                      ██████                                               TOTAL $0.18
@@ -11,6 +11,7 @@
                        ^                                                  TOP MODELS BY COST
               Jan 2026 – Feb 2026                                         gpt-5.2                    $0.18
                                                                           unknown                        —
+
         narrow daily cockpit:
         ■ Codex  ■ Claude  cost/day
          $0.18       ██████
@@ -36,4 +37,4 @@
         unknown                        —
 --- PASS: TestDashboardDailyCursorSelectsDetailAndCollapsesBelowChart (0.01s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.022s
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.018s
