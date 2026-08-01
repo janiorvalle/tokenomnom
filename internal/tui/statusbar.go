@@ -51,6 +51,10 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 	if m.warning != "" {
 		return fitLine(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
 	}
+	if m.commandBusy && !m.syncing {
+		working := m.spinner.View() + m.render.Palette.Subtle().Render(" working")
+		segments = append(segments, statusBarSegment{text: "working", styled: working})
+	}
 
 	if history, ok := m.historyStatusSegment(); ok {
 		segments = append(segments, history)

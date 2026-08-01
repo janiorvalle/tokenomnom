@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,7 @@ func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) err
 	render := theme.FromContext(cmd.Context())
 	loader := newDashboardLoader(cmd, *codexDir, *claudeDir, *timezone, render)
 	offer := newDashboardSkillOffer(*codexDir, *claudeDir)
+	commands := newDashboardCommandRegistry(cmd, *codexDir, *claudeDir)
 	provider := tui.AllProviders
 	switch appconfig.FromContext(cmd.Context()).Config.Reports.DefaultProvider {
 	case "codex":
@@ -49,7 +51,33 @@ func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) err
 		provider = tui.ClaudeProvider
 	}
 	historyPage := newHistorySearchPage(cmd, *codexDir, *claudeDir)
-	return runDashboardProgram(cmd, tui.NewWithProviderAndPages(render, loader, offer, provider, historyPage))
+	return runDashboardProgram(cmd, tui.NewWithProviderAndPagesAndCommands(render, loader, offer, provider, commands, historyPage))
+}
+
+func newDashboardCommandRegistry(parent *cobra.Command, codexDir, claudeDir string) tui.CommandRegistry {
+	return tui.CommandRegistry{Actions: []tui.CommandAction{
+		{ID: tui.CommandVaultVerifyID, Run: func() (tui.CommandResult, error) {
+			return runDashboardSubcommand(parent, "vault", "verify", "--codex-dir", codexDir, "--claude-dir", claudeDir)
+		}},
+		{ID: tui.CommandHistoryIndexID, Run: func() (tui.CommandResult, error) {
+			return runDashboardSubcommand(parent, "history", "index", "--codex-dir", codexDir, "--claude-dir", claudeDir)
+		}},
+		{ID: tui.CommandPricingID, Run: func() (tui.CommandResult, error) {
+			return runDashboardSubcommand(parent, "pricing")
+		}},
+	}}
+}
+
+func runDashboardSubcommand(parent *cobra.Command, args ...string) (tui.CommandResult, error) {
+	command := NewRootCommand()
+	command.SetContext(parent.Context())
+	command.SetIn(parent.InOrStdin())
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetErr(&output)
+	command.SetArgs(args)
+	err := command.Execute()
+	return tui.CommandResult{Output: output.String()}, err
 }
 
 func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
@@ -162,7 +190,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		if request.Sync {
 			syncSummary, err = syncer.Sync(syncer.Options{
 				Store: database, Roots: roots, Location: location, Timezone: timezoneName,
-				TimezoneFingerprint: timezoneFingerprint(location), LockHeld: true,
+				TimezoneFingerprint: timezoneFingerprint(location), Full: request.FullSync, LockHeld: true,
 			})
 			if err != nil {
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)

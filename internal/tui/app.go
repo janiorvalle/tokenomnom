@@ -95,6 +95,7 @@ type Request struct {
 	HistorySessionID     string
 	HistoryExportID      string
 	HistoryExportToken   string
+	FullSync             bool
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -195,6 +196,12 @@ type skillOfferInstalledMsg struct {
 
 type skillOfferRecordedMsg struct{ err error }
 
+type commandFinishedMsg struct {
+	command paletteCommand
+	result  CommandResult
+	err     error
+}
+
 type skillOfferState uint8
 
 const (
@@ -232,16 +239,28 @@ type Model struct {
 	syncCompletionGeneration uint64
 	pageLoadAttempt          uint64
 	pageLoadTokens           map[PageID]string
+	commandRegistry          CommandRegistry
+	palette                  paletteState
+	commandBusy              bool
+	commandOutput            string
+	commandOutputOffset      int
+	pendingResize            bool
+	quitAfterCommand         bool
+	commandOutputFailure     bool
+	commandOutputHint        string
+	dashboardLoadBusy        bool
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
-func New(render theme.Context, loader Loader, offer SkillOffer) Model {
-	return NewWithProvider(render, loader, offer, AllProviders)
+func New(render theme.Context, loader Loader, offer SkillOffer, registries ...CommandRegistry) Model {
+	return NewWithProvider(render, loader, offer, AllProviders, registries...)
 }
 
 // NewWithProvider creates a dashboard model with an initial provider filter.
-func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider) Model {
-	return newModel(render, loader, offer, provider)
+func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider, registries ...CommandRegistry) Model {
+	model := newModel(render, loader, offer, provider)
+	model.commandRegistry = mergeCommandRegistries(registries...)
+	return model
 }
 
 // NewWithProviderAndPages creates a dashboard with additional registered
@@ -251,6 +270,14 @@ func NewWithProviderAndPages(render theme.Context, loader Loader, offer SkillOff
 	return newModel(render, loader, offer, provider, pages...)
 }
 
+// NewWithProviderAndPagesAndCommands combines page and command registration
+// for dashboard adapters that own both extension points.
+func NewWithProviderAndPagesAndCommands(render theme.Context, loader Loader, offer SkillOffer, provider Provider, registry CommandRegistry, pages ...Page) Model {
+	model := newModel(render, loader, offer, provider, pages...)
+	model.commandRegistry = registry
+	return model
+}
+
 func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Provider, pages ...Page) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
@@ -258,10 +285,19 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
 		router:  newRouter(pages...),
+		palette: newPalette(render.Palette.Emphasis()),
 		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
-		loading: true, started: time.Now(),
+		loading: true, dashboardLoadBusy: true, started: time.Now(),
 		pageLoadTokens: make(map[PageID]string),
 	}
+}
+
+func mergeCommandRegistries(registries ...CommandRegistry) CommandRegistry {
+	merged := CommandRegistry{}
+	for _, registry := range registries {
+		merged.Actions = append(merged.Actions, registry.Actions...)
+	}
+	return merged
 }
 
 // Init starts the initial store load.
@@ -279,6 +315,11 @@ func (m *Model) loadCmd(request Request) tea.Cmd {
 		m.syncInFlight = true
 	}
 	return m.loadCmdAt(request, m.loadGeneration)
+}
+
+func (m *Model) startDashboardLoad(request Request) tea.Cmd {
+	m.dashboardLoadBusy = true
+	return m.loadCmd(request)
 }
 
 func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
@@ -360,13 +401,51 @@ func (m *Model) maybeCheckSkillOffer() tea.Cmd {
 }
 
 func (m *Model) resumeInitialSync() tea.Cmd {
-	if !m.pendingSync {
+	if !m.pendingSync || m.commandBusy || m.dashboardLoadBusy {
 		return nil
 	}
 	m.pendingSync = false
+	m.pendingResize = false
+	m.syncing = true
 	next := m.request
 	next.Sync = true
-	return m.loadCmd(next)
+	return m.startDashboardLoad(next)
+}
+
+func (m *Model) resumePendingResize() tea.Cmd {
+	if !m.pendingResize || m.commandBusy || m.syncing || m.dashboardLoadBusy {
+		return nil
+	}
+	if m.request.Width < minimumWidth || m.request.Height < minimumHeight {
+		m.pendingResize = false
+		return nil
+	}
+	m.pendingResize = false
+	return m.startDashboardLoad(m.request)
+}
+
+func (m *Model) resumePendingWork() tea.Cmd {
+	if command := m.resumeInitialSync(); command != nil {
+		return command
+	}
+	return m.resumePendingResize()
+}
+
+func combineCommands(commands ...tea.Cmd) tea.Cmd {
+	available := make([]tea.Cmd, 0, len(commands))
+	for _, command := range commands {
+		if command != nil {
+			available = append(available, command)
+		}
+	}
+	switch len(available) {
+	case 0:
+		return nil
+	case 1:
+		return available[0]
+	default:
+		return tea.Batch(available...)
+	}
 }
 
 // Update handles navigation and background snapshot results.
@@ -375,10 +454,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
-		if msg.Width >= minimumWidth && msg.Height >= minimumHeight {
-			command := m.loadCmd(m.request)
-			return m, command
+		m.palette.resize(msg.Width)
+		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing && !m.pendingSync && !m.dashboardLoadBusy {
+			m.pendingResize = false
+			return m, m.startDashboardLoad(m.request)
 		}
+		m.pendingResize = msg.Width >= minimumWidth && msg.Height >= minimumHeight
 		return m, nil
 	case spinner.TickMsg:
 		var command tea.Cmd
@@ -402,10 +483,18 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case loadedMsg:
+		if msg.generation == m.loadGeneration {
+			m.dashboardLoadBusy = false
+		}
 		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
 				m.syncInFlight = false
 				m.syncing = false
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
 				m.warning = msg.err.Error()
 				return m, nil
 			}
@@ -414,7 +503,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.syncCompletionPending = true
 			m.syncCompletionGeneration = m.loadGeneration + 1
-			command := m.loadCmd(m.request)
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			}
+			command := m.startDashboardLoad(m.request)
 			return m, command
 		}
 		if msg.generation != m.loadGeneration {
@@ -426,6 +523,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.loading, m.syncFresh = false, false
+			m.commandBusy = false
 			if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
 				m.syncCompletionPending = false
 			}
@@ -435,8 +533,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.syncInFlight {
 				m.syncing = false
 			}
+			if m.quitAfterCommand {
+				m.quitAfterCommand = false
+				return m, tea.Quit
+			}
 			m.warning = msg.err.Error()
-			return m, nil
+			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
 		m.snapshot = msg.snapshot
@@ -453,18 +555,36 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncInFlight = false
 			m.syncing = false
 			m.syncFresh = true
-			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
-			return m, m.maybeCheckSkillOffer()
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			} else {
+				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
+			}
+			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
 		if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
 			m.syncCompletionPending = false
 			m.syncing = false
 			m.syncFresh = true
-			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
-			return m, m.maybeCheckSkillOffer()
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			} else {
+				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
+			}
+			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
 		if !initial {
-			return m, nil
+			return m, m.resumePendingWork()
 		}
 		// Render stored data immediately, then quietly refresh it. Empty stores
 		// keep the progress view up until this initial sync completes.
@@ -475,27 +595,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		next := m.request
 		next.Sync = true
 		if msg.snapshot.Empty {
-			command := m.loadCmd(next)
-			return m, command
+			return m, m.startDashboardLoad(next)
 		}
 		checkCommand := m.maybeCheckSkillOffer()
 		if checkCommand == nil {
-			command := m.loadCmd(next)
-			return m, command
+			return m, m.startDashboardLoad(next)
 		}
 		m.pendingSync = true
 		return m, checkCommand
 	case skillOfferCheckedMsg:
 		if msg.err != nil || msg.check.Answered || !msg.check.HasRoots {
-			command := m.resumeInitialSync()
-			return m, command
+			return m, m.resumePendingWork()
 		}
 		if msg.check.Installed {
 			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
 		}
+		m.palette.close()
 		m.offerState = skillOfferPrompt
 		return m, nil
 	case skillOfferInstalledMsg:
+		m.palette.close()
 		m.offerState = skillOfferResult
 		m.offerResults = append([]string(nil), msg.results...)
 		if msg.err != nil {
@@ -507,9 +626,46 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.recordSkillOfferCmd(SkillOfferAccepted)
 	case skillOfferRecordedMsg:
 		// Offer bookkeeping is intentionally best effort and never blocks the TUI.
-		command := m.resumeInitialSync()
-		return m, command
+		return m, m.resumePendingWork()
+	case commandFinishedMsg:
+		m.commandBusy = false
+		m.commandOutputOffset = 0
+		quitAfterCommand := m.quitAfterCommand
+		m.quitAfterCommand = false
+		if msg.err != nil {
+			m.status = ""
+			m.commandOutput = strings.TrimSpace(msg.result.Output)
+			if m.commandOutput == "" {
+				m.commandOutput = msg.err.Error()
+			}
+			m.commandOutputFailure = true
+			m.commandOutputHint = paletteActionFailure(msg.command, msg.err)
+			m.warning = m.commandOutputHint
+			if quitAfterCommand {
+				return m, tea.Quit
+			}
+			return m, m.resumePendingWork()
+		}
+		m.warning = ""
+		m.commandOutput = msg.result.Output
+		m.commandOutputFailure = false
+		m.commandOutputHint = ""
+		m.status = strings.ToLower(msg.command.title) + " complete"
+		if quitAfterCommand {
+			return m, tea.Quit
+		}
+		return m, m.resumePendingWork()
 	case tea.KeyMsg:
+		if m.offerState != skillOfferHidden {
+			m.palette.close()
+			return m.updateSkillOfferKey(msg.String())
+		}
+		if m.palette.active {
+			return m.updatePaletteKey(msg)
+		}
+		if m.commandOutput != "" {
+			return m.updateCommandOutputKey(msg)
+		}
 		return m.updateKey(msg)
 	}
 	return m, nil
@@ -565,7 +721,13 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	globalFirst := bound && binding.Action != keyActionPageCommand &&
 		(!interactivePage || !interactive.Editing() || key.Type != tea.KeyRunes)
 	if globalFirst {
+		if (m.commandBusy || m.dashboardLoadBusy || m.pendingSync) && binding.Action != keyActionNavigatePages && binding.Action != keyActionToggleHelp && binding.Action != keyActionQuit {
+			return m, nil
+		}
 		return m.updateBinding(binding, value)
+	}
+	if bound && interactivePage && binding.Action == keyActionPageCommand && (m.commandBusy || m.dashboardLoadBusy || m.syncing || m.pendingSync) {
+		return m, nil
 	}
 	if interactivePage {
 		result := interactive.HandleKey(m.request, key)
@@ -587,12 +749,35 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !bound {
 		return m, nil
 	}
+	if m.commandBusy || m.pendingSync {
+		return m, nil
+	}
 	return m.updateBinding(binding, value)
 }
 
 func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.Cmd) {
 	if binding.Action == keyActionQuit {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return m, nil
+		}
 		return m, tea.Quit
+	}
+	if binding.Action == keyActionToggleHelp {
+		m.help = !m.help
+		return m, nil
+	}
+	if binding.Action == keyActionOpenPalette {
+		if m.commandBusy || m.loading || m.syncing || m.pendingSync || m.dashboardLoadBusy {
+			return m, nil
+		}
+		m.help = false
+		m.palette.resize(m.request.Width)
+		return m, m.palette.open(m.router, m.commandRegistry, m.request.Width)
+	}
+	if m.help {
+		return m, nil
 	}
 	switch binding.Action {
 	case keyActionNavigatePages:
@@ -641,7 +826,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		if !page.NeedsReload(context, request) {
 			return m, nil
 		}
-		command := m.loadCmd(m.request)
+		command := m.startDashboardLoad(m.request)
 		return m, command
 	}
 	return m, nil
@@ -652,12 +837,113 @@ func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
 		if loader, ok := page.(PageLoader); ok {
 			var pageCommand tea.Cmd
 			m, pageCommand = m.startPageLoad(loader, request)
-			dashboardCommand := m.loadCmd(request)
+			dashboardCommand := m.startDashboardLoad(request)
 			return m, tea.Batch(dashboardCommand, pageCommand)
 		}
 	}
-	command := m.loadCmd(request)
+	command := m.startDashboardLoad(request)
 	return m, command
+}
+
+func (m Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "ctrl+c" {
+		m.palette.close()
+		return m, tea.Quit
+	}
+	selection, command := m.palette.update(key)
+	if selection.event != paletteSelected {
+		return m, command
+	}
+	return m, m.runPaletteCommand(selection.command)
+}
+
+func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
+	if command.page != "" {
+		if !m.router.Select(command.page) {
+			return nil
+		}
+		if page := m.activePage(); page != nil {
+			if loader, ok := page.(PageLoader); ok {
+				updated, pageCommand := m.startPageLoad(loader, m.request)
+				*m = updated
+				return pageCommand
+			}
+		}
+		return nil
+	}
+	if command.id == CommandQuitID {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return nil
+		}
+		return tea.Quit
+	}
+	if m.commandBusy || m.loading || m.syncing || m.pendingSync || m.dashboardLoadBusy {
+		m.warning = "dashboard is busy; wait for the current operation to finish"
+		m.status = ""
+		return nil
+	}
+	if command.id == CommandSyncFullID {
+		m.commandBusy, m.syncing = true, true
+		m.dashboardLoadBusy = true
+		m.warning = ""
+		m.status = "running sync --full"
+		m.resetSessionNavigation()
+		request := m.request
+		request.Sync, request.FullSync = true, true
+		return m.startDashboardLoad(request)
+	}
+	if command.action.Run == nil {
+		m.warning = command.title + " is unavailable in this dashboard build"
+		m.status = ""
+		return nil
+	}
+	m.commandBusy = true
+	m.warning = ""
+	m.status = "running " + strings.ToLower(command.title)
+	return func() tea.Msg {
+		result, err := command.action.Run()
+		return commandFinishedMsg{command: command, result: result, err: err}
+	}
+}
+
+func (m Model) updateCommandOutputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	width := min(84, max(46, layout.width-8))
+	contentWidth := max(1, width-6)
+	_, maxLines, maxOffset := commandOutputViewport(m.commandOutput, contentWidth, layout.height, m.commandOutputFailure, m.commandOutputHint)
+	switch key.String() {
+	case "up":
+		m.commandOutputOffset = max(0, m.commandOutputOffset-1)
+		return m, nil
+	case "down":
+		m.commandOutputOffset = min(maxOffset, m.commandOutputOffset+1)
+		return m, nil
+	case "pgup":
+		m.commandOutputOffset = max(0, m.commandOutputOffset-maxLines)
+		return m, nil
+	case "pgdown":
+		m.commandOutputOffset = min(maxOffset, m.commandOutputOffset+maxLines)
+		return m, nil
+	case "home":
+		m.commandOutputOffset = 0
+		return m, nil
+	case "end":
+		m.commandOutputOffset = maxOffset
+		return m, nil
+	}
+	commandHint := m.commandOutputHint
+	m.commandOutput = ""
+	m.commandOutputOffset = 0
+	if commandHint != "" && m.warning == commandHint {
+		m.warning = ""
+	}
+	m.commandOutputFailure, m.commandOutputHint = false, ""
+	return m, nil
 }
 
 func (m *Model) navigatePages(key string) bool {
@@ -741,6 +1027,16 @@ func (m Model) View() string {
 	if m.offerState != skillOfferHidden {
 		return m.skillOfferView()
 	}
+	if m.palette.active {
+		return m.paletteView()
+	}
+	if m.commandOutput != "" {
+		return m.commandOutputView()
+	}
+	return m.baseView()
+}
+
+func (m Model) baseView() string {
 	if m.help {
 		return m.helpView()
 	}

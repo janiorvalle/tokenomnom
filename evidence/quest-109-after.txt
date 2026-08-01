@@ -1,0 +1,45 @@
+=== RUN   TestCommandPaletteOpensFiltersAndNavigates
+    palette_test.go:22:
+         tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D
+         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         SPEND            │  daily body
+         › 1  Daily       │
+         2  Monthly       │
+         3  Models        │
+         4  Heatmap       │
+                    ╭──────────────────────────────────────────────────────────────────────────╮
+         FILTERS    │  COMMAND PALETTE  ctrl+k to close                                        │
+         provider   │                                                                          │
+           all      │  > Search pages and actions                                              │
+         range      │  ----------------------------------------------------------------------  │
+           30d      │  --                                                                      │
+                    │  > Daily  Open Daily                                                     │
+                    │    Monthly  Open Monthly                                                 │
+                    │    Models  Open Models                                                   │
+                    │    Heatmap  Open Heatmap                                                 │
+                    │    Sync --full  Re-ingest every usage file                               │
+                    │    Vault verify  Check archived transcript integrity                     │
+                    │    History index  Refresh the transcript search index                    │
+                    │                                                                          │
+                    │  up/down select  enter run  esc close                                    │
+                    ╰──────────────────────────────────────────────────────────────────────────╯
+                          │
+                          │
+                          │
+                          │
+         ──────────────────────────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+--- PASS: TestCommandPaletteOpensFiltersAndNavigates (0.00s)
+=== RUN   TestCommandPaletteRunsActionOffUpdateLoop
+--- PASS: TestCommandPaletteRunsActionOffUpdateLoop (0.00s)
+=== RUN   TestCommandPaletteTranslatesActionFailure
+--- PASS: TestCommandPaletteTranslatesActionFailure (0.00s)
+=== RUN   TestCommandPaletteFullSyncPassesFullRequest
+--- PASS: TestCommandPaletteFullSyncPassesFullRequest (0.00s)
+=== RUN   TestCommandPaletteFitsMinimumTerminal
+--- PASS: TestCommandPaletteFitsMinimumTerminal (0.00s)
+=== RUN   TestCommandPaletteStyledFitsWindow
+--- PASS: TestCommandPaletteStyledFitsWindow (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	(cached)
