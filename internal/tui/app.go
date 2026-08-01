@@ -703,25 +703,70 @@ var footerHints = [...][2]string{
 	{"R", "refresh"}, {"?", "help"}, {"q", "quit"},
 }
 
-func (m Model) footerView(layout cockpitLayout) string {
+func (m Model) footerHint(hint [2]string) string {
+	key := m.render.Palette.Header().Bold(false).Render(hint[0])
+	if hint[1] == "" {
+		return key
+	}
+	return key + " " + m.render.Palette.Subtle().Render(hint[1])
+}
+
+func (m Model) footerHintsView(width int) string {
 	subtle := m.render.Palette.Subtle()
 	parts := make([]string, 0, len(footerHints))
 	for _, hint := range footerHints {
-		parts = append(parts, m.render.Palette.Header().Bold(false).Render(hint[0])+" "+subtle.Render(hint[1]))
+		parts = append(parts, m.footerHint(hint))
 	}
 	line := strings.Join(parts, subtle.Render(" · "))
+	if lipgloss.Width(line) <= width {
+		return line
+	}
+
+	// Keep every command visible at the minimum cockpit width while shortening
+	// only the descriptions that cannot fit beside them.
+	compactHints := [...][2]string{
+		{"tab", "views"}, {"p", "prov"}, {"r", "range"},
+		{"R", "refresh"}, {"?", "help"}, {"q", "quit"},
+	}
+	parts = parts[:0]
+	for _, hint := range compactHints {
+		parts = append(parts, m.footerHint(hint))
+	}
+	return strings.Join(parts, subtle.Render(" · "))
+}
+
+func (m Model) footerStatusView(status string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(status) <= width {
+		return status
+	}
+	if width == 1 {
+		return m.render.Palette.Subtle().Render("…")
+	}
+	return fitLine(status, width-1) + m.render.Palette.Subtle().Render("…")
+}
+
+func (m Model) footerView(layout cockpitLayout) string {
+	subtle := m.render.Palette.Subtle()
+	hints := m.footerHintsView(layout.innerWidth)
+	line := hints
+	disclaimer := subtle.Render("API list-price equivalents, not actual bills")
 	status := m.statusView()
-	switch {
-	case status == "":
-	case lipgloss.Width(line)+lipgloss.Width(status)+3 <= layout.innerWidth:
-		line += subtle.Render(" · ") + status
-	default:
-		line = status + subtle.Render("  ") + line
+	const separatorWidth = 2
+	remaining := layout.innerWidth - lipgloss.Width(hints) - separatorWidth
+	if status != "" && remaining >= lipgloss.Width(status) {
+		line += subtle.Render("  ") + m.footerStatusView(status, remaining)
+	} else if status != "" {
+		// Keep the command row intact; a status that cannot fit beside it takes
+		// the disclaimer row instead of being hidden behind the line width.
+		disclaimer = m.footerStatusView(status, layout.innerWidth)
 	}
 	return strings.Join([]string{
 		m.render.Palette.Border().Render(strings.Repeat("─", layout.innerWidth)),
 		fitLine(line, layout.innerWidth),
-		fitLine(subtle.Render("API list-price equivalents, not actual bills"), layout.innerWidth),
+		fitLine(disclaimer, layout.innerWidth),
 	}, "\n")
 }
 

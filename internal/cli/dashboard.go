@@ -240,24 +240,18 @@ func dashboardSummary(totals store.TotalsResult, costs reportCosts) tui.Summary 
 		}
 	}
 	return tui.Summary{Metrics: [5]tui.SummaryMetric{
-		{Label: "TOTAL", Value: formatCost(costs.Grand), Kind: tui.MetricMoney},
-		{Label: "TOKENS", Value: formatNumber(totals.Total)},
-		{Label: "ACTIVE DAYS", Value: formatNumber(int64(totals.ActiveDays))},
-		{Label: "AVG/DAY", Value: average, Kind: tui.MetricMoney},
-		{Label: "PEAK", Value: peak, Kind: tui.MetricMoney},
+		{Value: formatCost(costs.Grand), Kind: tui.MetricMoney},
+		{Value: formatNumber(totals.Total)},
+		{Value: formatNumber(int64(totals.ActiveDays))},
+		{Value: average, Kind: tui.MetricMoney},
+		{Value: peak, Kind: tui.MetricMoney},
 	}}
 }
 
 func peakDailyCost(byDate map[string]aggregateCost) (pricing.Money, bool) {
-	dates := make([]string, 0, len(byDate))
-	for date := range byDate {
-		dates = append(dates, date)
-	}
-	sort.Strings(dates)
 	var peak pricing.Money
 	found := false
-	for _, date := range dates {
-		cost := byDate[date]
+	for _, cost := range byDate {
 		if cost.PricedTokens == 0 {
 			continue
 		}

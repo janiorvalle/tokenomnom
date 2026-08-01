@@ -148,6 +148,29 @@ func TestCockpitFillsTheWindow(t *testing.T) {
 	}
 }
 
+func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width, model.request.Height = 60, 18
+	model.warning = "history index is stale: run 'tokenomnom history index' to refresh before searching"
+
+	view := model.View()
+	if !strings.Contains(view, "q quit") {
+		t.Fatalf("quit hint lost under long warning:\n%s", view)
+	}
+	if !strings.Contains(view, "history index is stale") || !strings.Contains(view, "…") {
+		t.Fatalf("long warning was not preserved with truncation:\n%s", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) != 18 {
+		t.Fatalf("warning view rendered %d lines, want 18", len(lines))
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width != 60 {
+			t.Fatalf("warning view line %d has width %d, want 60:\n%s", index+1, width, view)
+		}
+	}
+}
+
 func TestSkillOfferAcceptInstallsRecordsAndShowsResults(t *testing.T) {
 	var choices []SkillOfferChoice
 	model := offerTestModel(func() ([]string, error) {
@@ -341,11 +364,11 @@ func loadedTestModel() Model {
 	model.loading, model.loaded = false, true
 	model.snapshot = Snapshot{
 		Summary: Summary{Metrics: [5]SummaryMetric{
-			{Label: "TOTAL", Value: "$1.00", Kind: MetricMoney},
-			{Label: "TOKENS", Value: "100"},
-			{Label: "ACTIVE DAYS", Value: "2"},
-			{Label: "AVG/DAY", Value: "$0.50", Kind: MetricMoney},
-			{Label: "PEAK", Value: "$1.00", Kind: MetricMoney},
+			{Value: "$1.00", Kind: MetricMoney},
+			{Value: "100"},
+			{Value: "2"},
+			{Value: "$0.50", Kind: MetricMoney},
+			{Value: "$1.00", Kind: MetricMoney},
 		}},
 		Views: [4]string{"daily body", "monthly body", "models body", "heatmap body"},
 	}
