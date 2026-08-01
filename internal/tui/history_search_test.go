@@ -290,8 +290,8 @@ func TestHistorySearchPagePreservesExportWhenOpeningDetail(t *testing.T) {
 	loadingRequest := open.Request
 	loadingRequest.PageLoadToken = "detail"
 	page.BeginLoad(loadingRequest)
-	page.Apply(loadingRequest, HistorySearchData{Session: &SessionDetail{SessionID: "ses_1"}}, nil)
 	page.ApplyExport(export.Request, "/tmp/detail", nil)
+	page.Apply(loadingRequest, HistorySearchData{Session: &SessionDetail{SessionID: "ses_1"}}, nil)
 	if !strings.Contains(page.View(pageContext(loadingRequest)), "Exported to /tmp/detail") {
 		t.Fatal("in-flight export receipt was lost while opening detail")
 	}

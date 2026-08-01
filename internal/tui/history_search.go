@@ -427,7 +427,10 @@ func (p *HistorySearchPage) Apply(request Request, value any, err error) {
 		p.hits, p.warnings, p.detail = nil, nil, nil
 		return
 	}
-	p.errorText, p.exportErrorText, p.exportText = "", "", ""
+	p.errorText = ""
+	if request.HistoryExportID == "" {
+		p.exportErrorText, p.exportText = "", ""
+	}
 	p.notIndexed = data.NotIndexed
 	if request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) != "" {
 		p.searched = true

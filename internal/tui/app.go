@@ -638,7 +638,8 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		if !page.NeedsReload(context, request) {
 			return m, nil
 		}
-		return m, m.loadCmd(m.request)
+		command := m.loadCmd(m.request)
+		return m, command
 	}
 	return m, nil
 }
@@ -648,10 +649,12 @@ func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
 		if loader, ok := page.(PageLoader); ok {
 			var pageCommand tea.Cmd
 			m, pageCommand = m.startPageLoad(loader, request)
-			return m, tea.Batch(m.loadCmd(request), pageCommand)
+			dashboardCommand := m.loadCmd(request)
+			return m, tea.Batch(dashboardCommand, pageCommand)
 		}
 	}
-	return m, m.loadCmd(request)
+	command := m.loadCmd(request)
+	return m, command
 }
 
 func (m *Model) navigatePages(key string) bool {
