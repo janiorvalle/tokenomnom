@@ -271,6 +271,11 @@ func TestCommandPaletteKeepsSuccessfulResultAfterResizeFailure(t *testing.T) {
 	if !strings.Contains(view, "COMMAND RESULT") || strings.Contains(view, "COMMAND FAILED") || !strings.Contains(view, "verified 3 archived files") || model.warning != "resize reload failed" {
 		t.Fatalf("resize failure corrupted command result: warning=%q\n%s", model.warning, view)
 	}
+	updated, _ = model.Update(keyMsg("x"))
+	model = updated.(Model)
+	if model.warning != "resize reload failed" {
+		t.Fatalf("dismissing command result lost dashboard reload error: warning=%q", model.warning)
+	}
 }
 
 func TestCommandPaletteTranslatesActionFailure(t *testing.T) {

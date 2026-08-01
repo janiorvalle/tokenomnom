@@ -877,7 +877,11 @@ func (m Model) updateCommandOutputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
-	m.commandOutput, m.warning = "", ""
+	commandHint := m.commandOutputHint
+	m.commandOutput = ""
+	if commandHint != "" && m.warning == commandHint {
+		m.warning = ""
+	}
 	m.commandOutputFailure, m.commandOutputHint = false, ""
 	return m, nil
 }
