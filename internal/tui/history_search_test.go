@@ -192,6 +192,23 @@ func TestHistorySearchSelectedHighlightKeepsBoldSuffix(t *testing.T) {
 	}
 }
 
+func TestHistorySearchMarkedSnippetTruncationPreservesMarkers(t *testing.T) {
+	start := string(history.SearchSnippetMatchStart) + "nonce"
+	end := "nonce" + string(history.SearchSnippetMatchEnd)
+	value := "before " + start + "matched text" + end + " after"
+	truncated := truncateMarkedSnippet(value, 16, start, end)
+	if lipgloss.Width(strings.NewReplacer(start, "", end, "").Replace(truncated)) > 16 {
+		t.Fatalf("visible snippet width exceeds pane: %q", truncated)
+	}
+	if strings.Contains(truncated, start) != strings.Contains(truncated, end) {
+		t.Fatalf("truncated snippet split marker pair: %q", truncated)
+	}
+	rendered := highlightSnippet(truncated, start, end, lipgloss.NewStyle(), lipgloss.NewStyle())
+	if strings.Contains(rendered, "nonce") {
+		t.Fatalf("highlighted snippet exposed marker payload: %q", rendered)
+	}
+}
+
 func TestHistorySearchEvidenceFrames(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	model := loadedTestModel()

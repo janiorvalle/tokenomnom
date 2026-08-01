@@ -552,7 +552,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 				prefix = "› "
 				style = context.Render.Palette.Emphasis().Bold(true)
 			}
-			snippet := truncateText(oneLine(hit.Snippet), max(1, width-3))
+			snippet := truncateMarkedSnippet(oneLine(hit.Snippet), max(1, width-3), hit.SnippetMatchStart, hit.SnippetMatchEnd)
 			plainStyle := style
 			matchStyle := context.Render.Palette.Emphasis()
 			if selected {
@@ -682,6 +682,78 @@ func highlightSnippet(value, matchStart, matchEnd string, plainStyle, matchStyle
 		value = value[end+len(matchEnd):]
 	}
 	return result.String()
+}
+
+func truncateMarkedSnippet(value string, width int, matchStart, matchEnd string) string {
+	if matchStart == "" || matchEnd == "" {
+		matchStart, matchEnd = string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
+	}
+	visible := strings.NewReplacer(matchStart, "", matchEnd, "").Replace(value)
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(visible) <= width {
+		return value
+	}
+	remaining := max(0, width-lipgloss.Width("…"))
+	var result strings.Builder
+	position := 0
+	for position < len(value) {
+		start := strings.Index(value[position:], matchStart)
+		if start < 0 {
+			prefix, truncated := takeTextWidth(value[position:], remaining)
+			result.WriteString(prefix)
+			if truncated {
+				result.WriteString("…")
+			}
+			return result.String()
+		}
+		start += position
+		prefix, truncated := takeTextWidth(value[position:start], remaining)
+		result.WriteString(prefix)
+		remaining -= lipgloss.Width(prefix)
+		if truncated {
+			result.WriteString("…")
+			return result.String()
+		}
+		result.WriteString(matchStart)
+		contentStart := start + len(matchStart)
+		end := strings.Index(value[contentStart:], matchEnd)
+		if end < 0 {
+			prefix, _ = takeTextWidth(value[contentStart:], remaining)
+			result.WriteString(prefix)
+			result.WriteString(matchEnd)
+			result.WriteString("…")
+			return result.String()
+		}
+		end += contentStart
+		prefix, truncated = takeTextWidth(value[contentStart:end], remaining)
+		result.WriteString(prefix)
+		result.WriteString(matchEnd)
+		if truncated {
+			result.WriteString("…")
+			return result.String()
+		}
+		remaining -= lipgloss.Width(prefix)
+		position = end + len(matchEnd)
+	}
+	return result.String()
+}
+
+func takeTextWidth(value string, width int) (string, bool) {
+	if width <= 0 {
+		return "", value != ""
+	}
+	runes := []rune(value)
+	currentWidth := 0
+	for index, current := range runes {
+		runeWidth := lipgloss.Width(string(current))
+		if currentWidth+runeWidth > width {
+			return string(runes[:index]), true
+		}
+		currentWidth += runeWidth
+	}
+	return value, false
 }
 
 func isPrintableKey(key tea.KeyMsg) bool {
