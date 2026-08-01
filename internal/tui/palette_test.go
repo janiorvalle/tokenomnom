@@ -111,6 +111,27 @@ func TestCommandPaletteBlocksRefreshWhileActionRuns(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteDoesNotOpenDuringDashboardWork(t *testing.T) {
+	for _, state := range []struct {
+		name string
+		set  func(*Model)
+	}{
+		{name: "loading", set: func(model *Model) { model.loading = true }},
+		{name: "syncing", set: func(model *Model) { model.syncing = true }},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			model := loadedTestModel()
+			state.set(&model)
+
+			updated, command := model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+			model = updated.(Model)
+			if command != nil || model.palette.active {
+				t.Fatalf("palette opened during %s: active=%v command=%v", state.name, model.palette.active, command != nil)
+			}
+		})
+	}
+}
+
 func TestCommandPaletteTranslatesActionFailure(t *testing.T) {
 	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
 		ID: CommandPricingID,

@@ -406,7 +406,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
 		m.palette.resize(msg.Width)
-		if msg.Width >= minimumWidth && msg.Height >= minimumHeight {
+		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing {
 			command := m.loadCmd(m.request)
 			return m, command
 		}
@@ -492,8 +492,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncCompletionPending = false
 			m.syncing = false
 			m.syncFresh = true
-			m.commandBusy = false
 			if msg.request.FullSync {
+				m.commandBusy = false
 				m.status = "full sync complete"
 			} else {
 				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
@@ -547,7 +547,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		command := m.resumeInitialSync()
 		return m, command
 	case commandFinishedMsg:
-		m.commandBusy, m.syncing = false, false
+		m.commandBusy = false
 		if msg.err != nil {
 			m.status = ""
 			m.commandOutput = strings.TrimSpace(msg.result.Output)
@@ -660,6 +660,9 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		return m, nil
 	}
 	if binding.Action == keyActionOpenPalette {
+		if m.commandBusy || m.loading || m.syncing {
+			return m, nil
+		}
 		m.help = false
 		m.palette.resize(m.request.Width)
 		return m, m.palette.open(m.router, m.commandRegistry, m.request.Width)
@@ -752,6 +755,11 @@ func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
 	}
 	if command.id == CommandQuitID {
 		return tea.Quit
+	}
+	if m.commandBusy || m.loading || m.syncing {
+		m.warning = "dashboard is busy; wait for the current operation to finish"
+		m.status = ""
+		return nil
 	}
 	if command.id == CommandSyncFullID {
 		m.commandBusy, m.syncing = true, true
