@@ -12,6 +12,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
@@ -339,17 +340,11 @@ func TestCockpitFillsTheWindow(t *testing.T) {
 }
 
 func TestEveryDashboardPageFitsAtEightyByTwentyFour(t *testing.T) {
-	model := loadedTestModel()
+	model := realisticEvidenceModel()
 	model.request.Width, model.request.Height = 80, 24
 	model.render.Width = 80
 	model.snapshot.Sessions = testSessionPageData()
-	model.snapshot.Ledger = tuipages.Data{
-		Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07",
-		Rows: []tuipages.Row{
-			{Key: "2026-07-14", Label: "Jul 14", Codex: tuipages.ProviderTotals{Tokens: 130_000, PricedTokens: 130_000}},
-			{Key: "2026-07-13", Label: "Jul 13", Claude: tuipages.ProviderTotals{Tokens: 90_000, PricedTokens: 90_000}},
-		},
-	}
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07"}
 	historyPage := NewHistorySearchPage(HistorySearchOptions{})
 	model.router = newRouter(historyPage)
 	model = updateKeyForTest(t, model, "?")
@@ -482,17 +477,10 @@ func TestKeyboardOnlyWalkReachesAndExitsEveryPage(t *testing.T) {
 }
 
 func TestQuest117KeyboardWalkEvidence(t *testing.T) {
-	model := loadedTestModel()
+	model := realisticEvidenceModel()
 	model.request.Width, model.request.Height = 80, 24
 	model.render.Width = 80
 	model.snapshot.Sessions = testSessionPageData()
-	model.snapshot.Ledger = tuipages.Data{
-		Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07",
-		Rows: []tuipages.Row{
-			{Key: "2026-07-14", Label: "Jul 14", Codex: tuipages.ProviderTotals{Tokens: 130_000, PricedTokens: 130_000}},
-			{Key: "2026-07-13", Label: "Jul 13", Claude: tuipages.ProviderTotals{Tokens: 90_000, PricedTokens: 90_000}},
-		},
-	}
 	historyPage := NewHistorySearchPage(HistorySearchOptions{})
 	model.router = newRouter(historyPage)
 
@@ -1226,6 +1214,66 @@ func loadedTestModel() Model {
 	ledgerRow := tuipages.Row{Key: "2026", Label: "2026", Codex: tuipages.ProviderTotals{Tokens: 100, PricedTokens: 100}}
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{ledgerRow}, Total: ledgerRow}
 	return model
+}
+
+func realisticEvidenceModel() Model {
+	model := loadedTestModel()
+	model.snapshot.Summary = Summary{Metrics: [5]SummaryMetric{
+		{Value: "$3,033.35", Kind: MetricMoney},
+		{Value: "178,000,000"},
+		{Value: "2"},
+		{Value: "$1,516.68", Kind: MetricMoney},
+		{Value: "$2,209.23", Kind: MetricMoney},
+	}}
+	model.snapshot.Views = [4]string{
+		realisticDailyEvidenceView(),
+		"",
+		"PROVIDER  MODEL                 TOKENS       COST\n" +
+			"codex     gpt-5.2             143,200,000  $2,408.35\n" +
+			"claude    claude-sonnet         34,800,000    $625.00",
+		"2026\nJul  ·······································\n" +
+			"Less ·░▒▓█ More\n2 active days · total cost $3,033.35",
+	}
+	model.snapshot.Sessions = testSessionPageData()
+	model.snapshot.Sessions.Sessions[0].Preview = "Investigate the production latency regression"
+	model.snapshot.Sessions.Sessions[1].Preview = "Prepare the migration rollout plan"
+	july14 := tuipages.Row{
+		Key: "2026-07-14", Label: "Jul 14",
+		Codex:  tuipages.ProviderTotals{Cost: pricing.Money(1_584_230_000_000), Tokens: 91_200_000, PricedTokens: 91_200_000},
+		Claude: tuipages.ProviderTotals{Cost: pricing.Money(625_000_000_000), Tokens: 34_800_000, PricedTokens: 34_800_000},
+	}
+	july13 := tuipages.Row{
+		Key: "2026-07-13", Label: "Jul 13",
+		Codex: tuipages.ProviderTotals{Cost: pricing.Money(824_120_000_000), Tokens: 52_000_000, PricedTokens: 52_000_000},
+	}
+	model.snapshot.Ledger = tuipages.Data{
+		Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{july14, july13},
+		Total: july14.Add(july13),
+	}
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07"}
+	return model
+}
+
+func realisticDailyEvidenceView() string {
+	return strings.Join([]string{
+		"■ Codex  ■ Claude  cost/day",
+		" $1,584.23       █████████████████████████████",
+		"   $824.12       ████████████",
+		"                 13       14       ^",
+		"                 Jul 2026",
+		"----------------------------------------------------------",
+		"DAY DETAIL",
+		"2026-07-14",
+		"TOTAL $2,209.23",
+		"",
+		"PROVIDER SPLIT · COST",
+		"Codex  72% ################ $1,584.23",
+		"Claude 28% ##########         $625.00",
+		"",
+		"TOP MODELS BY COST",
+		"gpt-5.2                  $1,584.23",
+		"claude-sonnet              $625.00",
+	}, "\n")
 }
 
 func loadedMessage(model Model, request Request, snapshot Snapshot) loadedMsg {

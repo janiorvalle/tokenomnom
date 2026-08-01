@@ -1,5 +1,5 @@
 === RUN   TestQuest117KeyboardWalkEvidence
-    app_test.go:546: Source: internal/tui/app_test.go::TestQuest117KeyboardWalkEvidence
+    app_test.go:534: Source: internal/tui/app_test.go::TestQuest117KeyboardWalkEvidence
         Command: go test -v ./internal/tui -run TestQuest117KeyboardWalkEvidence -count=1
 
         FRAME: help overlay · 80x24
@@ -30,24 +30,24 @@
 
         FRAME: Daily list · 80x24
          tokenomnom  /  DAILY                                     LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
-         SPEND            │  daily body
-         › 1  Daily       │
-         2  Ledger        │
-         3  Models        │
-         4  Heatmap       │
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  ■ Codex  ■ Claude  cost/day
+         › 1  Daily       │   $1,584.23       █████████████████████████████
+         2  Ledger        │     $824.12       ████████████
+         3  Models        │                   13       14       ^
+         4  Heatmap       │                   Jul 2026
+                          │  ----------------------------------------------------------
+         HISTORY          │  DAY DETAIL
+         5  Sessions      │  2026-07-14
+         6  Search        │  TOTAL $2,209.23
                           │
-         HISTORY          │
-         5  Sessions      │
-         6  Search        │
-                          │
-         FILTERS          │
-         provider         │
-           all            │
+         FILTERS          │  PROVIDER SPLIT · COST
+         provider         │  Codex  72% ################ $1,584.23
+           all            │  Claude 28% ##########         $625.00
          range            │
-           30d            │
-                          │
-                          │
+           30d            │  TOP MODELS BY COST
+                          │  gpt-5.2                  $1,584.23
+                          │  claude-sonnet              $625.00
                           │
          ● idle
          ──────────────────────────────────────────────────────────────────────────────
@@ -56,15 +56,15 @@
 
         FRAME: Ledger list · 80x24
          tokenomnom  /  LEDGER                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
-         SPEND            │  ALL YEARS
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  ALL YEARS  /  2026  /  2026-07
          1  Daily         │  PERIOD                                     TOTAL     DELTA
-         › 2  Ledger      │  › Jul 14                                   $0.00     $0.00
-         3  Models        │    C    $0.00  L        —  ██████████████████████████████
-         4  Heatmap       │    Jul 13                                   $0.00         —
-                          │    C        —  L    $0.00  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-         HISTORY          │  TOTAL                                          —
-         5  Sessions      │    C        —  L        —  ······························
+         › 2  Ledger      │  › Jul 14                                     $2k      +$1k
+         3  Models        │    C      $2k  L  $625.00  █████████████████████▓▓▓▓▓▓▓▓▓
+         4  Heatmap       │    Jul 13                                 $824.12         —
+                          │    C  $824.12  L        —  ████████████
+         HISTORY          │  TOTAL                                        $3k
+         5  Sessions      │    C      $2k  L  $625.00  ████████████████████████▓▓▓▓▓▓
          6  Search        │
                           │
          FILTERS          │
@@ -82,10 +82,10 @@
 
         FRAME: Models list · 80x24
          tokenomnom  /  MODELS                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
-         SPEND            │  models body
-         1  Daily         │
-         2  Ledger        │
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  PROVIDER  MODEL                 TOKENS       COST
+         1  Daily         │  codex     gpt-5.2             143,200,000  $2,408.35
+         2  Ledger        │  claude    claude-sonnet         34,800,000    $625.00
          › 3  Models      │
          4  Heatmap       │
                           │
@@ -108,11 +108,11 @@
 
         FRAME: Heatmap list · 80x24
          tokenomnom  /  HEATMAP                                   LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
-         SPEND            │  heatmap body
-         1  Daily         │
-         2  Ledger        │
-         3  Models        │
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  2026
+         1  Daily         │  Jul  ·······································
+         2  Ledger        │  Less ·░▒▓█ More
+         3  Models        │  2 active days · total cost $3,033.35
          › 4  Heatmap     │
                           │
          HISTORY          │
@@ -134,7 +134,7 @@
 
         FRAME: Sessions list · 80x24
          tokenomnom  /  SESSIONS                                  LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  SESSIONS
          1  Daily         │  provider all  ·  project all  ·  range 30d
          2  Ledger        │
@@ -160,7 +160,7 @@
 
         FRAME: Search list · 80x24
          tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  FIND IN HISTORY
          1  Daily         │  Search your indexed prompts by exact phrase.
          2  Ledger        │
@@ -186,7 +186,7 @@
 
         FRAME: Sessions detail · 80x24
          tokenomnom  /  SESSIONS                                  LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  SESSION DETAIL
          1  Daily         │  ses_second
          2  Ledger        │
@@ -212,7 +212,7 @@
 
         FRAME: Ledger session detail · 80x24
          tokenomnom  /  LEDGER                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  SESSION DETAIL
          1  Daily         │  ses_second
          › 2  Ledger      │
@@ -238,7 +238,7 @@
 
         FRAME: History search results · 80x24
          tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  FIND IN HISTORY
          1  Daily         │  Search your indexed prompts by exact phrase.
          2  Ledger        │
@@ -264,7 +264,7 @@
 
         FRAME: History session detail · 80x24
          tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
-         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
          SPEND            │  SESSION DETAIL
          1  Daily         │  ses_search
          2  Ledger        │
@@ -289,4 +289,4 @@
          API list-price equivalents, not actual bills
 --- PASS: TestQuest117KeyboardWalkEvidence (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.009s
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.010s
