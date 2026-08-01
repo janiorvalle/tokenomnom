@@ -442,8 +442,11 @@ func dashboardTimezone(value string) (*time.Location, string, error) {
 }
 
 func dashboardSnapshot(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary) (tui.Snapshot, error) {
+	info, err := database.Info()
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
 	filter := dashboardFilter(request, time.Now().In(location))
-	var err error
 	totals, err := database.Totals(filter)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -460,17 +463,13 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	ledgerFilter := filter
 	ledgerFilter.Since = ""
 	ledgerFilter.Until = ""
-	ledgerTotals, err := database.Totals(ledgerFilter)
-	if err != nil {
-		return tui.Snapshot{}, err
-	}
 	ledgerCosts, err := loadReportCosts(database, ledgerFilter, nil)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
 
 	render.Width = tui.ContentWidth(request.Width)
-	snapshot := tui.Snapshot{FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
+	snapshot := tui.Snapshot{Empty: info.UsageRows == 0, FilesScanned: syncSummary.FilesScanned, SyncDuration: syncSummary.Duration}
 	snapshot.Summary = dashboardSummary(totals, costs)
 	snapshot.Views[tui.DailyTab], err = dashboardDailyView(database, filter, costs, request, render)
 	if err != nil {
@@ -480,7 +479,6 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	snapshot.Empty = ledgerTotals.Total == 0
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {

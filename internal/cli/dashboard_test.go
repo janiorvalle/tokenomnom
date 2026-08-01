@@ -369,14 +369,14 @@ func TestDashboardLedgerEmptyAnchorDoesNotHideExistingUsage(t *testing.T) {
 	defer database.Close()
 	if err := database.Transaction(func(tx *store.Tx) error {
 		return tx.ApplyUsage(store.Usage{
-			Date: "2020-01-15", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 10,
+			Date: "2020-01-15", Provider: discover.ProviderClaude, Model: "claude-sonnet", Input: 100, Output: 10,
 		}, "")
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	snapshot, err := dashboardSnapshot(database, tui.Request{
-		Range: tui.Range30Days, Width: 120, Height: 30,
+		Provider: tui.CodexProvider, Range: tui.Range30Days, Width: 120, Height: 30,
 		Ledger: tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2019, Cursor: -1},
 	}, styledRenderContext(120), time.UTC, syncSummaryForTest())
 	if err != nil {

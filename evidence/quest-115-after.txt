@@ -10,4 +10,4 @@
         [1;38;2;243;243;246mTOTAL[0m          [1;38;2;251;191;36m~$0.18[0m          [38;2;110;231;183m—[0m     [1;38;2;251;191;36m~$0.18[0m             [38;2;94;234;211m█████████████████[0m[38;2;253;186;116m▓[0m
 --- PASS: TestQuest115AfterSnapshot (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.028s
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.030s
