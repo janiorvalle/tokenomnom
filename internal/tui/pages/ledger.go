@@ -203,6 +203,7 @@ func Render(render theme.Context, data Data, state State, height int) string {
 		lines = append(lines, render.Palette.Subtle().Render("No usage found for this period."))
 		return strings.Join(lines, "\n")
 	}
+	maxTokens := maxRowTokens(data.Rows)
 
 	compact := width < 72
 	if compact {
@@ -214,9 +215,9 @@ func Render(render theme.Context, data Data, state State, height int) string {
 			if !valid {
 				partial = false
 			}
-			lines = append(lines, compactRow(render, data.Rows[index], index == selected, delta, pricedTokens, partial, width)...)
+			lines = append(lines, compactRow(render, data.Rows[index], index == selected, delta, pricedTokens, partial, width, maxTokens)...)
 		}
-		lines = append(lines, compactTotal(render, data.Total, width)...)
+		lines = append(lines, compactTotal(render, data.Total, width, maxTokens)...)
 	} else {
 		periodWidth, moneyWidth, deltaWidth, barWidth := wideColumns(width)
 		lines = append(lines, wideHeader(render, periodWidth, moneyWidth, deltaWidth, barWidth))
@@ -227,9 +228,9 @@ func Render(render theme.Context, data Data, state State, height int) string {
 			if !valid {
 				partial = false
 			}
-			lines = append(lines, wideRow(render, data.Rows[index], index == selected, delta, pricedTokens, partial, periodWidth, moneyWidth, deltaWidth, barWidth))
+			lines = append(lines, wideRow(render, data.Rows[index], index == selected, delta, pricedTokens, partial, periodWidth, moneyWidth, deltaWidth, barWidth, maxTokens))
 		}
-		lines = append(lines, wideTotal(render, data.Total, periodWidth, moneyWidth, deltaWidth, barWidth))
+		lines = append(lines, wideTotal(render, data.Total, periodWidth, moneyWidth, deltaWidth, barWidth, maxTokens))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -272,6 +273,16 @@ func visibleWindow(length, selected, capacity int) (int, int) {
 	selected = min(max(0, selected), length-1)
 	start := min(max(0, selected-capacity+1), length-capacity)
 	return start, start + capacity
+}
+
+func maxRowTokens(rows []Row) int64 {
+	var maximum int64
+	for _, row := range rows {
+		if tokens := row.Total().Tokens; tokens > maximum {
+			maximum = tokens
+		}
+	}
+	return maximum
 }
 
 func breadcrumb(state State) string {
@@ -317,7 +328,7 @@ func wideHeader(render theme.Context, periodWidth, moneyWidth, deltaWidth, barWi
 	}, "  ")
 }
 
-func wideRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, periodWidth, moneyWidth, deltaWidth, barWidth int) string {
+func wideRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, periodWidth, moneyWidth, deltaWidth, barWidth int, maxTokens int64) string {
 	labelWidth := max(1, periodWidth-2)
 	labelText := truncate(row.Label, labelWidth)
 	if selected {
@@ -333,18 +344,18 @@ func wideRow(render theme.Context, row Row, selected bool, delta pricing.Money, 
 		moneyCell(render, row.Claude, moneyWidth),
 		moneyCell(render, row.Total(), moneyWidth),
 		deltaCell(render, delta, deltaPriced, deltaPartial, deltaWidth),
-		activityBar(render, row, barWidth),
+		activityBar(render, row, barWidth, maxTokens, false),
 	}, "  ")
 }
 
-func wideTotal(render theme.Context, row Row, periodWidth, moneyWidth, deltaWidth, barWidth int) string {
+func wideTotal(render theme.Context, row Row, periodWidth, moneyWidth, deltaWidth, barWidth int, maxTokens int64) string {
 	return strings.Join([]string{
 		headerCell(render, "TOTAL", periodWidth, false),
 		moneyCell(render, row.Codex, moneyWidth),
 		moneyCell(render, row.Claude, moneyWidth),
 		moneyCell(render, row.Total(), moneyWidth),
 		strings.Repeat(" ", deltaWidth),
-		activityBar(render, row, barWidth),
+		activityBar(render, row, barWidth, maxTokens, true),
 	}, "  ")
 }
 
@@ -357,7 +368,7 @@ func compactHeader(render theme.Context, width int) string {
 	}, "  "), width)
 }
 
-func compactRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, width int) []string {
+func compactRow(render theme.Context, row Row, selected bool, delta pricing.Money, deltaPriced int64, deltaPartial bool, width int, maxTokens int64) []string {
 	labelWidth := max(6, width-22)
 	marker := "  "
 	label := truncate(row.Label, labelWidth)
@@ -367,14 +378,14 @@ func compactRow(render theme.Context, row Row, selected bool, delta pricing.Mone
 	labelCell := aligned(marker+fitText(label, labelWidth), labelWidth+2, false)
 	primary := labelCell + "  " + moneyCell(render, row.Total(), 8) + "  " + deltaCell(render, delta, deltaPriced, deltaPartial, 8)
 	barWidth := max(4, width-28)
-	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, barWidth)
+	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, barWidth, maxTokens, false)
 	return []string{fitLine(primary, width), fitLine(secondary, width)}
 }
 
-func compactTotal(render theme.Context, row Row, width int) []string {
+func compactTotal(render theme.Context, row Row, width int, maxTokens int64) []string {
 	labelWidth := max(6, width-22)
 	primary := headerCell(render, "TOTAL", labelWidth+2, false) + "  " + moneyCell(render, row.Total(), 8) + "  " + strings.Repeat(" ", 8)
-	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, max(4, width-28))
+	secondary := "  C " + moneyCell(render, row.Codex, 8) + "  L " + moneyCell(render, row.Claude, 8) + "  " + activityBar(render, row, max(4, width-28), maxTokens, true)
 	return []string{fitLine(primary, width), fitLine(secondary, width)}
 }
 
@@ -406,7 +417,7 @@ func deltaCell(render theme.Context, value pricing.Money, pricedTokens int64, pa
 	return aligned(style.Render(text), width, true)
 }
 
-func activityBar(render theme.Context, row Row, width int) string {
+func activityBar(render theme.Context, row Row, width int, maxTokens int64, fullWidth bool) string {
 	if width <= 0 {
 		return ""
 	}
@@ -415,6 +426,9 @@ func activityBar(render theme.Context, row Row, width int) string {
 	if total <= 0 {
 		return render.Palette.Subtle().Render(strings.Repeat("·", width))
 	}
+	if !fullWidth && maxTokens > 0 && total < maxTokens {
+		width = max(1, int(float64(total)/float64(maxTokens)*float64(width)))
+	}
 	codexWidth, claudeWidth := 0, 0
 	switch {
 	case codex == 0:
@@ -422,7 +436,7 @@ func activityBar(render theme.Context, row Row, width int) string {
 	case claude == 0:
 		codexWidth = width
 	default:
-		codexWidth = int(codex * int64(width) / total)
+		codexWidth = int(float64(codex) / float64(total) * float64(width))
 		codexWidth = min(width-1, max(1, codexWidth))
 		claudeWidth = width - codexWidth
 	}

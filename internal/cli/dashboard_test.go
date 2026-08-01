@@ -31,7 +31,8 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	}
 	defer database.Close()
 	render := styledRenderContext(120)
-	snapshot, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 120, Height: 35}, render, time.UTC, syncSummaryForTest())
+	request := tui.Request{Range: tui.RangeAll, Width: 120, Height: 35}
+	snapshot, err := dashboardSnapshot(database, request, render, time.UTC, syncSummaryForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,6 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	}
 	viewFragments := map[int][]string{
 		int(tui.DailyTab):   {"cost/day", "DATE"},
-		int(tui.LedgerTab):  {"PERIOD", "CODEX", "CLAUDE", "ACTIVITY", "▓"},
 		int(tui.ModelsTab):  {"PROVIDER", "MODEL"},
 		int(tui.HeatmapTab): {"Less", "active days"},
 	}
@@ -55,6 +55,12 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 			if !strings.Contains(snapshot.Views[index], fragment) {
 				t.Errorf("view %d missing %q:\n%s", index, fragment, snapshot.Views[index])
 			}
+		}
+	}
+	ledgerView := renderDashboardLedger(snapshot, request, render)
+	for _, fragment := range []string{"PERIOD", "CODEX", "CLAUDE", "ACTIVITY", "▓"} {
+		if !strings.Contains(ledgerView, fragment) {
+			t.Errorf("ledger view missing %q:\n%s", fragment, ledgerView)
 		}
 	}
 
@@ -285,13 +291,15 @@ func TestDashboardLedgerZoomsFromYearToMonthToDay(t *testing.T) {
 	defer database.Close()
 	render := styledRenderContext(120)
 
-	year, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}, render, time.UTC, syncSummaryForTest())
+	yearRequest := tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}
+	year, err := dashboardSnapshot(database, yearRequest, render, time.UTC, syncSummaryForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
+	yearView := renderDashboardLedger(year, yearRequest, render)
 	for _, fragment := range []string{"ALL YEARS", "CODEX", "CLAUDE", "ACTIVITY", "TOTAL"} {
-		if !strings.Contains(year.Views[tui.LedgerTab], fragment) {
-			t.Errorf("year ledger missing %q:\n%s", fragment, year.Views[tui.LedgerTab])
+		if !strings.Contains(yearView, fragment) {
+			t.Errorf("year ledger missing %q:\n%s", fragment, yearView)
 		}
 	}
 
@@ -300,8 +308,9 @@ func TestDashboardLedgerZoomsFromYearToMonthToDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(month.Views[tui.LedgerTab], "Jan 2026") || !strings.Contains(month.Views[tui.LedgerTab], "Feb 2026") {
-		t.Fatalf("month ledger did not show 2026 periods:\n%s", month.Views[tui.LedgerTab])
+	monthView := renderDashboardLedger(month, monthRequest, render)
+	if !strings.Contains(monthView, "Jan 2026") || !strings.Contains(monthView, "Feb 2026") {
+		t.Fatalf("month ledger did not show 2026 periods:\n%s", monthView)
 	}
 
 	dayRequest := tui.Request{Range: tui.RangeAll, Width: 120, Height: 30, Ledger: tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-02", Cursor: -1}}
@@ -309,8 +318,9 @@ func TestDashboardLedgerZoomsFromYearToMonthToDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(day.Views[tui.LedgerTab], "Feb 03") || !strings.Contains(day.Views[tui.LedgerTab], "TOTAL") {
-		t.Fatalf("day ledger did not show selected month:\n%s", day.Views[tui.LedgerTab])
+	dayView := renderDashboardLedger(day, dayRequest, render)
+	if !strings.Contains(dayView, "Feb 03") || !strings.Contains(dayView, "TOTAL") {
+		t.Fatalf("day ledger did not show selected month:\n%s", dayView)
 	}
 }
 
@@ -339,9 +349,13 @@ func TestDashboardLedgerUsesFullHistoryOutsideDashboardRange(t *testing.T) {
 	if snapshot.Empty {
 		t.Fatal("full-history ledger was marked empty outside dashboard range")
 	}
+	view := renderDashboardLedger(snapshot, tui.Request{
+		Range: tui.Range30Days, Width: 120, Height: 30,
+		Ledger: tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2020, Cursor: -1},
+	}, styledRenderContext(120))
 	for _, fragment := range []string{"Jan 2020"} {
-		if !strings.Contains(snapshot.Views[tui.LedgerTab], fragment) {
-			t.Errorf("full-history ledger missing %q outside dashboard range:\n%s", fragment, snapshot.Views[tui.LedgerTab])
+		if !strings.Contains(view, fragment) {
+			t.Errorf("full-history ledger missing %q outside dashboard range:\n%s", fragment, view)
 		}
 	}
 }
@@ -353,11 +367,18 @@ func TestQuest115AfterSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	snapshot, err := dashboardSnapshot(database, tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}, styledRenderContext(120), time.UTC, syncSummaryForTest())
+	request := tui.Request{Range: tui.RangeAll, Width: 120, Height: 30}
+	render := styledRenderContext(120)
+	snapshot, err := dashboardSnapshot(database, request, render, time.UTC, syncSummaryForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("\n" + snapshot.Views[tui.LedgerTab])
+	t.Log("\n" + renderDashboardLedger(snapshot, request, render))
+}
+
+func renderDashboardLedger(snapshot tui.Snapshot, request tui.Request, render theme.Context) string {
+	render.Width = tui.ContentWidth(request.Width)
+	return tuipages.Render(render, snapshot.Ledger, request.Ledger, request.Height)
 }
 
 func TestBareStyledInvocationLaunchesDashboard(t *testing.T) {

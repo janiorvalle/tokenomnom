@@ -96,9 +96,6 @@ func (ledgerPage) Section() PageSection { return SpendSection }
 func (ledgerPage) Title() string        { return "Ledger" }
 
 func (ledgerPage) View(context PageContext) string {
-	if int(LedgerTab) < len(context.Snapshot.Views) && context.Snapshot.Views[LedgerTab] != "" {
-		return context.Snapshot.Views[LedgerTab]
-	}
 	return tuipages.Render(context.Render, context.Snapshot.Ledger, context.Request.Ledger, context.Request.Height)
 }
 
@@ -107,10 +104,8 @@ func (ledgerPage) Update(request Request, _ string) (Request, bool) {
 }
 
 func (ledgerPage) UpdateContext(context PageContext, key string) (Request, bool) {
-	// Keep the old horizontal commands harmlessly compatible for callers that
-	// still send them to the former monthly page.
 	if key == "left" || key == "right" {
-		return updateMonthlyPage(context.Request, key)
+		return context.Request, false
 	}
 	state, changed := tuipages.Update(context.Request.Ledger, context.Snapshot.Ledger, key)
 	if !changed {
@@ -423,23 +418,6 @@ func updateDailyPage(request Request, key string) (Request, bool) {
 		return request, false
 	}
 	return request, previous != request.DailyOffset
-}
-
-func updateMonthlyPage(request Request, key string) (Request, bool) {
-	previous := request.MonthlyOffset
-	switch key {
-	case "left":
-		request.MonthlyOffset--
-	case "right":
-		request.MonthlyOffset++
-	case "home":
-		request.MonthlyOffset = -1000000
-	case "end":
-		request.MonthlyOffset = 0
-	default:
-		return request, false
-	}
-	return request, previous != request.MonthlyOffset
 }
 
 func updateModelsPage(request Request, key string) (Request, bool) {

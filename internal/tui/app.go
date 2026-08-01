@@ -69,7 +69,6 @@ type Request struct {
 	Width                int
 	Height               int
 	DailyOffset          int
-	MonthlyOffset        int
 	Ledger               tuipages.State
 	ModelOffset          int
 	ModelSort            int

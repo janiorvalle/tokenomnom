@@ -477,7 +477,6 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		return tui.Snapshot{}, err
 	}
 	snapshot.Empty = len(snapshot.Ledger.Rows) == 0 && totals.Total == 0
-	snapshot.Views[tui.LedgerTab] = tuipages.Render(render, snapshot.Ledger, request.Ledger, request.Height)
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {
@@ -676,24 +675,6 @@ func addLedgerProvider(row *tuipages.Row, provider discover.Provider, value prov
 	}
 }
 
-func dashboardMonthlyView(database *store.Store, filter store.Filter, costs reportCosts, request tui.Request, render theme.Context) (string, error) {
-	rows, err := database.Monthly(filter)
-	if err != nil {
-		return "", err
-	}
-	rows = windowMonthlyRows(rows, request.MonthlyOffset, dashboardRowCapacity(request.Height))
-	periods := make([]chartPeriod, 0, len(rows))
-	for _, row := range rows {
-		periods = append(periods, chartPeriod{label: row.Month, values: costs.ByMonthProvider[row.Month]})
-	}
-	chart := renderPeriodChart(render, periods, "month", "months", chartUsesTokens(costs))
-	tableRows := make([][]string, 0, len(rows))
-	for _, row := range rows {
-		tableRows = append(tableRows, []string{row.Month, formatNumber(row.Total), formatCost(costs.ByMonth[row.Month])})
-	}
-	return chart + renderStyledTable(render, []string{"MONTH", "TOKENS", "COST"}, tableRows, []bool{false, true, true}, tableStyle{moneyColumns: map[int]bool{2: true}}), nil
-}
-
 func dashboardModelsView(rows []store.ModelRow, costs reportCosts, request tui.Request, render theme.Context) string {
 	rows = append([]store.ModelRow(nil), rows...)
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -759,15 +740,6 @@ func dashboardRowCapacity(height int) int {
 }
 
 func windowDailyRows(rows []store.DailyRow, offset, capacity int) []store.DailyRow {
-	if len(rows) == 0 {
-		return rows
-	}
-	end := min(len(rows), max(min(capacity, len(rows)), len(rows)+offset))
-	start := max(0, end-capacity)
-	return rows[start:end]
-}
-
-func windowMonthlyRows(rows []store.MonthlyRow, offset, capacity int) []store.MonthlyRow {
 	if len(rows) == 0 {
 		return rows
 	}

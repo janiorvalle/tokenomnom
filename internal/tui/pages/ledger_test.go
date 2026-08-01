@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
@@ -78,15 +79,36 @@ func TestLedgerIgnoresStaleRowsDuringZoom(t *testing.T) {
 }
 
 func TestLedgerRenderShowsProvidersDeltaActivityAndTotal(t *testing.T) {
-	view := Render(testRender(), ledgerTestData(), State{Cursor: -1}, 30)
+	data := ledgerTestData()
+	view := Render(testRender(), data, State{Cursor: -1}, 30)
 	for _, fragment := range []string{"ALL YEARS", "PERIOD", "CODEX", "CLAUDE", "DELTA", "› 2026", "+$2.00", "TOTAL", "█", "▓"} {
 		if !strings.Contains(view, fragment) {
 			t.Errorf("ledger view missing %q:\n%s", fragment, view)
 		}
 	}
 	lines := strings.Split(view, "\n")
-	if lipgloss.Width(lines[1]) != lipgloss.Width(lines[2]) || lipgloss.Width(lines[2]) != lipgloss.Width(lines[3]) {
-		t.Fatalf("ledger columns shifted between rows:\n%s", view)
+	activityStart := func(line string) int {
+		line = ansi.Strip(line)
+		index := strings.IndexAny(line, "█▓·")
+		if index < 0 {
+			return -1
+		}
+		return lipgloss.Width(line[:index])
+	}
+	rowActivityStart := activityStart(lines[2])
+	smallActivityStart := activityStart(lines[3])
+	totalActivityStart := activityStart(lines[4])
+	if rowActivityStart != smallActivityStart || smallActivityStart != totalActivityStart {
+		t.Fatalf("ledger columns shifted between rows: starts=%d,%d,%d\n%s", rowActivityStart, smallActivityStart, totalActivityStart, view)
+	}
+	maxTokens := maxRowTokens(data.Rows)
+	largeBar := lipgloss.Width(activityBar(testRender(), data.Rows[0], 18, maxTokens, false))
+	smallBar := lipgloss.Width(activityBar(testRender(), data.Rows[1], 18, maxTokens, false))
+	if smallBar >= largeBar {
+		t.Fatalf("activity bar did not encode row magnitude: large=%d small=%d\n%s", largeBar, smallBar, view)
+	}
+	if totalBar := lipgloss.Width(activityBar(testRender(), data.Total, 18, maxTokens, true)); totalBar != 18 {
+		t.Fatalf("total activity bar width = %d, want 18", totalBar)
 	}
 }
 
