@@ -262,7 +262,7 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
 	updated, command := model.Update(loadedMessage(model, model.request, Snapshot{Empty: true, FilesScanned: 12}))
 	model = updated.(Model)
-	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · 12 files scanned") {
+	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · discovering files") || strings.Contains(model.View(), "0 files scanned") {
 		t.Fatalf("empty initial transition = %+v, command %v", model, command != nil)
 	}
 
@@ -281,6 +281,69 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model = updated.(Model)
 	if model.warning != "sync failed" || model.snapshot.Views[0] != "daily" || !strings.Contains(model.View(), "sync failed") {
 		t.Fatalf("failure transition = %+v", model)
+	}
+}
+
+func TestSyncProgressViewRendersLiveIngestCount(t *testing.T) {
+	model := loadedTestModel()
+	model.loading = true
+	model.progress = LoadProgress{Phase: "ingesting files", FilesFound: 3712, FilesProcessed: 128}
+	view := model.View()
+	if !strings.Contains(view, "Syncing Codex + Claude · ingesting 128/3,712 files") {
+		t.Fatalf("live progress missing from loading view:\n%s", view)
+	}
+	if strings.Contains(view, "0 files scanned") {
+		t.Fatalf("loading view still rendered a frozen zero:\n%s", view)
+	}
+	t.Log("\n" + view)
+}
+
+func TestSyncProgressViewRendersHonestPhaseCopy(t *testing.T) {
+	model := loadedTestModel()
+	model.loading = true
+	for _, progress := range []LoadProgress{
+		{Phase: "discovering files"},
+		{Phase: "preparing sync", FilesFound: 3712},
+	} {
+		model.progress = progress
+		view := model.View()
+		if strings.Contains(view, "0 files scanned") {
+			t.Fatalf("phase view still rendered a frozen zero:\n%s", view)
+		}
+		t.Log("\n" + view)
+	}
+}
+
+func TestSyncLoaderStreamsProgressThroughSink(t *testing.T) {
+	var received []LoadProgress
+	model := New(testRender(), func(request Request) (Snapshot, error) {
+		if request.Progress == nil {
+			t.Fatal("sync loader did not receive a progress reporter")
+		}
+		report := *request.Progress
+		report(LoadProgress{Phase: "ingesting files", FilesFound: 4, FilesProcessed: 2})
+		return Snapshot{}, nil
+	}, SkillOffer{})
+	model.SetProgressSink(func(_ Request, _ uint64, progress LoadProgress) {
+		received = append(received, progress)
+	})
+	request := model.request
+	request.Sync = true
+	message := model.loadCmd(request)()
+	if _, ok := message.(loadedMsg); !ok {
+		t.Fatalf("sync command returned %T, want loadedMsg", message)
+	}
+	if len(received) != 1 || received[0].FilesProcessed != 2 {
+		t.Fatalf("received progress = %+v", received)
+	}
+	updated, _ := model.Update(ProgressMsg{
+		Request:    request,
+		Generation: model.loadGeneration,
+		Progress:   received[0],
+	})
+	model = updated.(Model)
+	if model.progress.FilesProcessed != 2 {
+		t.Fatalf("model progress = %+v", model.progress)
 	}
 }
 

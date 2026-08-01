@@ -39,6 +39,42 @@ func TestInitialSyncNoChangeAndCodexAppendRestoresModel(t *testing.T) {
 	}
 }
 
+func TestSyncReportsProgressPhasesAndCompletedFiles(t *testing.T) {
+	env := newEnvironment(t)
+	write(t, env.codexPath("first.jsonl"), codexModel("first")+codexUsage("2026-07-18T10:00:00Z", 10, 2), env.tick())
+	write(t, env.codexPath("second.jsonl"), codexModel("second")+codexUsage("2026-07-18T11:00:00Z", 7, 1), env.tick())
+
+	var progress []syncer.Progress
+	summary, err := syncer.Sync(syncer.Options{
+		Store: env.database,
+		Roots: []discover.Root{
+			{Provider: discover.ProviderCodex, Path: filepath.Join(env.root, "codex")},
+			{Provider: discover.ProviderClaude, Path: filepath.Join(env.root, "claude")},
+		},
+		Location: time.UTC, Timezone: "UTC",
+		Progress: func(update syncer.Progress) { progress = append(progress, update) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.FilesScanned != 2 || len(progress) < 5 {
+		t.Fatalf("summary/progress = %+v/%+v", summary, progress)
+	}
+	if progress[0].Phase != syncer.ProgressDiscovering {
+		t.Fatalf("first progress phase = %+v", progress[0])
+	}
+	if progress[1].Phase != syncer.ProgressPreparing || progress[1].FilesFound != 2 {
+		t.Fatalf("preparation progress = %+v", progress[1])
+	}
+	if progress[2].Phase != syncer.ProgressIngesting || progress[2].FilesProcessed != 0 {
+		t.Fatalf("ingest start progress = %+v", progress[2])
+	}
+	last := progress[len(progress)-1]
+	if last.Phase != syncer.ProgressIngesting || last.FilesFound != 2 || last.FilesProcessed != 2 {
+		t.Fatalf("final progress = %+v", last)
+	}
+}
+
 func TestUnknownIngestionWarningSurvivesSeparateReattribution(t *testing.T) {
 	env := newEnvironment(t)
 	reattributedPath := env.codexPath("a-reattributed.jsonl")

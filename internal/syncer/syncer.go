@@ -35,6 +35,24 @@ type Options struct {
 	Full                bool
 	Now                 func() time.Time
 	LockHeld            bool
+	Progress            func(Progress)
+}
+
+// ProgressPhase identifies the current stage of a synchronization pass.
+type ProgressPhase string
+
+const (
+	ProgressDiscovering ProgressPhase = "discovering files"
+	ProgressPreparing   ProgressPhase = "preparing sync"
+	ProgressIngesting   ProgressPhase = "ingesting files"
+)
+
+// Progress reports the work completed so far without exposing sync internals
+// to callers that only need to render status.
+type Progress struct {
+	Phase          ProgressPhase
+	FilesFound     int
+	FilesProcessed int
 }
 
 // Summary reports work completed by one synchronization pass.
@@ -58,6 +76,12 @@ func Sync(options Options) (Summary, error) {
 	if options.Store == nil || options.Location == nil || options.Timezone == "" {
 		return Summary{}, fmt.Errorf("store, location, and timezone are required")
 	}
+	reportProgress := func(progress Progress) {
+		if options.Progress != nil {
+			options.Progress(progress)
+		}
+	}
+	reportProgress(Progress{Phase: ProgressDiscovering})
 	release := func() {}
 	if !options.LockHeld {
 		var err error
@@ -80,6 +104,7 @@ func Sync(options Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	reportProgress(Progress{Phase: ProgressPreparing, FilesFound: len(files)})
 	summary := Summary{FilesScanned: len(files)}
 	seenPaths := make(map[string]bool, len(files))
 	for _, file := range files {
@@ -143,9 +168,20 @@ func Sync(options Options) (Summary, error) {
 		// contributions from vanished Codex files keep their original date
 		// because their raw timestamps no longer exist.
 	}
+	reportProgress(Progress{Phase: ProgressIngesting, FilesFound: len(files)})
+	processedFiles := 0
+	reportFileProcessed := func() {
+		processedFiles++
+		reportProgress(Progress{
+			Phase:          ProgressIngesting,
+			FilesFound:     len(files),
+			FilesProcessed: processedFiles,
+		})
+	}
 	for _, file := range files {
 		if aliases[file.Path] {
 			summary.FilesSkipped++
+			reportFileProcessed()
 			continue
 		}
 		if ownerPath, split := deferredSplits[file.Path]; split {
@@ -272,6 +308,7 @@ func Sync(options Options) (Summary, error) {
 					checkpoints[file.Path] = alias
 					deferredAliases[file.Path] = aliasOf
 					summary.FilesSkipped++
+					reportFileProcessed()
 					continue
 				}
 				if !splitContribution && (ownerRewritten || persistedDivergence) && !contentsMatch {
@@ -291,6 +328,7 @@ func Sync(options Options) (Summary, error) {
 					checkpoints[file.Path] = checkpoint
 				}
 				summary.FilesSkipped++
+				reportFileProcessed()
 				continue
 			}
 			if aliasOf != "" && seenPaths[aliasOf] {
@@ -325,6 +363,7 @@ func Sync(options Options) (Summary, error) {
 							return summary, err
 						}
 						summary.FilesSkipped++
+						reportFileProcessed()
 						continue
 					}
 				}
@@ -365,6 +404,7 @@ func Sync(options Options) (Summary, error) {
 					return summary, err
 				}
 			}
+			reportFileProcessed()
 			continue
 		}
 		if kind == fileAppended {
@@ -431,6 +471,7 @@ func Sync(options Options) (Summary, error) {
 		default:
 			return summary, fmt.Errorf("unsupported provider %q", file.Provider)
 		}
+		reportFileProcessed()
 	}
 	if len(deferredAliases) > 0 {
 		checkpoints, err = options.Store.Checkpoints()
