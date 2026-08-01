@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// ErrNoAvailableRawLocation means the index knows the session but none of
+// its exact transcript locations can currently be read.
+var ErrNoAvailableRawLocation = errors.New("no available exact raw location")
+
 // RawCandidate is an indexed exact-byte location in preferred retrieval order.
 type RawCandidate struct {
 	Kind          string  `json:"kind"`
@@ -322,7 +326,7 @@ func (s *Store) RawCandidates(sessionID, snapshotID string) ([]RawCandidate, err
 		if snapshotID != "" {
 			return nil, fmt.Errorf("preserved snapshot %q is unavailable, unknown, or does not belong to session %q", snapshotID, sessionID)
 		}
-		return nil, fmt.Errorf("session %q has no available exact raw location", sessionID)
+		return nil, fmt.Errorf("%w: session %q has no available exact raw location", ErrNoAvailableRawLocation, sessionID)
 	}
 	return result, nil
 }

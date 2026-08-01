@@ -26,7 +26,7 @@ Every JSON response is one object with these fields:
 | `command` | string | The command that produced the response. |
 | `generated_at` | string | RFC 3339 timestamp in UTC. |
 | `timezone` | string | Timezone used to bucket usage dates. This is an IANA name when the operating system exposes one; otherwise `Local` means the process system timezone. |
-| `filters` | object | `provider`, `model`, `since`, and `until`; each is a string or `null`. |
+| `filters` | object | `provider`, `model`, `since`, and `until`; each is a string or `null`. History queries may also include `cwd`, `repo`, `project`, `branch`, `source`, `cursor`, `limit`, and `thread_kind`. |
 | `disclaimer` | string | API list-price-equivalent disclaimer. |
 | `warnings` | string[] | Human-readable pricing, classification, or freshness warnings. |
 | `data` | object | Command-specific data described below. |
@@ -260,6 +260,44 @@ final path segment of a known non-temporary cwd, otherwise `unknown`. Cwds
 under the runtime OS temp directory, `/private/tmp`, `/tmp`, `/var/folders`,
 or standard Windows user/system temp roots remain unknown. `--project` is the
 cross-provider name filter; `--repo` remains strictly git-proven.
+
+## History Costs
+
+`tokenomnom history costs [session-id] [--provider codex|claude] [--since
+YYYY-MM-DD] [--until YYYY-MM-DD] [--cwd PATH] [--repo NAME] [--project NAME]
+[--branch NAME] [--source any|provider|provider-live|provider-archive|vault]
+[--limit N] [--cursor OPAQUE] [--root-only | --thread-kind
+root|subagent|unknown|all] --format json`
+
+`history cost` is an alias. Without a session ID, the command returns a
+generation-bound page of at most 100 sessions; `--limit` accepts 1 through 100.
+With a session ID, it returns one session and cannot be combined with list
+filters. `data.sessions` contains the normal history session fields plus
+`tokens`, `models`, `attribution_status`, `token_source`, and
+`raw_location_kind`. `tokens` contains input, cache-read, each cache-write
+bucket, output, reasoning, total, priced, unpriced, unknown-model, and rounded
+`cost_usd` counts. `models` breaks the same fields down by date, provider, and
+model, with a maximum of 32 detail rows; session totals include omitted detail
+rows.
+
+Costs are calculated from exact indexed transcript bytes. The bytes are
+re-read only from indexed locations and must still match the indexed size and
+SHA-256 before provider usage parsing. `attribution_status` is `complete`,
+`no_usage_events`, or `unavailable`; an unavailable row includes the next step
+to restore the source or vault snapshot and rerun `history index`.
+`incomplete` means the preferred transcript location was unavailable or the
+transcript contained usage records without timestamps. Fallback costs may omit
+newer usage, and timestamp-less tokens remain visible as unpriced
+`date: "unknown"` detail instead of being silently dropped or estimated.
+Unknown or otherwise unpriced tokens remain visible instead of being silently
+estimated.
+Pricing effective dates use the UTC calendar date of each usage event; `--tz`
+changes displayed timestamps but cannot change the calculated cost.
+
+The response includes `data.bounds.napkin_math`: 1,200 sessions require at
+most 12 pages, and each page parses at most 100 sessions x 3 preferred exact
+transcript locations. `data.page` contains `limit`, `has_more`, and
+`next_cursor`; cursors are bound to the history index generation and filters.
 
 ## History Search
 

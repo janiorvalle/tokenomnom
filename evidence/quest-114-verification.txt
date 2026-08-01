@@ -1,0 +1,45 @@
+Quest 114 verification receipt
+
+Feature contract
+- Command: tokenomnom history costs [session-id] --format json
+- Alias: tokenomnom history cost
+- Page bound: 1..100 sessions
+- Transcript fallback bound: 3 preferred exact indexed locations per session
+- Model detail bound: 32 date/provider/model rows per session
+- Napkin math: 1,200 sessions / 100 rows = 12 pages; each page parses at most
+  100 x 3 = 300 preferred transcript locations.
+
+Commands and outcomes
+
+$ go vet ./...
+PASS (exit 0)
+
+$ go test ./...
+PASS (all packages; exit 0)
+
+$ go test ./internal/cli -run 'TestHistoryCosts' -v
+PASS TestHistoryCostsPricesExactCodexTranscript
+PASS TestHistoryCostsLimitErrorExplainsBound
+PASS TestHistoryCostsPricesClaudeCacheBuckets
+
+$ go run ./cmd/tokenomnom history costs --help
+PASS; command and cost alias rendered with --limit int (1-100)
+
+$ go run ./cmd/tokenomnom history costs --limit 101
+Error: --limit must be between 1 and 100
+PASS; invalid input names the valid bound and exits nonzero
+
+End-to-end receipts from the focused CLI tests
+- Codex: exact indexed transcript bytes produced 130,000 tokens, complete
+  attribution, gpt-5.2 model detail, and cost_usd 0.56.
+- Claude: exact indexed transcript bytes preserved 5m, 1h, and unclassified
+  cache-write buckets and produced cost_usd 0.54.
+- Store: session-cost pagination returns a generation-bound cursor contract,
+  hides raw local paths from JSON, and rejects limits above 100.
+
+Final closeout gates
+- `make verify`: PASS (build, vet, all tests, GoReleaser configuration check,
+  snapshot, and install smoke; exit 0). The install smoke emitted the existing
+  macOS `tar: Failed to set default locale` warning but completed successfully.
+- `autoreview --mode local`: PASS; TruffleHog clean and no actionable P0-P2
+  findings reported.

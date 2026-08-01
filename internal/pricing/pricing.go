@@ -324,6 +324,27 @@ func (t Table) Cost(row store.Usage) CostBreakdown {
 	return result
 }
 
+// CostRows prices independent date/model buckets and sums their exact costs.
+// Pricing each row separately preserves effective-date boundaries when a
+// session spans a rate-table change.
+func (t Table) CostRows(rows []store.Usage) CostBreakdown {
+	var result CostBreakdown
+	for _, row := range rows {
+		value := t.Cost(row)
+		result.BaseInput += value.BaseInput
+		result.CacheRead += value.CacheRead
+		result.CacheWrite5m += value.CacheWrite5m
+		result.CacheWrite1h += value.CacheWrite1h
+		result.CacheWriteUnclassified += value.CacheWriteUnclassified
+		result.Output += value.Output
+		result.Total += value.Total
+		result.PricedTokens += value.PricedTokens
+		result.UnpricedTokens += value.UnpricedTokens
+		result.UnclassifiedCacheWriteTokens += value.UnclassifiedCacheWriteTokens
+	}
+	return result
+}
+
 // FormatRate formats a rate for the effective pricing table.
 func FormatRate(rate *Rate) string {
 	if rate == nil {

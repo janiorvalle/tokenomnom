@@ -1,0 +1,117 @@
+package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/history"
+	"github.com/janiorvalle/tokenomnom/internal/ingest"
+)
+
+func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	fixture := strings.Join([]string{
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"cost-session","thread_source":"user","cwd":"/repo"}}`,
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}`,
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100000,"cached_input_tokens":20000,"cache_write_input_tokens":0,"output_tokens":30000,"reasoning_output_tokens":4000,"total_tokens":130000},"last_token_usage":{"input_tokens":100000,"cached_input_tokens":20000,"cache_write_input_tokens":0,"output_tokens":30000,"reasoning_output_tokens":4000,"total_tokens":130000}}}}`,
+		`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"cost prompt"}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "cost.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "costs", "--limit", "1", "--cwd", "/repo", "--project", "repo", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, output)
+	assertEnvelope(t, envelope, "history costs")
+	if envelope.Filters.CWD == nil || *envelope.Filters.CWD != "/repo" || envelope.Filters.Project == nil || *envelope.Filters.Project != "repo" || envelope.Filters.Source == nil || *envelope.Filters.Source != "provider" || envelope.Filters.Limit == nil || *envelope.Filters.Limit != 1 {
+		t.Fatalf("history cost filters = %+v", envelope.Filters)
+	}
+	var data historySessionCostData
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Sessions) != 1 {
+		t.Fatalf("session cost data = %+v", data)
+	}
+	row := data.Sessions[0]
+	if row.Provider != "codex" || row.AttributionStatus != "complete" || row.RawLocationKind != "provider_live" || row.Tokens.InputTokens != 100000 || row.Tokens.CacheReadTokens != 20000 || row.Tokens.OutputTokens != 30000 || row.Tokens.TotalTokens != 130000 || row.Tokens.CostUSD != 0.56 || row.Tokens.PricedTokens != 130000 || row.Tokens.UnpricedTokens != 0 {
+		t.Fatalf("session cost row = %+v", row)
+	}
+	if len(row.Models) != 1 || row.Models[0].Model != "gpt-5.2" || row.Models[0].Date != "2026-07-20" {
+		t.Fatalf("session cost model rows = %+v", row.Models)
+	}
+	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
+		t.Fatalf("session cost bounds/page = %+v / %+v", data.Bounds, data.Page)
+	}
+}
+
+func TestHistoryCostsLimitErrorExplainsBound(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	_, err := executeReport([]string{"history", "costs", "--limit", "101"}, filepath.Join(root, "codex"), filepath.Join(root, "claude"))
+	if err == nil || !strings.Contains(err.Error(), "between 1 and 100") {
+		t.Fatalf("history costs limit error = %v", err)
+	}
+}
+
+func TestHistoryCostsPricesClaudeCacheBuckets(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	fixture := strings.Join([]string{
+		`{"type":"user","uuid":"user-1","sessionId":"claude-cost","cwd":"/repo","timestamp":"2026-07-20T12:00:00Z","message":{"role":"user","content":"cost prompt"}}`,
+		`{"type":"assistant","uuid":"assistant-1","sessionId":"claude-cost","cwd":"/repo","timestamp":"2026-07-20T12:00:01Z","message":{"id":"assistant-1","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":100000,"cache_read_input_tokens":20000,"cache_creation_input_tokens":10000,"output_tokens":30000,"cache_creation":{"ephemeral_5m_input_tokens":5000,"ephemeral_1h_input_tokens":2000}}}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, filepath.Join(claudeDir, "projects", "fixture", "claude-cost.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--provider", "claude", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "costs", "--provider", "claude", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data historySessionCostData
+	if err := json.Unmarshal(decodeEnvelope(t, output).Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Sessions) != 1 {
+		t.Fatalf("Claude session cost data = %+v", data)
+	}
+	tokens := data.Sessions[0].Tokens
+	if data.Sessions[0].AttributionStatus != "complete" || tokens.CacheWrite5mTokens != 5000 || tokens.CacheWrite1hTokens != 2000 || tokens.CacheWriteUnclassifiedTokens != 3000 || tokens.CacheWriteTokens != 10000 || tokens.CostUSD != 0.54 {
+		t.Fatalf("Claude session cost = %+v", data.Sessions[0])
+	}
+}
+
+func TestAggregateHistoryUsageKeepsUnknownDateTokens(t *testing.T) {
+	known, unknown, warnings := aggregateHistoryUsage([]ingest.UsageEvent{
+		{Timestamp: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC), Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 20},
+		{Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 7, Output: 3},
+	}, history.ProviderCodex)
+	if len(known) != 1 || known[0].Input != 100 || len(unknown) != 1 || unknown[0].Date != "" || unknown[0].Input != 7 || unknown[0].Output != 3 {
+		t.Fatalf("known=%+v unknown=%+v", known, unknown)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "10 tokens remain visible") {
+		t.Fatalf("warnings=%+v", warnings)
+	}
+}
