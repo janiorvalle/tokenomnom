@@ -33,7 +33,10 @@ import (
 )
 
 var runDashboardProgram = func(cmd *cobra.Command, model tui.Model) error {
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()))
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()))
+	model.SetProgressSink(func(request tui.Request, generation uint64, progress tui.LoadProgress) {
+		program.Send(tui.ProgressMsg{Request: request, Generation: generation, Progress: progress})
+	})
 	_, err := program.Run()
 	return err
 }
@@ -202,6 +205,17 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			syncSummary, err = syncer.Sync(syncer.Options{
 				Store: database, Roots: roots, Location: location, Timezone: timezoneName,
 				TimezoneFingerprint: timezoneFingerprint(location), Full: request.FullSync, LockHeld: true,
+				Progress: func(progress syncer.Progress) {
+					if request.Progress == nil {
+						return
+					}
+					report := *request.Progress
+					report(tui.LoadProgress{
+						Phase:          string(progress.Phase),
+						FilesFound:     progress.FilesFound,
+						FilesProcessed: progress.FilesProcessed,
+					})
+				},
 			})
 			if err != nil {
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)

@@ -1,0 +1,21 @@
+Quest 137: first-run sync progress
+
+Before: baseline commit 6543a98, rendered by
+go test -buildvcs=false ./internal/tui -run TestQuest137BeforeFrame -count=1 -v
+with a 100x30 plain terminal frame. The centered loading row was:
+
+  ⣾  Syncing Codex + Claude · 0 files scanned · 0s
+
+After: branch codex/quest-137, rendered by
+go test -buildvcs=false ./internal/tui -run 'TestSyncProgressViewRenders(HonestPhaseCopy|LiveIngestCount)$' -count=1 -v
+with the same 100x30 plain terminal frame. The centered loading row was:
+
+  ⣾  Syncing Codex + Claude · ingesting 128/3,712 files · 0s
+
+The initial sync also renders these streamed phase rows before the live count:
+
+  ⣾  Syncing Codex + Claude · discovering files · 0s
+  ⣾  Syncing Codex + Claude · preparing sync · 3,712 files found · 0s
+
+The syncer test confirms the stream starts with discovering, reports the found
+file count during preparation, enters ingesting at 0/N, and ends at N/N.

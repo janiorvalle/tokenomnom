@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,29 @@ type Request struct {
 	HistoryExportID    string
 	HistoryExportToken string
 	FullSync           bool
+	Progress           *LoadProgressReporter
+}
+
+// LoadProgress is the user-facing progress reported by a dashboard loader.
+// The callback stays on Request so existing loaders can opt into streaming
+// status without changing the Loader function signature.
+type LoadProgress struct {
+	Phase          string
+	FilesFound     int
+	FilesProcessed int
+}
+
+// LoadProgressReporter receives progress updates from a dashboard loader.
+type LoadProgressReporter func(LoadProgress)
+
+// ProgressSink delivers background loader progress to the running TUI.
+type ProgressSink func(Request, uint64, LoadProgress)
+
+// ProgressMsg carries a loader update into the Bubble Tea event loop.
+type ProgressMsg struct {
+	Request    Request
+	Generation uint64
+	Progress   LoadProgress
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -265,6 +289,8 @@ type Model struct {
 	commandOutputFailure     bool
 	commandOutputHint        string
 	dashboardLoadBusy        bool
+	progress                 LoadProgress
+	progressSink             ProgressSink
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -308,7 +334,7 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 		router:  newRouter(pages...),
 		palette: newPalette(render.Palette.Emphasis()),
 		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Initial: true, Ledger: tuipages.State{Cursor: -1}},
-		loading: true, dashboardLoadBusy: true, started: time.Now(),
+		loading: true, dashboardLoadBusy: true, started: time.Now(), progress: LoadProgress{Phase: "starting sync"},
 		pageLoadTokens: make(map[PageID]string),
 	}
 }
@@ -319,6 +345,11 @@ func mergeCommandRegistries(registries ...CommandRegistry) CommandRegistry {
 		merged.Actions = append(merged.Actions, registry.Actions...)
 	}
 	return merged
+}
+
+// SetProgressSink connects loader progress to the running TUI program.
+func (m *Model) SetProgressSink(sink ProgressSink) {
+	m.progressSink = sink
 }
 
 // Init starts the initial store load.
@@ -343,6 +374,9 @@ func (m *Model) startDashboardLoad(request Request) tea.Cmd {
 		m.clearPendingActionOutcome()
 	} else if request.Sync {
 		m.clearPendingActionOutcome()
+	}
+	if request.Sync {
+		m.progress = LoadProgress{Phase: "discovering files"}
 	}
 	request.Initial = false
 	m.loadID++
@@ -407,10 +441,24 @@ func (m *Model) refreshCurrentSnapshotWithActionOutcome(snapshot Snapshot) tea.C
 }
 
 func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
-	return func() tea.Msg {
-		if m.loader == nil {
+	if m.loader == nil {
+		return func() tea.Msg {
 			return loadedMsg{request: request, generation: generation, err: fmt.Errorf("dashboard loader is unavailable")}
 		}
+	}
+	if !request.Sync {
+		return func() tea.Msg {
+			snapshot, err := m.loader(request)
+			return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
+		}
+	}
+	if request.Sync && m.progressSink != nil {
+		reportProgress := LoadProgressReporter(func(update LoadProgress) {
+			m.progressSink(request, generation, update)
+		})
+		request.Progress = &reportProgress
+	}
+	return func() tea.Msg {
 		snapshot, err := m.loader(request)
 		return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
 	}
@@ -550,6 +598,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var command tea.Cmd
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
+	case ProgressMsg:
+		if msg.Generation == m.loadGeneration && sameRequestIgnoringSync(msg.Request, m.request) {
+			m.progress = msg.Progress
+		}
+		return m, nil
 	case pageLoadedMsg:
 		if m.pageLoadTokens[msg.id] != msg.request.PageLoadToken {
 			return m, nil
@@ -821,7 +874,9 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	right.HistoryExportID = ""
 	left.HistoryExportToken = ""
 	right.HistoryExportToken = ""
-	return left == right
+	left.Progress = nil
+	right.Progress = nil
+	return reflect.DeepEqual(left, right)
 }
 
 func actionProgress(action string) string {
@@ -1199,10 +1254,31 @@ func (m Model) baseView() string {
 	}
 	if m.loading {
 		elapsed := time.Since(m.started).Round(time.Second)
-		line := fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
+		line := fmt.Sprintf("%s Syncing Codex + Claude · %s · %s\n", m.spinner.View(), m.syncProgressText(), elapsed)
 		return m.place(line)
 	}
 	return m.cockpitView()
+}
+
+func (m Model) syncProgressText() string {
+	switch m.progress.Phase {
+	case "starting sync":
+		return "starting sync"
+	case "discovering files":
+		return "discovering files"
+	case "preparing sync":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("preparing sync · %s files found", formatStatusNumber(m.progress.FilesFound))
+		}
+		return "preparing sync"
+	case "ingesting files":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("ingesting %s/%s files", formatStatusNumber(m.progress.FilesProcessed), formatStatusNumber(m.progress.FilesFound))
+		}
+		return "ingesting files"
+	default:
+		return fmt.Sprintf("%d files scanned", m.snapshot.FilesScanned)
+	}
 }
 
 func (m Model) cockpitView() string {
