@@ -1,0 +1,35 @@
+Quest 113 after snapshot
+
+Feature contract
+- VAULT is a registered dashboard destination showing archive directory, format,
+  file count, raw/stored size, compression ratio, verification state, broken
+  bundles, reclaimable bytes, and a deep verification action.
+- SYSTEM is a registered dashboard destination showing doctor findings and the
+  effective pricing table, including cache-write windows, status, effective
+  window, and source.
+- System content uses the dashboard viewport and Up/Down to scroll without
+  reloading the underlying snapshot; Vault verification reports progress and
+  completion or failure in the status area.
+
+Rendered page receipt
+
+Command: go test ./internal/cli ./internal/tui ./internal/tui/pages -count=1
+Result: PASS (dashboard page mapping, doctor-failure fallback, loader page
+rendering, Vault deep-verify action, System rendering, and bounded scrolling).
+
+Interaction receipts
+
+- `v` launches a one-shot Vault verification request and reports
+  `verifying vault…` before showing the completion result.
+- A second `v` press is ignored while verification is running.
+- Up/Down scrolling stays local to the Vault and System panes and does not
+  reload the dashboard snapshot.
+- Action completion remains visible beside a warning when the status bar has
+  enough room; narrow layouts retain the warning with truncation.
+
+Closeout gates
+
+- `GOFLAGS=-buildvcs=false go test ./...`: PASS
+- `GOFLAGS=-buildvcs=false go build ./...`: PASS
+- `GOFLAGS=-buildvcs=false go vet ./...`: PASS
+- autoreview local: PASS; no actionable P0-P2 findings.

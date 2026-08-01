@@ -53,6 +53,17 @@ func TestStatusBarDoesNotClaimFreshBeforeASuccessfulSync(t *testing.T) {
 	}
 }
 
+func TestStatusBarKeepsActionCompletionVisibleWithWarning(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width = 60
+	model.status = "vault verified · 4 files checked"
+	model.warning = "history index is stale"
+	view := model.View()
+	if !strings.Contains(view, "vault verified · 4 files checked") || !strings.Contains(view, "history") || !strings.Contains(view, "…") {
+		t.Fatalf("action completion disappeared behind warning:\n%s", view)
+	}
+}
+
 func TestStatusBarUsesCliOwnedStaleHint(t *testing.T) {
 	model := loadedTestModel()
 	model.syncFresh = true

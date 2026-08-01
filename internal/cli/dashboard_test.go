@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,11 +19,13 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
+	"github.com/janiorvalle/tokenomnom/internal/schedule"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/tui"
 	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
+	"github.com/janiorvalle/tokenomnom/internal/vault"
 )
 
 func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
@@ -660,6 +663,147 @@ func TestBareStyledInvocationLaunchesDashboard(t *testing.T) {
 		t.Fatalf("styled bare launch = called %v, output %q", called, output.String())
 	}
 }
+
+func TestDashboardPageDataMapsVaultAndSystemHealth(t *testing.T) {
+	lastVerification := "2026-08-01T04:00:00Z"
+	format := 1
+	encryption := "none"
+	vaultData := dashboardVaultPageData(jsonDoctorVault{
+		Dir: "/tmp/vault", Initialized: true, Format: &format, Encryption: &encryption,
+		Files: 4, RawBytes: 12 * 1024, StoredBytes: 4 * 1024, LastDeepVerification: &lastVerification,
+		ReclaimableBytes: 8 * 1024,
+	})
+	if vaultData.Ratio != "3.00x" || vaultData.Verified != "yes · "+lastVerification || vaultData.VerificationState != tuipages.FindingOK || vaultData.RawSize != "12.0 KiB" {
+		t.Fatalf("vault page data = %#v", vaultData)
+	}
+	lastArchive := "2026-08-01T05:00:00Z"
+	staleVaultData := dashboardVaultPageData(jsonDoctorVault{
+		Initialized: true, LastArchive: &lastArchive, LastDeepVerification: &lastVerification,
+	})
+	if staleVaultData.Verified != "stale · "+lastVerification || staleVaultData.VerificationState != tuipages.FindingWarning {
+		t.Fatalf("stale vault verification = %q", staleVaultData.Verified)
+	}
+	brokenVaultData := dashboardVaultPageData(jsonDoctorVault{
+		Initialized: true, KnownBrokenBundles: 3, LastDeepVerification: &lastVerification,
+	})
+	if brokenVaultData.VerificationState != tuipages.FindingWarning {
+		t.Fatalf("broken vault verification state = %q", brokenVaultData.VerificationState)
+	}
+
+	table, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemData := dashboardSystemPageData(jsonDoctorData{
+		Providers: []jsonDoctorProvider{{Provider: "codex", Exists: true, JSONLFiles: 2, TotalBytes: 2048}},
+		Store:     jsonDoctorStore{Exists: true, UsageRows: 3, DistinctModels: 2, SizeBytes: 4096},
+		History:   jsonHistoryHealth{Status: "ready", LogicalSessions: 5, LogicalPrompts: 7},
+		Vault:     jsonDoctorVault{Initialized: true, Files: 4, RawBytes: 12 * 1024, StoredBytes: 4 * 1024},
+		Schedule:  jsonScheduleData{Status: schedule.Status{Installed: true, DefinitionExists: true, BinaryExists: true}},
+	}, table, []string{"a warning"})
+	if len(systemData.Findings) != 5 || systemData.Findings[0].Value != "ready · 2 files · 2.0 KiB" || len(systemData.Pricing) == 0 || systemData.Warnings[0] != "a warning" {
+		t.Fatalf("system page data = %#v", systemData)
+	}
+}
+
+func TestDashboardPageDataDoesNotBlockOnDoctorFailure(t *testing.T) {
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", t.TempDir())
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	vaultData, systemData := dashboardPageData(cmd, nil, t.TempDir(), "")
+	if vaultData.Directory != "" || len(systemData.Findings) == 0 || len(systemData.Warnings) == 0 || len(systemData.Pricing) == 0 {
+		t.Fatalf("doctor failure page data = vault=%#v system=%#v", vaultData, systemData)
+	}
+}
+
+func TestDashboardPageDataKeepsVaultWhenScheduleHealthFails(t *testing.T) {
+	originalScheduleUserHome := scheduleUserHome
+	scheduleUserHome = func() (string, error) { return "", errors.New("schedule unavailable") }
+	defer func() { scheduleUserHome = originalScheduleUserHome }()
+
+	databasePath := filepath.Join(t.TempDir(), store.DatabaseName)
+	database, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(appconfig.WithContext(context.Background(), appconfig.Loaded{Config: appconfig.Defaults()}))
+	doctorData, _, warnings, doctorErr := collectDoctorData(cmd, nil, databasePath, "")
+	if doctorErr == nil || doctorData.Vault.Dir == "" || !strings.Contains(strings.Join(warnings, "\n"), "schedule health unavailable") {
+		t.Fatalf("partial doctor result = data=%#v warnings=%#v err=%v", doctorData, warnings, doctorErr)
+	}
+	vaultData, systemData := dashboardPageData(cmd, nil, databasePath, "")
+	if vaultData.Directory == "" {
+		t.Fatalf("schedule failure blanked vault data: %#v", vaultData)
+	}
+	if len(systemData.Findings) == 0 || !strings.Contains(strings.Join(systemData.Warnings, "\n"), "schedule health unavailable") {
+		t.Fatalf("partial system data = findings=%#v warnings=%#v", systemData.Findings, systemData.Warnings)
+	}
+}
+
+func TestDashboardVaultVerificationStatusPreservesFatalError(t *testing.T) {
+	status, warning, err := dashboardVaultVerificationStatus(vault.VerifyResult{
+		Checked: 4, Verified: 3, Failures: []vault.VerifyFailure{{SourcePath: "broken.jsonl"}},
+	}, errors.New("record verification metadata: disk full"))
+	if err != nil || status != "vault verification failed · 3/4 verified" || !strings.Contains(warning, "disk full") {
+		t.Fatalf("verification status = status %q warning %q err %v", status, warning, err)
+	}
+
+	_, _, err = dashboardVaultVerificationStatus(vault.VerifyResult{}, errors.New("vault lock unavailable"))
+	if err == nil || !strings.Contains(err.Error(), "vault lock unavailable") {
+		t.Fatalf("verification fatal error = %v", err)
+	}
+}
+
+func TestDashboardLoaderProvidesVaultAndSystemPages(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(tempDir, "config")
+	codexDir := filepath.Join(tempDir, "codex")
+	claudeDir := filepath.Join(tempDir, "claude")
+	for _, path := range []string{stateDir, dataDir, configDir, codexDir, claudeDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--format", "pretty", "--codex-dir", codexDir, "--claude-dir", claudeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
+	snapshot, err := loader(tui.Request{Width: 100, Height: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.System.Findings) != 6 || snapshot.Vault.Directory == "" || len(snapshot.System.Pricing) == 0 {
+		t.Fatalf("dashboard page snapshot = %#v", snapshot)
+	}
+	pageContext := tui.PageContext{
+		Render: theme.FromContext(cmd.Context()), Snapshot: snapshot, Request: tui.Request{Width: 100, Height: 30},
+		Width: tui.ContentWidth(100), Height: tui.ContentHeight(30),
+	}
+	vaultView := tui.NewVaultPage().View(pageContext)
+	systemView := tui.NewSystemPage().View(pageContext)
+	if !strings.Contains(vaultView, "Compression ratio") || !strings.Contains(systemView, "Effective pricing") {
+		t.Fatalf("dashboard pages missing expected content:\nvault:\n%s\nsystem:\n%s", vaultView, systemView)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 func TestBarePlainInvocationRemainsHelp(t *testing.T) {
 	plain, err := executeCLI()

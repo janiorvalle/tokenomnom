@@ -19,6 +19,8 @@ const (
 	ModelsPageID   PageID = "models"
 	HeatmapPageID  PageID = "heatmap"
 	SessionsPageID PageID = "sessions"
+	VaultPageID    PageID = "vault"
+	SystemPageID   PageID = "system"
 )
 
 // MonthlyPageID is retained for callers that still use the old page name.
@@ -167,6 +169,65 @@ func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
 	context.Request.Ledger = state
 	return context.Request, true
 }
+
+// NewVaultPage returns the dashboard adapter for the pure Vault renderer.
+func NewVaultPage() Page { return vaultPage{} }
+
+type vaultPage struct{}
+
+func (vaultPage) ID() PageID           { return VaultPageID }
+func (vaultPage) Section() PageSection { return VaultSection }
+func (vaultPage) Title() string        { return "Vault" }
+
+func (vaultPage) View(context PageContext) string {
+	return tuipages.RenderVault(context.Render, context.Snapshot.Vault, context.Width, context.Height, context.Request.VaultOffset)
+}
+
+func (vaultPage) Update(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	if key == "v" || key == "V" {
+		if request.Action != "" {
+			return request, false
+		}
+		request.Action = VerifyVaultAction
+		return request, true
+	}
+	offset, changed := tuipages.UpdateVaultOffset(context.Render, context.Snapshot.Vault, context.Width, context.Height, request.VaultOffset, key)
+	if !changed {
+		return request, false
+	}
+	request.VaultOffset = offset
+	return request, true
+}
+
+func (vaultPage) NeedsReload(_ PageContext, request Request) bool {
+	return request.Action == VerifyVaultAction
+}
+
+// NewSystemPage returns the dashboard adapter for the pure System renderer.
+func NewSystemPage() Page { return systemPage{} }
+
+type systemPage struct{}
+
+func (systemPage) ID() PageID           { return SystemPageID }
+func (systemPage) Section() PageSection { return SystemSection }
+func (systemPage) Title() string        { return "System" }
+
+func (systemPage) View(context PageContext) string {
+	return tuipages.RenderSystem(context.Render, context.Snapshot.System, context.Width, context.Height, context.Request.SystemOffset)
+}
+
+func (systemPage) Update(context PageContext, key string) (Request, bool) {
+	offset, changed := tuipages.UpdateSystemOffset(context.Render, context.Snapshot.System, context.Width, context.Height, context.Request.SystemOffset, key)
+	if !changed {
+		return context.Request, false
+	}
+	request := context.Request
+	request.SystemOffset = offset
+	return request, true
+}
+
+func (systemPage) NeedsReload(PageContext, Request) bool { return false }
 
 func updateLedgerDetailOffset(context PageContext, key string) (Request, bool) {
 	request := context.Request
