@@ -62,12 +62,14 @@ Command: go test -v ./internal/tui -run TestHistorySearch -count=1
 --- PASS: TestHistorySearchPageReportsLoaderErrors (0.00s)
 === RUN   TestHistorySearchPageTruncatesProvenanceToPane
 --- PASS: TestHistorySearchPageTruncatesProvenanceToPane (0.00s)
+=== RUN   TestHistorySearchStatusLinesTruncateToPane
+--- PASS: TestHistorySearchStatusLinesTruncateToPane (0.00s)
 === RUN   TestHistorySearchSelectedHighlightKeepsBoldSuffix
 --- PASS: TestHistorySearchSelectedHighlightKeepsBoldSuffix (0.00s)
 === RUN   TestHistorySearchMarkedSnippetTruncationPreservesMarkers
 --- PASS: TestHistorySearchMarkedSnippetTruncationPreservesMarkers (0.00s)
 === RUN   TestHistorySearchEvidenceFrames
-    history_search_test.go:267: Command: go test -v ./internal/tui -run TestHistorySearch -count=1
+    history_search_test.go:285: Command: go test -v ./internal/tui -run TestHistorySearch -count=1
 
         -- full cockpit 100x30 --
          <ESC>[1;38;2;243;243;246mtokenomnom<ESC>[0m<ESC>[38;2;156;163;175m  /  <ESC>[0m<ESC>[1;38;2;165;179;252mSEARCH<ESC>[0m                                                        <ESC>[38;2;156;163;175mLOCAL  ·  ALL  ·  30D<ESC>[0m
@@ -83,11 +85,11 @@ Command: go test -v ./internal/tui -run TestHistorySearch -count=1
          <ESC>[1;38;2;165;179;252m› 6  Search<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m      <ESC>[38;2;156;163;175m2026-07-31 · claude · /workspace/another-long-project-name<ESC>[0m
                           <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mMore results are available in `tokenomnom history search`.<ESC>[0m
          <ESC>[1;38;2;243;243;246mFILTERS<ESC>[0m          <ESC>[38;2;55;65;81m│<ESC>[0m
-         <ESC>[38;2;156;163;175mprovider<ESC>[0m         <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `tokenomnom history index` to refresh <ESC>[0m
+         <ESC>[38;2;156;163;175mprovider<ESC>[0m         <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;52;211;153mExported to /workspace/history-exports/0123456789abcdef0123456789abcdef012345…<ESC>[0m
          <ESC>[38;2;156;163;175m  all<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m
-         <ESC>[38;2;156;163;175mrange<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+         <ESC>[38;2;156;163;175mrange<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `tokenomnom history index` to refresh…<ESC>[0m
          <ESC>[38;2;156;163;175m  30d<ESC>[0m            <ESC>[38;2;55;65;81m│<ESC>[0m
-                          <ESC>[38;2;55;65;81m│<ESC>[0m
+                          <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
                           <ESC>[38;2;55;65;81m│<ESC>[0m
                           <ESC>[38;2;55;65;81m│<ESC>[0m
                           <ESC>[38;2;55;65;81m│<ESC>[0m
@@ -113,9 +115,9 @@ Command: go test -v ./internal/tui -run TestHistorySearch -count=1
          <ESC>[1;38;2;243;243;246mHISTORY<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m      <ESC>[38;2;156;163;175m2026-08-01 · codex · /workspace/token…<ESC>[0m
          <ESC>[38;2;156;163;175m5  Sessions<ESC>[0m  <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175mMore results are available in `tokenomnom…<ESC>[0m
          <ESC>[1;38;2;165;179;252m› 6  Search<ESC>[0m  <ESC>[38;2;55;65;81m│<ESC>[0m
-                      <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `t<ESC>[0m
+                      <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;52;211;153mExported to /workspace/history-exports/01…<ESC>[0m
          <ESC>[1;38;2;243;243;246mFILTERS<ESC>[0m      <ESC>[38;2;55;65;81m│<ESC>[0m
-         <ESC>[38;2;156;163;175mprovider<ESC>[0m     <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[38;2;156;163;175m↑/↓  enter open  e export  / edit  esc<ESC>[0m
+         <ESC>[38;2;156;163;175mprovider<ESC>[0m     <ESC>[38;2;55;65;81m│<ESC>[0m  <ESC>[1;38;2;251;191;36mIndex note: History index is stale; run `…<ESC>[0m
          <ESC>[38;2;156;163;175m● idle<ESC>[0m
          <ESC>[38;2;55;65;81m──────────────────────────────────────────────────────────<ESC>[0m
          <ESC>[38;2;243;243;246mtab<ESC>[0m <ESC>[38;2;156;163;175mviews<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mp<ESC>[0m <ESC>[38;2;156;163;175mprov<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mr<ESC>[0m <ESC>[38;2;156;163;175mrange<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mR<ESC>[0m <ESC>[38;2;156;163;175mrefresh<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246m?<ESC>[0m <ESC>[38;2;156;163;175mhelp<ESC>[0m<ESC>[38;2;156;163;175m · <ESC>[0m<ESC>[38;2;243;243;246mq<ESC>[0m <ESC>[38;2;156;163;175mquit<ESC>[0m
@@ -185,4 +187,4 @@ Command: go test -v ./internal/cli -run 'TestHistorySearch|TestHistoryExport' -c
 === RUN   TestHistoryExportDirectoryTargetUsesPlatformSeparators
 --- PASS: TestHistoryExportDirectoryTargetUsesPlatformSeparators (0.00s)
 PASS
-ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.259s
+ok  	github.com/janiorvalle/tokenomnom/internal/cli	0.262s

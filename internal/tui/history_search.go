@@ -590,7 +590,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 			lines = append(lines, context.Render.Palette.Subtle().Render(truncateText("More results are available in `tokenomnom history search`.", width)))
 		}
 	}
-	lines = appendPageStatus(lines, context.Render, p.warnings, p.exporting, p.exportText, p.exportErrorText)
+	lines = appendPageStatus(lines, context.Render, width, p.warnings, p.exporting, p.exportText, p.exportErrorText)
 	footer := "/ edit"
 	if p.inputMode {
 		footer = "type query  enter search  esc cancel"
@@ -661,18 +661,18 @@ func (p *HistorySearchPage) detailMaxOffset(request Request) int {
 	return tuipages.HistorySearchSessionDetailMaxOffset(render, *p.detail, width, height, p.detailNotices())
 }
 
-func appendPageStatus(lines []string, render theme.Context, warnings []string, exporting bool, exported, exportError string) []string {
+func appendPageStatus(lines []string, render theme.Context, width int, warnings []string, exporting bool, exported, exportError string) []string {
 	if exported != "" {
-		lines = append(lines, "", render.Palette.Success().Render(oneLine(exported)))
+		lines = append(lines, "", render.Palette.Success().Render(truncateText(oneLine(exported), width)))
 	}
 	if exporting {
-		lines = append(lines, "", render.Palette.Subtle().Render("Exporting session…"))
+		lines = append(lines, "", render.Palette.Subtle().Render(truncateText("Exporting session…", width)))
 	}
 	if exportError != "" {
-		lines = append(lines, "", render.Palette.Warning().Render(oneLine(exportError)))
+		lines = append(lines, "", render.Palette.Warning().Render(truncateText(oneLine(exportError), width)))
 	}
 	if len(warnings) > 0 {
-		lines = append(lines, "", render.Palette.Warning().Render("Index note: "+oneLine(warnings[0])))
+		lines = append(lines, "", render.Palette.Warning().Render(truncateText("Index note: "+oneLine(warnings[0]), width)))
 	}
 	return lines
 }

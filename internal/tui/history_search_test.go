@@ -178,6 +178,23 @@ func TestHistorySearchPageTruncatesProvenanceToPane(t *testing.T) {
 	}
 }
 
+func TestHistorySearchStatusLinesTruncateToPane(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	request := Request{Width: 60, Height: 18, HistoryQuery: "prompt"}
+	page.query, page.searched = request.HistoryQuery, true
+	page.exportText = "Exported to /workspace/history-exports/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	page.warnings = []string{"History index is stale; run `tokenomnom history index` to refresh it."}
+	view := page.View(pageContext(request))
+	for index, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > ContentWidth(request.Width) {
+			t.Fatalf("line %d width=%d exceeds pane=%d:\n%s", index+1, width, ContentWidth(request.Width), view)
+		}
+	}
+	if !strings.Contains(view, "Exported to /workspace/history-exports") || !strings.Contains(view, "…") {
+		t.Fatalf("long status lines were not truncated:\n%s", view)
+	}
+}
+
 func TestHistorySearchSelectedHighlightKeepsBoldSuffix(t *testing.T) {
 	terminal, dark := true, true
 	render := theme.Resolve(theme.ResolveOptions{
@@ -232,6 +249,7 @@ func TestHistorySearchEvidenceFrames(t *testing.T) {
 		},
 	}
 	page.hasMore = true
+	page.exportText = "Exported to /workspace/history-exports/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	model.request.HistoryQuery = page.query
 
 	model.request.Width, model.request.Height = 100, 30

@@ -65,9 +65,6 @@ func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.H
 				return exportHistorySearch(cmd, request, codexDir, claudeDir)
 			})
 		},
-		ReportError: func(err error) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "tokenomnom history search: %v\n", err)
-		},
 	})
 }
 
@@ -193,6 +190,8 @@ func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, clau
 	}
 	codexRoot, claudeRoot := codexDir, claudeDir
 	exportCommand := newHistoryExportCommand(&codexRoot, &claudeRoot)
+	exportCommand.SilenceUsage = true
+	exportCommand.SilenceErrors = true
 	var output bytes.Buffer
 	exportCommand.SetOut(&output)
 	exportCommand.SetErr(&output)
