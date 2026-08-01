@@ -222,12 +222,12 @@ func TestHistorySearchEvidenceFrames(t *testing.T) {
 	page.hits = []SearchHit{
 		{
 			SessionID: "ses_7f2a", Provider: "codex", Date: "2026-08-01",
-			Project: "/Users/janiorvalle/Documents/github/tokenomnom",
+			Project: "/workspace/tokenomnom",
 			Snippet: "said " + marked("do not implement") + " until the provenance view is ready",
 		},
 		{
 			SessionID: "ses_4b19", Provider: "claude", Date: "2026-07-31",
-			Project: "/Users/janiorvalle/Documents/github/another-long-project-name",
+			Project: "/workspace/another-long-project-name",
 			Snippet: "another " + marked("do not implement") + " result",
 		},
 	}
