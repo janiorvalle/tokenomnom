@@ -48,3 +48,29 @@ func TestHistoryExportDirectoryNameIsDeterministic(t *testing.T) {
 		t.Fatalf("export directory names are not stable: %q %q", first, second)
 	}
 }
+
+func TestHistoryExportCoordinatorRejectsConcurrentSession(t *testing.T) {
+	coordinator := historyExportCoordinator{inFlight: make(map[string]struct{})}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := coordinator.run("ses_example", func() (string, error) {
+			close(started)
+			<-release
+			return "exported", nil
+		})
+		finished <- err
+	}()
+	<-started
+	if _, err := coordinator.run("ses_example", func() (string, error) { return "unexpected", nil }); err == nil {
+		t.Fatal("concurrent export was not rejected")
+	}
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatalf("first export failed: %v", err)
+	}
+	if _, err := coordinator.run("ses_example", func() (string, error) { return "retry", nil }); err != nil {
+		t.Fatalf("export was not released after completion: %v", err)
+	}
+}

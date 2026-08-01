@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -29,8 +30,30 @@ import (
 
 const maxHistoryRawJSONBytes int64 = 64 << 20
 
+type historyExportCoordinator struct {
+	mu       sync.Mutex
+	inFlight map[string]struct{}
+}
+
+func (coordinator *historyExportCoordinator) run(sessionID string, export func() (string, error)) (string, error) {
+	coordinator.mu.Lock()
+	if _, ok := coordinator.inFlight[sessionID]; ok {
+		coordinator.mu.Unlock()
+		return "", errors.New("history export for this session is already in progress; wait for it to finish and try again")
+	}
+	coordinator.inFlight[sessionID] = struct{}{}
+	coordinator.mu.Unlock()
+	defer func() {
+		coordinator.mu.Lock()
+		delete(coordinator.inFlight, sessionID)
+		coordinator.mu.Unlock()
+	}()
+	return export()
+}
+
 func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.HistorySearchPage {
 	var cache dashboardHistorySearchCache
+	exportCoordinator := historyExportCoordinator{inFlight: make(map[string]struct{})}
 	return tui.NewHistorySearchPage(tui.HistorySearchOptions{
 		Load: func(request tui.Request) (pages.HistorySearchData, error) {
 			return cache.snapshot(request, func() (pages.HistorySearchData, error) {
@@ -38,7 +61,9 @@ func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.H
 			})
 		},
 		Export: func(request tui.Request) (string, error) {
-			return exportHistorySearch(cmd, request, codexDir, claudeDir)
+			return exportCoordinator.run(request.HistoryExportID, func() (string, error) {
+				return exportHistorySearch(cmd, request, codexDir, claudeDir)
+			})
 		},
 		ReportError: func(err error) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "tokenomnom history search: %v\n", err)

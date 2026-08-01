@@ -148,7 +148,7 @@ func TestSearchLiteralPhraseEscapesPunctuationOperatorsAndRequiresAdjacency(t *t
 		t.Fatal(err)
 	}
 	brackets, err := database.Search(SearchQuery{PromptQuery: PromptQuery{Source: CatalogSourceAny}, Query: "items"})
-	if err != nil || len(brackets.Hits) != 1 || !strings.Contains(brackets.Hits[0].Snippet, "[0]") || !strings.Contains(brackets.Hits[0].Snippet, string(history.SearchSnippetMatchStart)) {
+	if err != nil || len(brackets.Hits) != 1 || !strings.Contains(brackets.Hits[0].Snippet, "[0]") || brackets.SnippetMatchStart == "" || !strings.Contains(brackets.Hits[0].Snippet, brackets.SnippetMatchStart) {
 		t.Fatalf("bracket-preserving snippet err=%v page=%+v", err, brackets)
 	}
 }
@@ -168,9 +168,8 @@ func TestSearchSnippetMarkersAvoidIndexedPromptText(t *testing.T) {
 	if err != nil || len(page.Hits) != 1 {
 		t.Fatalf("marker collision search err=%v page=%+v", err, page)
 	}
-	if page.SnippetMatchStart != string(history.SearchSnippetMatchStart)+"1"+string(history.SearchSnippetMatchEnd) ||
-		page.SnippetMatchEnd != string(history.SearchSnippetMatchEnd)+"1"+string(history.SearchSnippetMatchStart) {
-		t.Fatalf("search markers did not skip indexed prompt text: start=%q end=%q", page.SnippetMatchStart, page.SnippetMatchEnd)
+	if page.SnippetMatchStart == "" || page.SnippetMatchEnd == "" || page.SnippetMatchStart == string(history.SearchSnippetMatchStart) || page.SnippetMatchEnd == string(history.SearchSnippetMatchEnd) || strings.Contains(literalMarkers, page.SnippetMatchStart) || strings.Contains(literalMarkers, page.SnippetMatchEnd) {
+		t.Fatalf("search markers are missing or collide with indexed prompt text: start=%q end=%q", page.SnippetMatchStart, page.SnippetMatchEnd)
 	}
 	if !strings.Contains(page.Hits[0].Snippet, literalMarkers) || !strings.Contains(page.Hits[0].Snippet, page.SnippetMatchStart) || !strings.Contains(page.Hits[0].Snippet, page.SnippetMatchEnd) {
 		t.Fatalf("snippet lost literal or generated markers: %q", page.Hits[0].Snippet)

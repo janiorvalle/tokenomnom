@@ -1,6 +1,7 @@
 package store
 
 import (
+	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -286,7 +287,7 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	if err != nil {
 		return SearchPage{}, err
 	}
-	matchStart, matchEnd, err := s.searchSnippetMarkers()
+	matchStart, matchEnd, err := searchSnippetMarkers()
 	if err != nil {
 		return SearchPage{}, err
 	}
@@ -346,28 +347,16 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	return page, nil
 }
 
-func (s *Store) searchSnippetMarkers() (string, string, error) {
-	for attempt := uint64(0); ; attempt++ {
-		start, end := searchSnippetMarkerCandidate(attempt)
-		var present bool
-		if err := s.runner.QueryRow(`SELECT EXISTS(
-			SELECT 1 FROM prompts WHERE instr(clean_text, ?) > 0 OR instr(clean_text, ?) > 0
-		)`, start, end).Scan(&present); err != nil {
-			return "", "", fmt.Errorf("find collision-free history search snippet markers: %w", err)
-		}
-		if !present {
-			return start, end, nil
-		}
+func searchSnippetMarkers() (string, string, error) {
+	var nonce [24]byte
+	if _, err := cryptorand.Read(nonce[:]); err != nil {
+		return "", "", fmt.Errorf("create history search snippet markers: %w", err)
 	}
-}
-
-func searchSnippetMarkerCandidate(attempt uint64) (string, string) {
-	if attempt == 0 {
-		return string(history.SearchSnippetMatchStart), string(history.SearchSnippetMatchEnd)
-	}
-	suffix := strconv.FormatUint(attempt-1, 36)
+	// A fresh cryptographic nonce avoids a full-table collision scan before
+	// every FTS query while making accidental prompt collisions negligible.
+	suffix := base64.RawURLEncoding.EncodeToString(nonce[:])
 	return string(history.SearchSnippetMatchStart) + suffix + string(history.SearchSnippetMatchEnd),
-		string(history.SearchSnippetMatchEnd) + suffix + string(history.SearchSnippetMatchStart)
+		string(history.SearchSnippetMatchEnd) + suffix + string(history.SearchSnippetMatchStart), nil
 }
 
 // ListPrompts returns clean logical human prompts without FTS ranking.
