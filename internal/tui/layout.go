@@ -11,7 +11,7 @@ const (
 	railMaxWidth = 18
 	railMinWidth = 14
 	gridGap      = 2
-	footerHeight = 3
+	footerHeight = 4
 )
 
 type cockpitLayout struct {

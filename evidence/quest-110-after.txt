@@ -1,0 +1,35 @@
+=== RUN   TestQuest110AfterSnapshot
+    statusbar_test.go:99:
+         tokenomnom  /  DAILY                                                         LOCAL  ·  ALL  ·  30D
+         TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00
+         SPEND            │  daily body
+         › 1  Daily       │
+         2  Monthly       │
+         3  Models        │
+         4  Heatmap       │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+                          │
+         ● fresh  ·  index fresh  ·  vault 12.0 MiB 2.8x  ·  42 sessions
+         ──────────────────────────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+--- PASS: TestQuest110AfterSnapshot (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.005s
