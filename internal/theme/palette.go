@@ -17,6 +17,7 @@ type Palette struct {
 	moneyColor    lipgloss.AdaptiveColor
 	borderColor   lipgloss.AdaptiveColor
 	successColor  lipgloss.AdaptiveColor
+	surfaceColor  lipgloss.AdaptiveColor
 }
 
 // NewPalette builds adaptive styles for light and dark terminal backgrounds.
@@ -51,6 +52,7 @@ func NewPalette(renderer *lipgloss.Renderer) Palette {
 		moneyColor:    lipgloss.AdaptiveColor{Light: "#047857", Dark: "#6EE7B7"},
 		borderColor:   lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#374151"},
 		successColor:  lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"},
+		surfaceColor:  lipgloss.AdaptiveColor{Light: "#F9FAFB", Dark: "#111827"},
 	}
 }
 
@@ -111,6 +113,11 @@ func (p Palette) AccentBorderColor() lipgloss.Color {
 // Success styles completed-state markers such as installed and synced.
 func (p Palette) Success() lipgloss.Style {
 	return p.style().Foreground(p.adaptiveColor(p.successColor))
+}
+
+// Surface styles transient overlays so their content stays legible over the dashboard.
+func (p Palette) Surface() lipgloss.Style {
+	return p.style().Background(p.adaptiveColor(p.surfaceColor))
 }
 
 // ProviderColor maps a provider and model rank to a deterministic ramp shade.

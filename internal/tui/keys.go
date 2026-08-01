@@ -16,6 +16,7 @@ const (
 	keyActionRange
 	keyActionRefresh
 	keyActionToggleHelp
+	keyActionOpenPalette
 	keyActionQuit
 )
 
@@ -47,6 +48,7 @@ var keyRegistry = [...]KeyBinding{
 	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", FooterKey: "p", Footer: "provider", Action: keyActionProvider},
 	{Display: "r", Keys: []string{"r"}, Description: "cycle range", FooterKey: "r", Footer: "range", Action: keyActionRange},
 	{Display: "R", Keys: []string{"R"}, Description: "refresh now", FooterKey: "R", Footer: "refresh", Action: keyActionRefresh},
+	{Display: "ctrl+k", Keys: []string{"ctrl+k"}, Description: "open command palette", Action: keyActionOpenPalette},
 	{Display: "?", Keys: []string{"?"}, Description: "close help", FooterKey: "?", Footer: "help", Action: keyActionToggleHelp},
 	{Display: "q / ctrl+c", Keys: []string{"q", "ctrl+c"}, Description: "quit", FooterKey: "q", Footer: "quit", Action: keyActionQuit},
 }
