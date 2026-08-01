@@ -388,12 +388,14 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 		t.Fatalf("page refresh commands = %T %v, want two commands", message, batch)
 	}
 	dashboardLoaded := false
+	dashboardRequest := Request{}
 	for _, refreshCommand := range batch {
 		message := refreshCommand()
 		updated, _ = model.Update(message)
 		model = updated.(Model)
 		if _, ok := message.(loadedMsg); ok {
 			dashboardLoaded = true
+			dashboardRequest = message.(loadedMsg).request
 		}
 		if _, ok := message.(pageLoadedMsg); ok && !dashboardLoaded && !model.syncing {
 			t.Fatal("page load cleared global refresh state before dashboard load completed")
@@ -402,6 +404,9 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if page.loads != 2 || model.syncing || model.request.Sync || !page.loadedRequest.Sync {
 		t.Fatalf("page refresh loads=%d syncing=%v model_sync=%v load_sync=%v", page.loads, model.syncing, model.request.Sync, page.loadedRequest.Sync)
 	}
+	if dashboardRequest.PageLoadToken == "" || dashboardRequest.PageLoadToken != model.request.PageLoadToken || !dashboardRequest.Sync {
+		t.Fatalf("dashboard refresh request lost page token: dashboard=%+v model=%+v", dashboardRequest, model.request)
+	}
 	updated, command = model.Update(keyMsg("p"))
 	model = updated.(Model)
 	message = command()
@@ -409,12 +414,22 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	if !ok || len(batch) != 2 {
 		t.Fatalf("provider change commands = %T %v, want two commands", message, batch)
 	}
+	dashboardLoaded = false
+	dashboardRequest = Request{}
 	for _, providerCommand := range batch {
-		updated, _ = model.Update(providerCommand())
+		message := providerCommand()
+		if loaded, ok := message.(loadedMsg); ok {
+			dashboardLoaded = true
+			dashboardRequest = loaded.request
+		}
+		updated, _ = model.Update(message)
 		model = updated.(Model)
 	}
 	if page.loads != 3 || page.loadedRequest.Provider != CodexProvider {
 		t.Fatalf("provider change loads=%d request=%+v", page.loads, page.loadedRequest)
+	}
+	if !dashboardLoaded || dashboardRequest.PageLoadToken == "" || dashboardRequest.PageLoadToken != model.request.PageLoadToken {
+		t.Fatalf("dashboard provider request lost page token: dashboard=%+v model=%+v", dashboardRequest, model.request)
 	}
 }
 

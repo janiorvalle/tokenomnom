@@ -634,7 +634,9 @@ func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
 		if loader, ok := page.(PageLoader); ok {
 			var pageCommand tea.Cmd
 			m, pageCommand = m.startPageLoad(loader, request)
-			return m, tea.Batch(m.loadCmd(request), pageCommand)
+			dashboardRequest := request
+			dashboardRequest.PageLoadToken = m.request.PageLoadToken
+			return m, tea.Batch(m.loadCmd(dashboardRequest), pageCommand)
 		}
 	}
 	return m, m.loadCmd(request)
