@@ -153,9 +153,10 @@ type SkillOffer struct {
 }
 
 type loadedMsg struct {
-	request  Request
-	snapshot Snapshot
-	err      error
+	request    Request
+	generation uint64
+	snapshot   Snapshot
+	err        error
 }
 
 type skillOfferCheckedMsg struct {
@@ -181,25 +182,27 @@ const (
 
 // Model is the pure dashboard state machine.
 type Model struct {
-	render       theme.Context
-	loader       Loader
-	offer        SkillOffer
-	spinner      spinner.Model
-	router       PageRouter
-	request      Request
-	snapshot     Snapshot
-	help         bool
-	loading      bool
-	syncing      bool
-	syncFresh    bool
-	loaded       bool
-	started      time.Time
-	status       string
-	warning      string
-	offerState   skillOfferState
-	offerChecked bool
-	offerResults []string
-	pendingSync  bool
+	render         theme.Context
+	loader         Loader
+	offer          SkillOffer
+	spinner        spinner.Model
+	router         PageRouter
+	request        Request
+	snapshot       Snapshot
+	help           bool
+	loading        bool
+	syncing        bool
+	syncFresh      bool
+	loaded         bool
+	started        time.Time
+	status         string
+	warning        string
+	offerState     skillOfferState
+	offerChecked   bool
+	offerResults   []string
+	pendingSync    bool
+	loadGeneration uint64
+	syncGeneration uint64
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -222,16 +225,24 @@ func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, prov
 
 // Init starts the initial store load.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.loadCmd(m.request))
+	return tea.Batch(m.spinner.Tick, m.loadCmdAt(m.request, m.loadGeneration))
 }
 
-func (m Model) loadCmd(request Request) tea.Cmd {
+func (m *Model) loadCmd(request Request) tea.Cmd {
+	m.loadGeneration++
+	if request.Sync {
+		m.syncGeneration = m.loadGeneration
+	}
+	return m.loadCmdAt(request, m.loadGeneration)
+}
+
+func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		if m.loader == nil {
-			return loadedMsg{request: request, err: fmt.Errorf("dashboard loader is unavailable")}
+			return loadedMsg{request: request, generation: generation, err: fmt.Errorf("dashboard loader is unavailable")}
 		}
 		snapshot, err := m.loader(request)
-		return loadedMsg{request: request, snapshot: snapshot, err: err}
+		return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
 	}
 }
 
@@ -289,7 +300,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
 		if msg.Width >= minimumWidth && msg.Height >= minimumHeight {
-			return m, m.loadCmd(m.request)
+			command := m.loadCmd(m.request)
+			return m, command
 		}
 		return m, nil
 	case spinner.TickMsg:
@@ -297,7 +309,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
 	case loadedMsg:
-		if msg.request.Sync && m.syncing && !sameRequestIgnoringSync(msg.request, m.request) {
+		if msg.request.Sync && m.syncing && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
 				m.syncing = false
 				m.warning = msg.err.Error()
@@ -305,7 +317,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncing = false
 			m.loading = true
-			return m, m.loadCmd(m.request)
+			command := m.loadCmd(m.request)
+			return m, command
+		}
+		if msg.generation != m.loadGeneration {
+			return m, nil
 		}
 		if !sameRequestIgnoringSync(msg.request, m.request) {
 			return m, nil
@@ -342,17 +358,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		next := m.request
 		next.Sync = true
 		if msg.snapshot.Empty {
-			return m, m.loadCmd(next)
+			command := m.loadCmd(next)
+			return m, command
 		}
 		checkCommand := m.maybeCheckSkillOffer()
 		if checkCommand == nil {
-			return m, m.loadCmd(next)
+			command := m.loadCmd(next)
+			return m, command
 		}
 		m.pendingSync = true
 		return m, checkCommand
 	case skillOfferCheckedMsg:
 		if msg.err != nil || msg.check.Answered || !msg.check.HasRoots {
-			return m, m.resumeInitialSync()
+			command := m.resumeInitialSync()
+			return m, command
 		}
 		if msg.check.Installed {
 			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
@@ -371,7 +390,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.recordSkillOfferCmd(SkillOfferAccepted)
 	case skillOfferRecordedMsg:
 		// Offer bookkeeping is intentionally best effort and never blocks the TUI.
-		return m, m.resumeInitialSync()
+		command := m.resumeInitialSync()
+		return m, command
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -412,19 +432,22 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.request.DailyCursor = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
-		return m, m.loadCmd(m.request)
+		command := m.loadCmd(m.request)
+		return m, command
 	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
 		m.request.DailyCursor = 0
 		m.request.DailyDetailOffset = 0
 		m.resetSessionNavigation()
-		return m, m.loadCmd(m.request)
+		command := m.loadCmd(m.request)
+		return m, command
 	case keyActionRefresh:
 		m.syncing = true
 		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
-		return m, m.loadCmd(request)
+		command := m.loadCmd(request)
+		return m, command
 	case keyActionPageCommand:
 		page := m.activePage()
 		if page == nil {
@@ -439,7 +462,8 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.request = request
-		return m, m.loadCmd(m.request)
+		command := m.loadCmd(m.request)
+		return m, command
 	}
 	return m, nil
 }
