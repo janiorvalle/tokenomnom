@@ -97,7 +97,9 @@ func (p *HistorySearchPage) BeginLoad(request Request) {
 	p.detail = nil
 	p.notIndexed = false
 	p.errorText = ""
-	p.clearExport()
+	if !p.exporting || request.HistoryExportID != p.exportID || request.HistoryExportToken != p.exportAttemptID {
+		p.clearExport()
+	}
 }
 
 // Update preserves the base Page contract for page-command dispatch.
@@ -249,11 +251,9 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		p.loading = true
 		p.inputMode = false
 		p.errorText = ""
-		p.clearExport()
 		result.Request.HistorySessionID = p.sessionID
 		result.Request.SessionDetailOffset = 0
-		result.Request.HistoryExportID = ""
-		result.Request.HistoryExportToken = ""
+		p.updateExportForSession(&result.Request, p.sessionID)
 		result.Changed, result.Action = true, PageActionLoad
 		return result
 	case "esc":
@@ -262,16 +262,15 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		}
 		result.Handled = true
 		if p.sessionID != "" {
+			sessionID := p.sessionID
 			p.sessionID = ""
 			p.detail = nil
 			p.loading = true
 			p.inputMode = false
 			p.errorText = ""
-			p.clearExport()
 			result.Request.HistorySessionID = ""
 			result.Request.SessionDetailOffset = 0
-			result.Request.HistoryExportID = ""
-			result.Request.HistoryExportToken = ""
+			p.updateExportForSession(&result.Request, sessionID)
 			result.Changed, result.Action = true, PageActionLoad
 			return result
 		}
@@ -490,6 +489,17 @@ func (p *HistorySearchPage) clearExport() {
 
 func (p *HistorySearchPage) updateSelectionExport(request *Request, selectedIndex int) {
 	if p.exporting && p.exportID != "" && selectedIndex >= 0 && selectedIndex < len(p.hits) && p.hits[selectedIndex].SessionID == p.exportID {
+		request.HistoryExportID = p.exportID
+		request.HistoryExportToken = p.exportAttemptID
+		return
+	}
+	request.HistoryExportID = ""
+	request.HistoryExportToken = ""
+	p.clearExport()
+}
+
+func (p *HistorySearchPage) updateExportForSession(request *Request, sessionID string) {
+	if p.exporting && p.exportID == sessionID {
 		request.HistoryExportID = p.exportID
 		request.HistoryExportToken = p.exportAttemptID
 		return

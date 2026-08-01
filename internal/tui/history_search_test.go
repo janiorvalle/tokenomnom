@@ -267,7 +267,7 @@ func TestHistorySearchEvidenceFrames(t *testing.T) {
 	t.Logf("Command: go test -v ./internal/tui -run TestHistorySearch -count=1\n\n-- full cockpit 100x30 --\n%s\n\n-- narrow cockpit 60x18 --\n%s\n\n-- loading state --\n%s\n\n-- error state --\n%s", full, narrow, loading, error)
 }
 
-func TestHistorySearchPageCancelsStaleExportWhenOpeningDetail(t *testing.T) {
+func TestHistorySearchPagePreservesExportWhenOpeningDetail(t *testing.T) {
 	page := NewHistorySearchPage(HistorySearchOptions{})
 	request := Request{Width: 100, Height: 30}
 	page.Apply(request, HistorySearchData{Search: SearchResult{Hits: []SearchHit{{SessionID: "ses_1", Snippet: "prompt"}}}}, nil)
@@ -280,16 +280,20 @@ func TestHistorySearchPageCancelsStaleExportWhenOpeningDetail(t *testing.T) {
 		t.Fatalf("duplicate export was scheduled: %+v", duplicate)
 	}
 	open := page.HandleKey(export.Request, tea.KeyMsg{Type: tea.KeyEnter})
-	if !open.Changed || open.Request.HistorySessionID != "ses_1" {
+	if !open.Changed || open.Request.HistorySessionID != "ses_1" || open.Request.HistoryExportID != export.Request.HistoryExportID || open.Request.HistoryExportToken != export.Request.HistoryExportToken {
 		t.Fatalf("open after export = %+v", open)
 	}
 	slash := page.HandleKey(open.Request, keyMsg("/"))
 	if slash.Changed || page.Editing() {
 		t.Fatalf("slash entered search mode from detail: %+v", slash)
 	}
-	page.ApplyExport(export.Request, "/tmp/stale", nil)
-	if strings.Contains(page.View(pageContext(open.Request)), "Exporting session") {
-		t.Fatal("stale export left the page loading")
+	loadingRequest := open.Request
+	loadingRequest.PageLoadToken = "detail"
+	page.BeginLoad(loadingRequest)
+	page.Apply(loadingRequest, HistorySearchData{Session: &SessionDetail{SessionID: "ses_1"}}, nil)
+	page.ApplyExport(export.Request, "/tmp/detail", nil)
+	if !strings.Contains(page.View(pageContext(loadingRequest)), "Exported to /tmp/detail") {
+		t.Fatal("in-flight export receipt was lost while opening detail")
 	}
 }
 
