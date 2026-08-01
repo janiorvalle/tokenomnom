@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 )
@@ -23,10 +25,17 @@ const (
 
 // State is the keyboard navigation state for the ledger page.
 type State struct {
-	Zoom   Zoom
-	Year   int
-	Month  string
-	Cursor int
+	Zoom               Zoom
+	Year               int
+	Month              string
+	Cursor             int
+	ExpandedDay        string
+	SessionCursor      int
+	SessionPageCursor  string
+	SessionCursorStack string
+	SessionSelectLast  bool
+	DetailID           string
+	DetailOffset       int
 }
 
 // ProviderTotals contains one provider's usage and priced cost for a period.
@@ -55,6 +64,18 @@ type Row struct {
 	Claude ProviderTotals
 }
 
+// LedgerSession is one indexed session attributed to the expanded day.
+type LedgerSession struct {
+	historystore.CatalogSession
+	Tokens            int64
+	Cost              pricing.Money
+	PricedTokens      int64
+	UnpricedTokens    int64
+	AttributionStatus string
+	ActivityTimestamp string
+	Warning           string
+}
+
 // Total returns the combined provider values for a row.
 func (row Row) Total() ProviderTotals {
 	return row.Codex.Add(row.Claude)
@@ -72,12 +93,21 @@ func (row Row) Add(other Row) Row {
 
 // Data is the immutable ledger result for the current zoom level.
 type Data struct {
-	Available bool
-	Zoom      Zoom
-	Year      int
-	Month     string
-	Rows      []Row
-	Total     Row
+	Available              bool
+	Zoom                   Zoom
+	Year                   int
+	Month                  string
+	Rows                   []Row
+	Total                  Row
+	SessionDay             string
+	SessionPageCursor      string
+	Sessions               []LedgerSession
+	SessionsHaveMore       bool
+	SessionsNextCursor     string
+	SessionIndexAvailable  bool
+	SessionDataUnavailable bool
+	SessionWarning         string
+	Location               *time.Location
 }
 
 // Matches reports whether data was loaded for the requested zoom and anchor.
@@ -118,6 +148,74 @@ func SelectedIndex(data Data, state State) int {
 // Update applies ledger navigation. Rows are newest first, so j moves toward
 // older periods while k moves back toward the latest period.
 func Update(state State, data Data, key string) (State, bool) {
+	if state.DetailID != "" {
+		if key == "esc" || key == "h" || key == "left" {
+			state.DetailID = ""
+			state.DetailOffset = 0
+			return state, true
+		}
+		return state, false
+	}
+	if state.ExpandedDay != "" {
+		if key == "esc" || key == "h" || key == "left" {
+			state.ExpandedDay = ""
+			state.SessionCursor = 0
+			state.SessionPageCursor = ""
+			state.SessionCursorStack = ""
+			state.SessionSelectLast = false
+			return state, true
+		}
+		if data.SessionDay != state.ExpandedDay || data.SessionPageCursor != state.SessionPageCursor || len(data.Sessions) == 0 {
+			return state, false
+		}
+		next := state
+		sessionIndex := ledgerMin(ledgerMax(0, state.SessionCursor), len(data.Sessions)-1)
+		if state.SessionSelectLast {
+			sessionIndex = len(data.Sessions) - 1
+		}
+		switch key {
+		case "j", "down":
+			if sessionIndex >= len(data.Sessions)-1 {
+				if !data.SessionsHaveMore || data.SessionsNextCursor == "" {
+					return state, false
+				}
+				next.SessionCursorStack += "\x00" + state.SessionPageCursor
+				next.SessionPageCursor = data.SessionsNextCursor
+				next.SessionCursor = 0
+				next.SessionSelectLast = false
+				return next, true
+			}
+			next.SessionCursor = sessionIndex + 1
+		case "k", "up":
+			if sessionIndex <= 0 {
+				if state.SessionCursorStack == "" {
+					return state, false
+				}
+				separator := strings.LastIndexByte(state.SessionCursorStack, '\x00')
+				if separator < 0 {
+					return state, false
+				}
+				next.SessionPageCursor = state.SessionCursorStack[separator+1:]
+				next.SessionCursorStack = state.SessionCursorStack[:separator]
+				next.SessionCursor = 0
+				next.SessionSelectLast = true
+				return next, true
+			}
+			next.SessionCursor = sessionIndex - 1
+		case "home":
+			next.SessionCursor = 0
+		case "end":
+			next.SessionCursor = len(data.Sessions) - 1
+		case "enter", "l":
+			next.SessionCursor = sessionIndex
+			next.DetailID = data.Sessions[sessionIndex].SessionID
+			next.DetailOffset = 0
+		default:
+			return state, false
+		}
+		next.SessionSelectLast = false
+		return next, next != state
+	}
 	if len(data.Rows) == 0 {
 		if key == "h" {
 			switch state.Zoom {
@@ -168,9 +266,24 @@ func Update(state State, data Data, key string) (State, bool) {
 			next.Zoom = ZoomDay
 			next.Month = data.Rows[selected].Key
 			next.Cursor = -1
+		case ZoomDay:
+			next.ExpandedDay = data.Rows[selected].Key
+			next.SessionCursor = 0
+			next.SessionPageCursor = ""
+			next.SessionCursorStack = ""
+			next.SessionSelectLast = false
 		default:
 			return state, false
 		}
+	case "enter":
+		if state.Zoom != ZoomDay {
+			return state, false
+		}
+		next.ExpandedDay = data.Rows[selected].Key
+		next.SessionCursor = 0
+		next.SessionPageCursor = ""
+		next.SessionCursorStack = ""
+		next.SessionSelectLast = false
 	case "h":
 		switch state.Zoom {
 		case ZoomMonth:
@@ -194,6 +307,16 @@ func Render(render theme.Context, data Data, state State, height int) string {
 	width := ledgerMax(1, render.Width)
 	if height <= 0 {
 		height = 24
+	}
+	if state.DetailID != "" && data.SessionDay == state.ExpandedDay {
+		for _, session := range data.Sessions {
+			if session.SessionID == state.DetailID {
+				return RenderLedgerSessionDetail(render, session.CatalogSession, width, height, data.Location, state.DetailOffset)
+			}
+		}
+	}
+	if state.ExpandedDay != "" {
+		return renderExpandedDay(render, data, state, width, height)
 	}
 	selected := SelectedIndex(data, state)
 	lines := []string{
@@ -233,6 +356,139 @@ func Render(render theme.Context, data Data, state State, height int) string {
 		lines = append(lines, wideTotal(render, data.Total, periodWidth, moneyWidth, deltaWidth, barWidth, maxTokens))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderExpandedDay(render theme.Context, data Data, state State, width, height int) string {
+	lines := []string{fitLine(render.Palette.Subtle().Render(breadcrumb(state)+"  /  "+state.ExpandedDay), width)}
+	if data.SessionDay != state.ExpandedDay || data.SessionPageCursor != state.SessionPageCursor {
+		lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("Loading indexed sessions…", width)))
+		return strings.Join(lines, "\n")
+	}
+	if data.SessionWarning != "" {
+		lines = append(lines, render.Palette.Warning().Render(ledgerTruncate(data.SessionWarning, width)))
+	}
+	if data.SessionDataUnavailable {
+		return strings.Join(lines, "\n")
+	}
+	if !data.SessionIndexAvailable {
+		lines = append(lines,
+			render.Palette.Warning().Render(ledgerTruncate("No history index is available.", width)),
+			render.Palette.Subtle().Render(ledgerTruncate("Run tokenomnom history index to inspect this day’s sessions.", width)),
+		)
+		return strings.Join(lines, "\n")
+	}
+	day, ok := rowByKey(data.Rows, state.ExpandedDay)
+	if ok {
+		dayTotal := day.Total()
+		lines = append(lines, render.Palette.Emphasis().Bold(true).Render(ledgerTruncate(fmt.Sprintf("%s  %s  %s tokens", day.Label, formatMoney(dayTotal.Cost, dayTotal.PricedTokens, false, dayTotal.UnpricedTokens > 0), commaInteger(dayTotal.Tokens)), width)))
+	}
+	if len(data.Sessions) == 0 {
+		lines = append(lines,
+			render.Palette.Warning().Render(ledgerTruncate("No indexed sessions match this day.", width)),
+			render.Palette.Subtle().Render(ledgerTruncate("Run tokenomnom history index to refresh the history index.", width)),
+		)
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, expandedSessionHeader(render, width))
+	selected := ledgerMin(ledgerMax(0, state.SessionCursor), len(data.Sessions)-1)
+	if state.SessionSelectLast {
+		selected = len(data.Sessions) - 1
+	}
+	selectedWarning := data.Sessions[selected].Warning
+	rowHeight := 1
+	if width < 72 {
+		rowHeight = 2
+	}
+	reservedLines := 2
+	if selectedWarning != "" {
+		reservedLines++
+	}
+	capacity := ledgerMax(1, (height-len(lines)-reservedLines)/rowHeight)
+	start, end := visibleWindow(len(data.Sessions), selected, capacity)
+	for index := start; index < end; index++ {
+		lines = append(lines, expandedSessionRow(render, data.Sessions[index], index == selected, width, data.Location)...)
+	}
+	if data.SessionsHaveMore {
+		lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("↓ more sessions", width)))
+	}
+	if selectedWarning != "" {
+		lines = append(lines, render.Palette.Warning().Render(ledgerTruncate("~ "+selectedWarning, width)))
+	}
+	lines = append(lines, render.Palette.Subtle().Render(ledgerTruncate("↑/↓ select  ·  enter open  ·  esc collapse", width)))
+	return strings.Join(lines, "\n")
+}
+
+func rowByKey(rows []Row, key string) (Row, bool) {
+	for _, row := range rows {
+		if row.Key == key {
+			return row, true
+		}
+	}
+	return Row{}, false
+}
+
+func expandedSessionHeader(render theme.Context, width int) string {
+	if width < 72 {
+		return fitLine(render.Palette.Header().Render("  TIME  PROVIDER  TOKENS      COST  PROJECT / FIRST PROMPT"), width)
+	}
+	timeWidth, providerWidth, projectWidth, tokensWidth, costWidth := expandedSessionColumns(width)
+	return strings.Join([]string{
+		headerCell(render, "TIME", timeWidth+2, false),
+		headerCell(render, "PROVIDER", providerWidth, false),
+		headerCell(render, "PROJECT", projectWidth, false),
+		headerCell(render, "TOKENS", tokensWidth, true),
+		headerCell(render, "COST", costWidth, true),
+		render.Palette.Header().Render("FIRST PROMPT"),
+	}, "  ")
+}
+
+func expandedSessionRow(render theme.Context, session LedgerSession, selected bool, width int, location *time.Location) []string {
+	marker := "  "
+	if selected {
+		marker = render.Palette.Emphasis().Bold(true).Render("› ")
+	}
+	clock := sessionClock(session.ActivityTimestamp, session.FirstTimestamp, session.LastTimestamp, location)
+	provider := string(session.Provider)
+	project := cleanInline(session.Project)
+	preview := cleanInline(session.Preview)
+	cost := formatMoney(session.Cost, session.PricedTokens, false, session.UnpricedTokens > 0 || session.AttributionStatus == "incomplete")
+	if width < 72 {
+		primary := marker + padRight(clock, 5) + "  " + padRight(provider, 8) + "  " + padLeft(commaInteger(session.Tokens), 9) + "  " + padLeft(cost, 9)
+		secondary := "    " + project + "  ·  " + preview
+		return []string{fitLine(primary, width), fitLine(ledgerTruncate(secondary, width), width)}
+	}
+	timeWidth, providerWidth, projectWidth, tokensWidth, costWidth := expandedSessionColumns(width)
+	promptWidth := ledgerMax(1, width-(timeWidth+2)-providerWidth-projectWidth-tokensWidth-costWidth-10)
+	line := marker + padRight(clock, timeWidth) + "  " +
+		render.Palette.Provider(provider, 0).Render(padRight(provider, providerWidth)) + "  " +
+		padRight(project, projectWidth) + "  " + padLeft(commaInteger(session.Tokens), tokensWidth) + "  " +
+		padLeft(cost, costWidth) + "  " + ledgerTruncate(preview, promptWidth)
+	return []string{fitLine(line, width)}
+}
+
+func expandedSessionColumns(width int) (int, int, int, int, int) {
+	return 5, 8, ledgerMin(22, ledgerMax(12, width/5)), 10, 9
+}
+
+func sessionClock(activity string, primary, fallback *string, location *time.Location) string {
+	if activity != "" {
+		primary = &activity
+	}
+	value := primary
+	if value == nil || *value == "" {
+		value = fallback
+	}
+	if value == nil || *value == "" {
+		return "??:??"
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, *value)
+	if err != nil {
+		return "??:??"
+	}
+	if location != nil {
+		parsed = parsed.In(location)
+	}
+	return parsed.Format("15:04")
 }
 
 func stateAnchor(state State) string {

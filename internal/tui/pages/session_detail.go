@@ -28,6 +28,14 @@ func RenderSessionDetail(render theme.Context, session historystore.CatalogSessi
 	})
 }
 
+// RenderLedgerSessionDetail reuses the shared detail view while naming the
+// ledger as the destination for the back action.
+func RenderLedgerSessionDetail(render theme.Context, session historystore.CatalogSession, width, height int, location *time.Location, offset int) string {
+	return renderSessionDetail(render, session, width, height, location, offset, sessionDetailRenderOptions{
+		footer: "esc back to ledger",
+	})
+}
+
 // RenderHistorySearchSessionDetail reuses the shared session-detail viewport
 // and metadata layout while adding the prompt list returned by a search.
 func RenderHistorySearchSessionDetail(render theme.Context, detail SessionDetail, width, height, offset int, notices []string) string {
@@ -45,6 +53,12 @@ func HistorySearchSessionDetailMaxOffset(render theme.Context, detail SessionDet
 // to the same wrapped content that the user sees.
 func SessionDetailMaxOffset(render theme.Context, session historystore.CatalogSession, width, height int, location *time.Location) int {
 	return max(0, len(sessionDetailLines(render, session, width, location, sessionDetailRenderOptions{footer: "esc back to sessions"}))-max(1, height))
+}
+
+// LedgerSessionDetailMaxOffset reports the final scroll position for the
+// ledger-owned detail view.
+func LedgerSessionDetailMaxOffset(render theme.Context, session historystore.CatalogSession, width, height int, location *time.Location) int {
+	return max(0, len(sessionDetailLines(render, session, width, location, sessionDetailRenderOptions{footer: "esc back to ledger"}))-max(1, height))
 }
 
 func renderSessionDetail(render theme.Context, session historystore.CatalogSession, width, height int, location *time.Location, offset int, options sessionDetailRenderOptions) string {

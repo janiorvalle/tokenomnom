@@ -17,6 +17,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
@@ -332,6 +333,44 @@ func TestLoadDashboardHistoryMissingIndexShowsNoFalseWarning(t *testing.T) {
 	data := loadDashboardHistory(filepath.Join(t.TempDir(), historystore.DatabaseName), tui.Request{}, time.UTC)
 	if data.IndexAvailable || data.Warning != "" || len(data.Sessions) != 0 {
 		t.Fatalf("missing history index = %+v", data)
+	}
+}
+
+func TestLoadDashboardLedgerSessionsPricesSelectedDay(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	fixture := strings.Join([]string{
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"ledger-cost","thread_source":"user","cwd":"/repo"}}`,
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}`,
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100000,"cached_input_tokens":20000,"output_tokens":30000,"reasoning_output_tokens":4000,"total_tokens":130000},"last_token_usage":{"input_tokens":100000,"cached_input_tokens":20000,"output_tokens":30000,"reasoning_output_tokens":4000,"total_tokens":130000}}}}`,
+		`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"find the costly session"}}`,
+		`{"timestamp":"2026-07-21T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200000,"cached_input_tokens":40000,"output_tokens":60000,"reasoning_output_tokens":8000,"total_tokens":260000},"last_token_usage":{"input_tokens":100000,"cached_input_tokens":20000,"output_tokens":30000,"reasoning_output_tokens":4000,"total_tokens":130000}}}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "ledger-cost.jsonl"), fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	request := tui.Request{Provider: tui.CodexProvider, Ledger: tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07", ExpandedDay: "2026-07-20"}}
+	data := loadDashboardLedgerSessions(NewRootCommand(), filepath.Join(stateDir, historystore.DatabaseName), tuipages.Data{}, request, time.UTC, codexDir, claudeDir)
+	if !data.SessionIndexAvailable || data.SessionDay != "2026-07-20" || len(data.Sessions) != 1 {
+		t.Fatalf("ledger sessions = %+v", data)
+	}
+	session := data.Sessions[0]
+	if session.SessionID == "" || session.Provider != history.ProviderCodex || session.Project != "repo" || session.Preview != "find the costly session" || session.Tokens != 130000 || session.Cost != pricing.Money(563_500_000) || session.PricedTokens != 130000 || session.ActivityTimestamp != "2026-07-20T12:00:02Z" {
+		t.Fatalf("priced ledger session = %+v", session)
+	}
+}
+
+func TestLoadDashboardLedgerSessionsMissingIndexKeepsDayAndHintState(t *testing.T) {
+	request := tui.Request{Ledger: tuipages.State{ExpandedDay: "2026-07-20"}}
+	data := loadDashboardLedgerSessions(NewRootCommand(), filepath.Join(t.TempDir(), historystore.DatabaseName), tuipages.Data{}, request, time.UTC, "", "")
+	if data.SessionDay != "2026-07-20" || data.SessionIndexAvailable || data.SessionWarning != "" {
+		t.Fatalf("missing ledger history = %+v", data)
 	}
 }
 

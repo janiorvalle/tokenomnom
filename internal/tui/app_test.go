@@ -700,6 +700,60 @@ func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
 	}
 }
 
+func TestLedgerPageExpandsDayNavigatesSessionsAndReturnsFromDetail(t *testing.T) {
+	model := loadedTestModel()
+	model.router.Select(LedgerPageID)
+	first := "2026-07-14T09:30:00Z"
+	day := tuipages.Row{Key: "2026-07-14", Label: "Jul 14", Codex: tuipages.ProviderTotals{Tokens: 300, PricedTokens: 300}}
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07", Cursor: -1}
+	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{day}, Total: day}
+
+	updated, command := model.Update(keyMsg("l"))
+	model = updated.(Model)
+	if command == nil || model.request.Ledger.ExpandedDay != day.Key {
+		t.Fatalf("ledger expansion = %+v command=%v", model.request.Ledger, command != nil)
+	}
+	model.snapshot.Ledger.SessionDay = day.Key
+	model.snapshot.Ledger.SessionIndexAvailable = true
+	model.snapshot.Ledger.Sessions = []tuipages.LedgerSession{
+		{CatalogSession: historystore.CatalogSession{SessionID: "ses_first", Provider: history.ProviderCodex, Project: "alpha", Preview: strings.Repeat("first prompt ", 40), FirstTimestamp: &first}},
+		{CatalogSession: historystore.CatalogSession{SessionID: "ses_second", Provider: history.ProviderClaude, Project: "beta", Preview: strings.Repeat("second prompt ", 40), FirstTimestamp: &first}},
+	}
+	model = updateKeyForTest(t, model, "down")
+	if model.request.Ledger.SessionCursor != 1 {
+		t.Fatalf("ledger session cursor = %+v", model.request.Ledger)
+	}
+	model = updateKeyForTest(t, model, "enter")
+	if model.request.Ledger.DetailID != "ses_second" || !strings.Contains(model.View(), "SESSION DETAIL") {
+		t.Fatalf("ledger session detail = %+v\n%s", model.request.Ledger, model.View())
+	}
+	model = updateKeyForTest(t, model, "end")
+	if model.request.Ledger.DetailOffset == 0 {
+		t.Fatalf("ledger detail did not scroll: %+v", model.request.Ledger)
+	}
+	model = updateKeyForTest(t, model, "esc")
+	if model.request.Ledger.DetailID != "" || model.request.Ledger.ExpandedDay == "" {
+		t.Fatalf("ledger detail back = %+v", model.request.Ledger)
+	}
+	model = updateKeyForTest(t, model, "esc")
+	if model.request.Ledger.ExpandedDay != "" {
+		t.Fatalf("ledger collapse = %+v", model.request.Ledger)
+	}
+}
+
+func TestProviderChangeRestartsExpandedLedgerSessionPaging(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Ledger = tuipages.State{
+		Zoom: tuipages.ZoomDay, ExpandedDay: "2026-07-14", SessionCursor: 7,
+		SessionPageCursor: "codex-page-two", SessionCursorStack: "\x00", DetailID: "ses_codex", DetailOffset: 3,
+	}
+	updated, command := model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if command == nil || model.request.Provider != CodexProvider || model.request.Ledger.ExpandedDay != "2026-07-14" || model.request.Ledger.SessionPageCursor != "" || model.request.Ledger.SessionCursorStack != "" || model.request.Ledger.DetailID != "" {
+		t.Fatalf("provider change retained incompatible ledger page state: %+v command=%v", model.request, command != nil)
+	}
+}
+
 func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
 	model := loadedTestModel()
 	model.request.Width, model.request.Height = 60, 18

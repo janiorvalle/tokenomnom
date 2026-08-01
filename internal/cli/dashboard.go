@@ -186,6 +186,9 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
 		})
+		if request.Ledger.ExpandedDay != "" {
+			snapshot.Ledger = loadDashboardLedgerSessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location, codexDir, claudeDir)
+		}
 		warnings := []string{}
 		if backupWarning != "" {
 			warnings = append(warnings, backupWarning)
@@ -249,6 +252,83 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
 		Warning: strings.Join(uniqueStrings(page.Warnings), "; "), Location: location,
 	}
+}
+
+func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.Data, request tui.Request, location *time.Location, codexDir, claudeDir string) tuipages.Data {
+	day := request.Ledger.ExpandedDay
+	data.SessionDay = day
+	data.SessionPageCursor = request.Ledger.SessionPageCursor
+	data.Location = location
+	info, err := historystore.Inspect(path)
+	if err != nil {
+		data.SessionWarning = "History index unavailable; run tokenomnom history index to rebuild it."
+		data.SessionDataUnavailable = true
+		return data
+	}
+	if !info.Exists {
+		return data
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		data.SessionWarning = "History index unavailable; run tokenomnom history index to rebuild it."
+		data.SessionDataUnavailable = true
+		return data
+	}
+	defer database.Close()
+	data.SessionIndexAvailable = true
+
+	if location == nil {
+		location = time.Local
+	}
+	start, err := time.ParseInLocation("2006-01-02", day, location)
+	if err != nil {
+		data.SessionWarning = fmt.Sprintf("The selected ledger day %q is invalid; collapse the row and select another day.", day)
+		data.SessionDataUnavailable = true
+		return data
+	}
+	end := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
+	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider), Since: &start, Until: &end,
+		Source: historystore.CatalogSourceAny, Limit: historystore.MaxSessionCostPageSize, Cursor: request.Ledger.SessionPageCursor,
+	}})
+	if err != nil {
+		data.SessionWarning = "Indexed sessions for this day could not be read; press R to retry or run tokenomnom history index."
+		data.SessionDataUnavailable = true
+		return data
+	}
+	table, err := loadPricingTable()
+	if err != nil {
+		data.SessionWarning = "Session costs could not be priced; check the pricing override and press R to retry."
+		data.SessionDataUnavailable = true
+		return data
+	}
+
+	data.SessionsHaveMore = page.Page.HasMore
+	data.SessionsNextCursor = page.Page.NextCursor
+	data.Sessions = make([]tuipages.LedgerSession, 0, len(page.Sessions))
+	unavailable := 0
+	for _, session := range page.Sessions {
+		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
+		if priceErr != nil {
+			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
+		}
+		if row.AttributionStatus == "unavailable" {
+			unavailable++
+		}
+		data.Sessions = append(data.Sessions, tuipages.LedgerSession{
+			CatalogSession: row.CatalogSession,
+			Tokens:         row.Tokens.TotalTokens, Cost: row.Tokens.cost,
+			PricedTokens: row.Tokens.PricedTokens, UnpricedTokens: row.Tokens.UnpricedTokens,
+			AttributionStatus: row.AttributionStatus, ActivityTimestamp: row.attributionTimestamp,
+			Warning: strings.Join(uniqueStrings(row.Warnings), "; "),
+		})
+	}
+	warnings := uniqueStrings(page.Warnings)
+	if unavailable > 0 {
+		warnings = append(warnings, fmt.Sprintf("Cost attribution is unavailable for %d of %d sessions.", unavailable, len(data.Sessions)))
+	}
+	data.SessionWarning = strings.Join(warnings, "; ")
+	return data
 }
 
 func historyProvider(provider tui.Provider) history.Provider {
@@ -536,6 +616,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	snapshot.Ledger.Location = location
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {

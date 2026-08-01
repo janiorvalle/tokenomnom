@@ -233,12 +233,13 @@ type historySessionCostBounds struct {
 
 type historySessionCostRow struct {
 	historystore.CatalogSession
-	Tokens            historySessionCostTokens  `json:"tokens"`
-	Models            []historySessionCostModel `json:"models"`
-	AttributionStatus string                    `json:"attribution_status"`
-	TokenSource       string                    `json:"token_source"`
-	RawLocationKind   string                    `json:"raw_location_kind,omitempty"`
-	Warnings          []string                  `json:"warnings"`
+	Tokens               historySessionCostTokens  `json:"tokens"`
+	Models               []historySessionCostModel `json:"models"`
+	AttributionStatus    string                    `json:"attribution_status"`
+	TokenSource          string                    `json:"token_source"`
+	RawLocationKind      string                    `json:"raw_location_kind,omitempty"`
+	Warnings             []string                  `json:"warnings"`
+	attributionTimestamp string
 }
 
 type historySessionCostModel struct {
@@ -262,9 +263,20 @@ type historySessionCostTokens struct {
 	PricedTokens                 int64   `json:"priced_tokens"`
 	UnpricedTokens               int64   `json:"unpriced_tokens"`
 	UnknownModelTokens           int64   `json:"unknown_model_tokens"`
+	cost                         pricinglib.Money
 }
 
 func priceHistorySession(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string) (historySessionCostRow, error) {
+	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, func(ingest.UsageEvent) bool { return true })
+}
+
+func priceHistorySessionForWindow(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, since, until time.Time) (historySessionCostRow, error) {
+	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, func(event ingest.UsageEvent) bool {
+		return !event.Timestamp.IsZero() && !event.Timestamp.Before(since) && !event.Timestamp.After(until)
+	})
+}
+
+func priceHistorySessionMatching(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, include func(ingest.UsageEvent) bool) (historySessionCostRow, error) {
 	row := historySessionCostRow{
 		CatalogSession: session.CatalogSession,
 		Models:         []historySessionCostModel{},
@@ -303,6 +315,8 @@ func priceHistorySession(cmd *cobra.Command, session historystore.SessionCostSes
 		row.Warnings = append(row.Warnings, "indexed transcript bytes could not be read or parsed; restore the source or vault snapshot and rerun `tokenomnom history index`")
 		return row, nil
 	}
+	events = matchingHistoryUsageEvents(events, include)
+	row.attributionTimestamp = firstHistoryUsageTimestamp(events)
 	row.RawLocationKind = selectedKind
 	if fallbackUsed {
 		row.Warnings = append(row.Warnings, "the preferred exact transcript location was unavailable; cost uses a fallback indexed location and may omit newer usage; restore the source and rerun `tokenomnom history index`")
@@ -338,6 +352,30 @@ func priceHistorySession(cmd *cobra.Command, session historystore.SessionCostSes
 		row.Warnings = append(row.Warnings, fmt.Sprintf("%d tokens came from an unknown model; re-index after model metadata is available", row.Tokens.UnknownModelTokens))
 	}
 	return row, nil
+}
+
+func matchingHistoryUsageEvents(events []ingest.UsageEvent, include func(ingest.UsageEvent) bool) []ingest.UsageEvent {
+	selected := make([]ingest.UsageEvent, 0, len(events))
+	for _, event := range events {
+		if include(event) {
+			selected = append(selected, event)
+		}
+	}
+	return selected
+}
+
+func firstHistoryUsageTimestamp(events []ingest.UsageEvent) string {
+	var first time.Time
+	for _, event := range events {
+		if event.Timestamp.IsZero() || !first.IsZero() && !event.Timestamp.Before(first) {
+			continue
+		}
+		first = event.Timestamp
+	}
+	if first.IsZero() {
+		return ""
+	}
+	return first.Format(time.RFC3339Nano)
 }
 
 func parseHistoryUsageFile(path string, provider history.Provider, candidateKind string) ([]ingest.UsageEvent, error) {
@@ -466,6 +504,7 @@ func historySessionCostTokenTotals(rows, unknownDateRows []store.Usage, breakdow
 		addTokens(row)
 	}
 	totals.CostUSD = moneyUSD(breakdown.Total)
+	totals.cost = breakdown.Total
 	totals.PricedTokens = breakdown.PricedTokens
 	totals.UnpricedTokens = breakdown.UnpricedTokens + historyUsageTokenCount(unknownDateRows)
 	return totals
