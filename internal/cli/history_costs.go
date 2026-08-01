@@ -267,16 +267,16 @@ type historySessionCostTokens struct {
 }
 
 func priceHistorySession(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string) (historySessionCostRow, error) {
-	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, func(ingest.UsageEvent) bool { return true })
+	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, allHistoryUsageEvents)
 }
 
 func priceHistorySessionForWindow(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, since, until time.Time) (historySessionCostRow, error) {
-	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, func(event ingest.UsageEvent) bool {
-		return !event.Timestamp.IsZero() && !event.Timestamp.Before(since) && !event.Timestamp.After(until)
+	return priceHistorySessionMatching(cmd, session, table, codexDir, claudeDir, func(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {
+		return historyUsageEventsForWindow(events, since, until)
 	})
 }
 
-func priceHistorySessionMatching(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, include func(ingest.UsageEvent) bool) (historySessionCostRow, error) {
+func priceHistorySessionMatching(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, selectEvents func([]ingest.UsageEvent) ([]ingest.UsageEvent, []string)) (historySessionCostRow, error) {
 	row := historySessionCostRow{
 		CatalogSession: session.CatalogSession,
 		Models:         []historySessionCostModel{},
@@ -315,7 +315,8 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 		row.Warnings = append(row.Warnings, "indexed transcript bytes could not be read or parsed; restore the source or vault snapshot and rerun `tokenomnom history index`")
 		return row, nil
 	}
-	events = matchingHistoryUsageEvents(events, include)
+	events, selectionWarnings := selectEvents(events)
+	row.Warnings = append(row.Warnings, selectionWarnings...)
 	row.attributionTimestamp = firstHistoryUsageTimestamp(events)
 	row.RawLocationKind = selectedKind
 	if fallbackUsed {
@@ -354,14 +355,32 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 	return row, nil
 }
 
-func matchingHistoryUsageEvents(events []ingest.UsageEvent, include func(ingest.UsageEvent) bool) []ingest.UsageEvent {
+func allHistoryUsageEvents(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {
+	return events, nil
+}
+
+func historyUsageEventsForWindow(events []ingest.UsageEvent, since, until time.Time) ([]ingest.UsageEvent, []string) {
 	selected := make([]ingest.UsageEvent, 0, len(events))
+	missingTimestampRecords := 0
+	var missingTimestampTokens int64
 	for _, event := range events {
-		if include(event) {
+		if event.Timestamp.IsZero() {
+			missingTimestampRecords++
+			missingTimestampTokens += event.Input + event.Output
+			continue
+		}
+		if !event.Timestamp.Before(since) && !event.Timestamp.After(until) {
 			selected = append(selected, event)
 		}
 	}
-	return selected
+	if missingTimestampRecords == 0 {
+		return selected, nil
+	}
+	recordLabel := "records"
+	if missingTimestampRecords == 1 {
+		recordLabel = "record"
+	}
+	return selected, []string{fmt.Sprintf("%d token-usage %s had no timestamp; %d tokens are excluded from day-scoped totals", missingTimestampRecords, recordLabel, missingTimestampTokens)}
 }
 
 func firstHistoryUsageTimestamp(events []ingest.UsageEvent) string {

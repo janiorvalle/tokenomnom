@@ -289,7 +289,7 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	end := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
 	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: historystore.CatalogQuery{
 		Provider: historyProvider(request.Provider), Since: &start, Until: &end,
-		Source: historystore.CatalogSourceAny, Limit: historystore.MaxSessionCostPageSize, Cursor: request.Ledger.SessionPageCursor,
+		Source: historystore.CatalogSourceAny, Limit: historystore.DefaultSessionCostPageSize, Cursor: request.Ledger.SessionPageCursor,
 	}})
 	if err != nil {
 		data.SessionWarning = "Indexed sessions for this day could not be read; press R to retry or run tokenomnom history index."
