@@ -33,9 +33,12 @@ type KeyBinding struct {
 
 var keyRegistry = [...]KeyBinding{
 	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
-	{Display: "← / →", Keys: []string{"left", "right"}, Description: "pan active timeline", Action: keyActionPageCommand},
-	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to range edge", Action: keyActionPageCommand},
-	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "scroll models", Action: keyActionPageCommand},
+	{Display: "← / →", Keys: []string{"left", "right"}, Description: "move in active page", Action: keyActionPageCommand},
+	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to page edge", Action: keyActionPageCommand},
+	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "move in active page", Action: keyActionPageCommand},
+	{Display: "enter", Keys: []string{"enter"}, Description: "open selected item", Action: keyActionPageCommand},
+	{Display: "esc", Keys: []string{"esc"}, Description: "back to list", Action: keyActionPageCommand},
+	{Display: "f", Keys: []string{"f"}, Description: "cycle project filter", Action: keyActionPageCommand},
 	{Display: "s", Keys: []string{"s"}, Description: "sort models", Action: keyActionPageCommand},
 	{Display: "y", Keys: []string{"y"}, Description: "calendar-year heatmap", Action: keyActionPageCommand},
 	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", FooterKey: "p", Footer: "provider", Action: keyActionProvider},

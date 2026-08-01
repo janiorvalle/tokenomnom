@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/janiorvalle/tokenomnom/internal/theme"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 const (
@@ -59,17 +60,25 @@ func (r Range) String() string {
 
 // Request describes the data and render state needed for one snapshot.
 type Request struct {
-	Provider      Provider
-	Range         Range
-	Width         int
-	Height        int
-	DailyOffset   int
-	MonthlyOffset int
-	ModelOffset   int
-	ModelSort     int
-	HeatmapOffset int
-	HeatmapYear   bool
-	Sync          bool
+	Provider             Provider
+	Range                Range
+	Width                int
+	Height               int
+	DailyOffset          int
+	MonthlyOffset        int
+	ModelOffset          int
+	ModelSort            int
+	HeatmapOffset        int
+	HeatmapYear          bool
+	SessionProject       string
+	SessionProjectActive bool
+	SessionCursor        string
+	SessionCursorStack   string
+	SessionOffset        int
+	SessionReturnToEnd   bool
+	SessionDetailID      string
+	SessionDetailOffset  int
+	Sync                 bool
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -96,6 +105,7 @@ type Summary struct {
 type Snapshot struct {
 	Summary      Summary
 	Views        [4]string
+	Sessions     tuipages.SessionPageData
 	StatusBar    StatusBar
 	Empty        bool
 	FilesScanned int
@@ -363,12 +373,15 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
+		m.resetSessionNavigation()
 		return m, m.loadCmd(m.request)
 	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
+		m.resetSessionNavigation()
 		return m, m.loadCmd(m.request)
 	case keyActionRefresh:
 		m.syncing = true
+		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
 		return m, m.loadCmd(request)
@@ -377,7 +390,17 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if page == nil {
 			return m, nil
 		}
-		request, changed := page.Update(m.request, value)
+		context := PageContext{
+			Render: m.render, Snapshot: m.snapshot, Request: m.request,
+			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
+		}
+		var request Request
+		var changed bool
+		if contextual, ok := page.(contextualPage); ok {
+			request, changed = contextual.UpdateContext(context, value)
+		} else {
+			request, changed = page.Update(m.request, value)
+		}
 		if !changed {
 			return m, nil
 		}
@@ -405,6 +428,17 @@ func (m *Model) navigatePages(key string) bool {
 
 func (m Model) activePage() Page {
 	return m.router.ActivePage()
+}
+
+func (m *Model) resetSessionNavigation() {
+	m.request.SessionProject = ""
+	m.request.SessionProjectActive = false
+	m.request.SessionCursor = ""
+	m.request.SessionCursorStack = ""
+	m.request.SessionOffset = 0
+	m.request.SessionReturnToEnd = false
+	m.request.SessionDetailID = ""
+	m.request.SessionDetailOffset = 0
 }
 
 func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {
@@ -515,7 +549,10 @@ func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
 func (m Model) contentView(layout cockpitLayout) string {
 	body := ""
 	if page := m.activePage(); page != nil {
-		body = page.View(PageContext{Render: m.render, Snapshot: m.snapshot, Request: m.request})
+		body = page.View(PageContext{
+			Render: m.render, Snapshot: m.snapshot, Request: m.request,
+			Width: layout.paneWidth, Height: layout.bodyHeight,
+		})
 	}
 	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
 	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)

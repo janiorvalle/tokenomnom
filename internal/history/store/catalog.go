@@ -37,6 +37,7 @@ type CatalogQuery struct {
 	CWD        string
 	Repo       string
 	Project    string
+	ProjectSet bool
 	Branch     string
 	Source     CatalogSource
 	ThreadKind string
@@ -148,6 +149,7 @@ type catalogCursor struct {
 	CWD        string        `json:"cwd"`
 	Repo       string        `json:"repo"`
 	Project    string        `json:"project"`
+	ProjectSet bool          `json:"project_set"`
 	Branch     string        `json:"branch"`
 	Source     CatalogSource `json:"source"`
 	ThreadKind string        `json:"thread_kind"`
@@ -263,6 +265,43 @@ func (s *Store) ListCatalog(query CatalogQuery) (CatalogPage, error) {
 	return page, nil
 }
 
+// ListCatalogProjects returns distinct project keys for the population that
+// the catalog query describes. It avoids loading full catalog rows just to
+// populate a project filter in a client.
+func (s *Store) ListCatalogProjects(query CatalogQuery) ([]string, error) {
+	if query.Source == "" {
+		query.Source = CatalogSourceAny
+	}
+	if !validCatalogSource(query.Source) {
+		return nil, fmt.Errorf("invalid history source %q", query.Source)
+	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if !validThreadKindFilter(query.ThreadKind) {
+		return nil, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
+	where, args := catalogWhere(query, false)
+	rows, err := s.runner.Query(
+		"SELECT DISTINCT s.project FROM sessions s WHERE "+strings.Join(where, " AND ")+" ORDER BY LOWER(s.project),s.project",
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list history catalog projects: %w", err)
+	}
+	defer rows.Close()
+	projects := []string{}
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			return nil, fmt.Errorf("scan history catalog project: %w", err)
+		}
+		projects = append(projects, project)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read history catalog projects: %w", err)
+	}
+	return projects, nil
+}
+
 func scanCatalogSession(row rowScanner) (CatalogSession, error) {
 	var value CatalogSession
 	var native, first, last, cwd, repo, branch, threadEvidence, originator, sourceIDs, snapshotIDs, preview sql.NullString
@@ -332,7 +371,7 @@ func catalogWhere(query CatalogQuery, includeMetadataFilters bool) ([]string, []
 		where = append(where, "s.repository_name=?")
 		args = append(args, query.Repo)
 	}
-	if includeMetadataFilters && query.Project != "" {
+	if includeMetadataFilters && (query.Project != "" || query.ProjectSet) {
 		where = append(where, "s.project=?")
 		args = append(args, query.Project)
 	}
@@ -431,7 +470,7 @@ func boundPreview(value string) string {
 func newCatalogCursor(query CatalogQuery, generation int64, timestamp, sessionID string) catalogCursor {
 	return catalogCursor{
 		Version: 1, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until),
-		CWD: query.CWD, Repo: query.Repo, Project: query.Project, Branch: query.Branch, Source: query.Source, Limit: query.Limit,
+		CWD: query.CWD, Repo: query.Repo, Project: query.Project, ProjectSet: query.ProjectSet, Branch: query.Branch, Source: query.Source, Limit: query.Limit,
 		ThreadKind: normalizedThreadKindFilter(query.ThreadKind),
 		Unknown:    timestamp == "", Timestamp: timestamp, SessionID: sessionID,
 	}
@@ -445,7 +484,7 @@ func (cursor catalogCursor) matches(query CatalogQuery, generation int64) error 
 		return errors.New("history cursor is stale because the index generation changed")
 	}
 	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) ||
-		cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Project != query.Project || cursor.Branch != query.Branch || cursor.Source != query.Source ||
+		cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Project != query.Project || cursor.ProjectSet != query.ProjectSet || cursor.Branch != query.Branch || cursor.Source != query.Source ||
 		cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) {
 		return errors.New("history cursor does not match the requested filters")
 	}

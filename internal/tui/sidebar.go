@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 func (m Model) railView(layout cockpitLayout) string {
@@ -35,6 +37,12 @@ func (m Model) railView(layout cockpitLayout) string {
 		m.render.Palette.Subtle().Render("range"),
 		m.filterRangeView(),
 	)
+	if m.activePageID() == SessionsPageID {
+		rows = append(rows,
+			m.render.Palette.Subtle().Render("project"),
+			m.filterProjectView(),
+		)
+	}
 
 	innerWidth := max(1, layout.railWidth-1)
 	content := fitBlock(strings.Join(rows, "\n"), innerWidth, layout.bodyHeight)
@@ -69,4 +77,12 @@ func (m Model) filterRangeView() string {
 		style = m.render.Palette.Emphasis().Bold(true)
 	}
 	return style.Render("  " + value)
+}
+
+func (m Model) filterProjectView() string {
+	if !m.request.SessionProjectActive {
+		return m.render.Palette.Subtle().Render("  all")
+	}
+	value := tuipages.ProjectLabel(m.request.SessionProject, m.snapshot.Sessions.Projects)
+	return m.render.Palette.Emphasis().Bold(true).Render("  " + value)
 }

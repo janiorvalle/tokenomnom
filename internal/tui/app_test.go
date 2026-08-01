@@ -10,7 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/janiorvalle/tokenomnom/internal/history"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 func TestUpdateNavigationFiltersAndHelp(t *testing.T) {
@@ -161,20 +164,25 @@ func TestCockpitFillsTheWindow(t *testing.T) {
 func TestRouterRegistersSpendPagesAndHidesEmptySections(t *testing.T) {
 	router := newRouter()
 	groups := router.groups()
-	if len(groups) != 1 || groups[0].section != SpendSection {
-		t.Fatalf("default sidebar groups = %+v, want only spend", groups)
+	if len(groups) != 2 || groups[0].section != SpendSection || groups[1].section != HistorySection {
+		t.Fatalf("default sidebar groups = %+v, want spend and history", groups)
 	}
 	if len(groups[0].pages) != int(tabCount) {
 		t.Fatalf("spend pages = %d, want %d", len(groups[0].pages), tabCount)
 	}
+	if len(groups[1].pages) != 1 || groups[1].pages[0].ID() != SessionsPageID {
+		t.Fatalf("history pages = %+v, want sessions", groups[1].pages)
+	}
 
 	model := loadedTestModel()
 	view := model.View()
-	if !strings.Contains(view, "SPEND") {
-		t.Fatalf("sidebar omitted spend section:\n%s", view)
+	for _, section := range []string{"SPEND", "HISTORY"} {
+		if !strings.Contains(view, section) {
+			t.Fatalf("sidebar omitted %s section:\n%s", section, view)
+		}
 	}
 	for _, section := range []string{"HISTORY", "VAULT", "SYSTEM"} {
-		if strings.Contains(view, section) {
+		if section != "HISTORY" && strings.Contains(view, section) {
 			t.Errorf("empty section %q was rendered:\n%s", section, view)
 		}
 	}
@@ -185,11 +193,11 @@ func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
 	pages = append(pages, testPage{id: "history-search", section: HistorySection, title: "Search"})
 	router := newPageRouter(pages...)
 	groups := router.groups()
-	if len(groups) != 2 || groups[1].section != HistorySection || len(groups[1].pages) != 1 {
+	if len(groups) != 2 || groups[1].section != HistorySection || len(groups[1].pages) != 2 {
 		t.Fatalf("later section groups = %+v", groups)
 	}
-	if router.IndexOf("history-search") != int(tabCount) {
-		t.Fatalf("later page index = %d, want %d", router.IndexOf("history-search"), tabCount)
+	if router.IndexOf("history-search") != int(tabCount+1) {
+		t.Fatalf("later page index = %d, want %d", router.IndexOf("history-search"), tabCount+1)
 	}
 	if !router.Select("history-search") || router.ActivePage().Title() != "Search" {
 		t.Fatalf("router did not select later page: active=%v", router.ActivePage())
@@ -197,9 +205,9 @@ func TestRouterAddsLaterSectionsWithoutChangingModel(t *testing.T) {
 
 	model := loadedTestModel()
 	model.router = newPageRouter(pages...)
-	model = updateKeyForTest(t, model, "5")
+	model = updateKeyForTest(t, model, "6")
 	model = updateKeyForTest(t, model, "?")
-	if model.router.ActivePage().ID() != "history-search" || !strings.Contains(model.View(), "tab / shift+tab / 1-5") {
+	if model.router.ActivePage().ID() != "history-search" || !strings.Contains(model.View(), "tab / shift+tab / 1-6") {
 		t.Fatalf("numeric later-page navigation failed: active=%v\n%s", model.router.ActivePage(), model.View())
 	}
 }
@@ -249,6 +257,91 @@ func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
 	model = updateKeyForTest(t, model, "y")
 	if model.router.ActivePage().ID() != HeatmapPageID || !model.request.HeatmapYear {
 		t.Fatalf("heatmap page did not handle year key: page=%v request=%+v", model.router.ActivePage().ID(), model.request)
+	}
+}
+
+func TestSessionsPageSupportsFiltersSelectionAndDetail(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width, model.request.Height = 80, 18
+	model.snapshot.Sessions = testSessionPageData()
+	model.router.Select(SessionsPageID)
+	if !strings.Contains(model.View(), "SESSIONS") || !strings.Contains(model.View(), "FIRST PROMPT") {
+		t.Fatalf("sessions page did not render:\n%s", model.View())
+	}
+	model = updateKeyForTest(t, model, "down")
+	if model.request.SessionOffset != 1 {
+		t.Fatalf("session selection offset = %d", model.request.SessionOffset)
+	}
+	model = updateKeyForTest(t, model, "enter")
+	if model.request.SessionDetailID != "ses_second" || !strings.Contains(model.View(), "SESSION DETAIL") {
+		t.Fatalf("session detail did not open: request=%+v\n%s", model.request, model.View())
+	}
+	model = updateKeyForTest(t, model, "down")
+	if model.request.SessionDetailOffset == 0 || !strings.Contains(model.View(), "more") {
+		t.Fatalf("session detail did not scroll: request=%+v\n%s", model.request, model.View())
+	}
+	model = updateKeyForTest(t, model, "home")
+	if model.request.SessionDetailOffset != 0 {
+		t.Fatalf("session detail home offset = %d", model.request.SessionDetailOffset)
+	}
+	model = updateKeyForTest(t, model, "esc")
+	if model.request.SessionDetailID != "" || !strings.Contains(model.View(), "SESSIONS") {
+		t.Fatalf("session detail did not close: request=%+v\n%s", model.request, model.View())
+	}
+	model = updateKeyForTest(t, model, "f")
+	if model.request.SessionProject != "alpha" || !model.request.SessionProjectActive || model.request.SessionOffset != 0 || model.request.SessionCursor != "" {
+		t.Fatalf("project filter state = %+v", model.request)
+	}
+	model.request.SessionCursor = "stale-cursor"
+	model.request.SessionCursorStack = "\x00previous-cursor"
+	model.request.SessionDetailID = "ses_second"
+	model = updateKeyForTest(t, model, "R")
+	if model.request.SessionCursor != "" || model.request.SessionCursorStack != "" || model.request.SessionDetailID != "" || model.request.SessionProjectActive {
+		t.Fatalf("refresh did not reset session navigation: %+v", model.request)
+	}
+}
+
+func TestSessionsPageCanReturnToPreviousCursorPage(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.Sessions = testSessionPageData()
+	model.snapshot.Sessions.HasMore = true
+	model.snapshot.Sessions.NextCursor = "cursor-page-two"
+	model.router.Select(SessionsPageID)
+	model.request.SessionOffset = len(model.snapshot.Sessions.Sessions) - 1
+	model = updateKeyForTest(t, model, "down")
+	if model.request.SessionCursor != "cursor-page-two" || model.request.SessionCursorStack != "\x00" {
+		t.Fatalf("forward cursor state = %+v", model.request)
+	}
+	model.snapshot.Sessions = tuipages.SessionPageData{
+		IndexAvailable: true,
+		Sessions:       []historystore.CatalogSession{{SessionID: "ses_third", Provider: history.ProviderCodex, Project: "gamma"}},
+	}
+	model = updateKeyForTest(t, model, "up")
+	if model.request.SessionCursor != "" || model.request.SessionCursorStack != "" || !model.request.SessionReturnToEnd {
+		t.Fatalf("backward cursor state = %+v", model.request)
+	}
+}
+
+func TestSessionsProjectFilterResetsCursorHistory(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.Sessions = testSessionPageData()
+	model.snapshot.Sessions.Projects = []tuipages.ProjectOption{{Key: "alpha", Label: "alpha"}}
+	model.router.Select(SessionsPageID)
+	model.request.SessionCursor = "cursor-page-two"
+	model.request.SessionCursorStack = "\x00cursor-page-one"
+	model.request.SessionOffset = 3
+	model = updateKeyForTest(t, model, "f")
+	if model.request.SessionCursor != "" || model.request.SessionCursorStack != "" || model.request.SessionOffset != 0 {
+		t.Fatalf("project filter retained cursor history: %+v", model.request)
+	}
+}
+
+func TestSessionsPageShowsIndexHintWhenHistoryIsAbsent(t *testing.T) {
+	model := loadedTestModel()
+	model.router.Select(SessionsPageID)
+	view := model.View()
+	if !strings.Contains(view, "No history index is available.") || !strings.Contains(view, "tokenomnom history index") {
+		t.Fatalf("empty history hint missing:\n%s", view)
 	}
 }
 
@@ -503,8 +596,18 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 		message = tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		message = tea.KeyMsg{Type: tea.KeyRight}
+	case "up":
+		message = tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		message = tea.KeyMsg{Type: tea.KeyDown}
+	case "enter":
+		message = tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		message = tea.KeyMsg{Type: tea.KeyEsc}
+	case "home":
+		message = tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		message = tea.KeyMsg{Type: tea.KeyEnd}
 	default:
 		message = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
@@ -526,4 +629,15 @@ func (p testPage) View(PageContext) string {
 }
 func (p testPage) Update(request Request, _ string) (Request, bool) {
 	return request, false
+}
+
+func testSessionPageData() tuipages.SessionPageData {
+	return tuipages.SessionPageData{
+		IndexAvailable: true,
+		Projects:       []tuipages.ProjectOption{{Key: "alpha", Label: "alpha"}, {Key: "beta", Label: "beta"}},
+		Sessions: []historystore.CatalogSession{
+			{SessionID: "ses_first", Provider: history.ProviderCodex, Project: "beta", Preview: "first prompt", LogicalPromptCount: 2, OccurrenceCount: 3},
+			{SessionID: "ses_second", Provider: history.ProviderClaude, Project: "alpha", Preview: "second prompt", LogicalPromptCount: 4, OccurrenceCount: 6},
+		},
+	}
 }
