@@ -131,25 +131,16 @@ func (m Model) commandOutputView() string {
 	background := lipgloss.NewStyle().Faint(true).Render(m.baseView())
 	width := min(84, max(46, layout.width-8))
 	contentWidth := max(1, width-6)
-	lines := strings.Split(strings.TrimSpace(m.commandOutput), "\n")
-	maxLines := max(1, layout.height-8)
-	truncated := len(lines) > maxLines
-	if truncated {
-		lines = lines[:maxLines]
-	}
-	for index, line := range lines {
-		lines[index] = truncate(strings.ReplaceAll(line, "\t", "  "), contentWidth)
-	}
-	if truncated && len(lines) > 0 {
-		lines[len(lines)-1] = truncate(lines[len(lines)-1], max(1, contentWidth-1)) + "…"
-	}
+	lines, maxLines, maxOffset := commandOutputViewport(m.commandOutput, contentWidth, layout.height, m.commandOutputFailure, m.commandOutputHint)
+	offset := min(max(0, m.commandOutputOffset), maxOffset)
+	end := min(len(lines), offset+maxLines)
 	title := m.render.Palette.Header().Render("COMMAND RESULT")
-	footer := m.render.Palette.Subtle().Render("Press any key to return")
+	footer := m.render.Palette.Subtle().Render("up/down scroll; any key returns")
 	if m.commandOutputFailure {
 		title = m.render.Palette.Warning().Render("COMMAND FAILED")
 		footer = m.render.Palette.Warning().Render(wrapText(m.commandOutputHint, contentWidth)) + "\n" + footer
 	}
-	body := title + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footer
+	body := title + "\n\n" + strings.Join(lines[offset:end], "\n") + "\n\n" + footer
 	modal := m.render.Palette.Surface().
 		Width(width-2).
 		Border(lipgloss.RoundedBorder()).
@@ -157,6 +148,46 @@ func (m Model) commandOutputView() string {
 		Padding(0, 2).
 		Render(body)
 	return overlayBlock(background, modal, layout.width, layout.height)
+}
+
+func commandOutputViewport(output string, width, height int, failure bool, hint string) ([]string, int, int) {
+	lines := commandOutputLines(output, width)
+	footerLines := 1
+	if failure {
+		footerLines += 1 + strings.Count(wrapText(hint, width), "\n")
+	}
+	maxLines := max(1, height-7-footerLines)
+	maxOffset := max(0, len(lines)-maxLines)
+	return lines, maxLines, maxOffset
+}
+
+func commandOutputLines(output string, width int) []string {
+	rawLines := strings.Split(strings.TrimSpace(output), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, rawLine := range rawLines {
+		line := strings.ReplaceAll(rawLine, "\t", "  ")
+		if line == "" {
+			lines = append(lines, "")
+			continue
+		}
+		for line != "" {
+			if lipgloss.Width(line) <= width {
+				lines = append(lines, line)
+				break
+			}
+			chunk, rest := splitTextWidth(line, width)
+			if chunk == "" {
+				lines = append(lines, line)
+				break
+			}
+			lines = append(lines, chunk)
+			line = rest
+		}
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
 }
 
 func (m Model) paletteModal(layout cockpitLayout) string {

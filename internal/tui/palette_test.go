@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,6 +56,27 @@ func TestCommandPaletteOpensFiltersAndNavigates(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteLoadsAsyncPages(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := loadedTestModel()
+	model.router = newPageRouter(append(model.router.Pages(), page)...)
+	model = openPaletteForTest(t, model)
+	for _, runeValue := range []rune("search") {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{runeValue}})
+		model = updated.(Model)
+	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if command == nil || model.activePage().ID() != page.id {
+		t.Fatalf("async palette page selection page=%v command=%v", model.activePage(), command != nil)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if page.applied != "loaded" {
+		t.Fatalf("async palette page was not applied: %q", page.applied)
+	}
+}
+
 func TestCommandPaletteRunsActionOffUpdateLoop(t *testing.T) {
 	called := false
 	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
@@ -86,6 +108,47 @@ func TestCommandPaletteRunsActionOffUpdateLoop(t *testing.T) {
 	model = updated.(Model)
 	if model.commandOutput != "" {
 		t.Fatal("command result did not dismiss")
+	}
+}
+
+func TestCommandPaletteScrollsLongOutput(t *testing.T) {
+	outputLines := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		outputLines = append(outputLines, fmt.Sprintf("result line %02d", index))
+	}
+	model := loadedTestModelWithCommands(CommandRegistry{Actions: []CommandAction{{
+		ID: CommandVaultVerifyID,
+		Run: func() (CommandResult, error) {
+			return CommandResult{Output: strings.Join(outputLines, "\n")}, nil
+		},
+	}}})
+	model = openPaletteForTest(t, model)
+	for _, runeValue := range []rune("vault") {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{runeValue}})
+		model = updated.(Model)
+	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.commandOutputOffset != 0 || !strings.Contains(model.View(), "result line 01") {
+		t.Fatalf("long output did not start at the top: offset=%d\n%s", model.commandOutputOffset, model.View())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	model = updated.(Model)
+	if model.commandOutputOffset == 0 || !strings.Contains(model.View(), "result line 40") || strings.Contains(model.View(), "result line 01") {
+		t.Fatalf("long output did not scroll to the end: offset=%d\n%s", model.commandOutputOffset, model.View())
+	}
+	endOffset := model.commandOutputOffset
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(Model)
+	if model.commandOutputOffset != endOffset-1 {
+		t.Fatalf("up did not scroll one line: got=%d want=%d", model.commandOutputOffset, endOffset-1)
+	}
+	updated, _ = model.Update(keyMsg("x"))
+	model = updated.(Model)
+	if model.commandOutput != "" || model.commandOutputOffset != 0 {
+		t.Fatalf("long output did not dismiss cleanly: output=%q offset=%d", model.commandOutput, model.commandOutputOffset)
 	}
 }
 
@@ -217,7 +280,7 @@ func TestCommandPaletteReloadsAfterBusyResize(t *testing.T) {
 		completion tea.Msg
 	}{
 		{name: "command", busy: true, completion: commandFinishedMsg{command: paletteCommand{title: "Vault verify"}}},
-		{name: "sync", syncing: true, completion: loadedMsg{request: Request{Sync: true}, snapshot: Snapshot{}}},
+		{name: "sync", syncing: true, completion: loadedMsg{request: Request{Width: 120, Height: 35, Sync: true}, snapshot: Snapshot{}}},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			var got Request
@@ -233,7 +296,13 @@ func TestCommandPaletteReloadsAfterBusyResize(t *testing.T) {
 			if command != nil || !model.pendingResize {
 				t.Fatalf("resize was not deferred during %s: command=%v pending=%v", state.name, command != nil, model.pendingResize)
 			}
-			updated, command = model.Update(state.completion)
+			completion := state.completion
+			if loaded, ok := completion.(loadedMsg); ok {
+				loaded.request = model.request
+				loaded.request.Sync = true
+				completion = loaded
+			}
+			updated, command = model.Update(completion)
 			model = updated.(Model)
 			if command == nil || model.pendingResize {
 				t.Fatalf("resize did not resume after %s: command=%v pending=%v", state.name, command != nil, model.pendingResize)

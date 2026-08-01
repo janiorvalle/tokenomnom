@@ -589,7 +589,7 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
 	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	updated, command := model.Update(keyMsg("6"))
 	model = updated.(Model)
 	if model.activePage().ID() != page.id || command == nil {
@@ -660,7 +660,7 @@ func TestPageOnlyLoadDoesNotInvalidateDashboardResponse(t *testing.T) {
 	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
 	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
 	model.request.Width, model.request.Height = 100, 30
-	model.loading, model.loaded = false, true
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
 	model.syncing = true
 	dashboardRequest := model.request
 	dashboardRequest.Sync = true
@@ -707,6 +707,8 @@ func TestEditingPageDoesNotLoseGlobalNavigation(t *testing.T) {
 	if page.lastKey != "" || model.request.Provider != CodexProvider || command == nil {
 		t.Fatalf("global key was not preserved: last=%q provider=%v command=%v", page.lastKey, model.request.Provider, command != nil)
 	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
 
 	page.editing = true
 	before := model.request
@@ -1331,6 +1333,9 @@ func updateKeyForTest(t *testing.T, model Model, key string) Model {
 			if loaded, ok := result.(loadedMsg); ok && loaded.err == nil {
 				// Keep fixture data while completing synthetic reload commands.
 				loaded.snapshot = model.snapshot
+				loaded.snapshot.DailyCursor = loaded.request.DailyCursor
+				loaded.snapshot.DailyWindowStart = loaded.request.DailyWindowStart
+				loaded.snapshot.DailyDetailOffset = loaded.request.DailyDetailOffset
 				result = loaded
 			}
 			updated, _ = model.Update(result)
