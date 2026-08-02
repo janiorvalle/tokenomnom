@@ -19,6 +19,8 @@ import (
 
 const FileName = "config.toml"
 
+const existingHistoryOptInSource = "existing config (opt-in required)"
+
 const (
 	KeyCodexDir          = "discovery.codex_dir"
 	KeyClaudeDir         = "discovery.claude_dir"
@@ -108,7 +110,7 @@ func Defaults() Config {
 		Reports:  Reports{Color: "auto", Charts: true, DailyLast: 30},
 		Backup:   Backup{Enabled: true, Interval: "24h", Keep: 14},
 		Vault:    Vault{MinAge: "168h", Providers: []string{"codex", "claude"}, Auto: true, AutoInterval: "24h"},
-		History:  History{AutoIndex: false, AutoInterval: "24h", Providers: []string{"codex", "claude"}},
+		History:  History{AutoIndex: true, AutoInterval: "1h", Providers: []string{"codex", "claude"}},
 		Schedule: Schedule{Interval: "24h"},
 	}
 }
@@ -171,6 +173,10 @@ func Load(options LoadOptions) (Loaded, error) {
 			if metadata.IsDefined(strings.Split(key, ".")...) {
 				loaded.Sources[key] = "config"
 			}
+		}
+		if !metadata.IsDefined("history", "auto_index") {
+			loaded.Config.History.AutoIndex = false
+			loaded.Sources[KeyHistoryAutoIndex] = existingHistoryOptInSource
 		}
 		if undecoded := metadata.Undecoded(); len(undecoded) > 0 && options.Output != nil {
 			unknown := make([]string, 0, len(undecoded))

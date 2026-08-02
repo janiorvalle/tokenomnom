@@ -511,7 +511,7 @@ func loadDashboardDailySessions(cmd *cobra.Command, path string, request tui.Req
 		if priceErr != nil {
 			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
 		}
-		if row.AttributionStatus != "complete" {
+		if row.AttributionStatus != "complete" && row.AttributionStatus != "settled_missing" {
 			unavailable++
 		}
 		model := ""

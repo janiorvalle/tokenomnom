@@ -57,6 +57,11 @@ Provider, model, and explicit date filters are available on report commands.
   missing sources alone are not stale and do not require another index. The
   fixed settle window is 10 minutes; active drift is expected session churn,
   while settled drift may warrant indexing.
+- `missing_sources` is split into `settled_missing_sources` and
+  `unsettled_missing_sources`. Use `history index --source provider
+  --settle-missing` only when the provider file is permanently gone; settling
+  suppresses cost-attribution warnings but keeps the source head visible in
+  doctor. A successful re-index clears the settlement.
 - Doctor's `store.missing_files` means synced transcript files no longer
   present. History's `missing_sources` means indexed source heads whose file is
   gone; do not compare the counts as if they shared a denominator.
@@ -71,7 +76,9 @@ For "what did I work on" or "how did I prompt X":
    research task when `status_reasons` reports `not_indexed`, `stale_sources`,
    `settled_drift`, or another reason indexing can fix, or when the needed
    coverage is absent. Do not re-index to chase active-session drift or
-   missing-but-preserved sources alone.
+   missing-but-preserved sources alone. For a permanently gone provider file,
+   use `history index --source provider --settle-missing` instead of repeating
+   an index without changing the source state.
    Read `data.exclusion_counts` for routine exclusions and surface
    partial-index errors from `data.errors`. Use `history index --verbose` only
    when bounded path-and-line exclusion details are needed.
@@ -130,6 +137,8 @@ the command-specific `data`, and surface every item in `warnings` to the user.
 For `history index`, routine exclusions are counters in
 `data.exclusion_counts`; `data.warnings` contains per-record details only with
 `--verbose`, while `data.errors` remains detailed in both modes.
+Each exclusion count includes `expected`; routine non-prompt records are
+expected, while `unknown` classifications are anomalous.
 Token counts are integers. `cost_usd` values and pricing rates are JSON numbers.
 
 <!-- tokenomnom-skill v{{VERSION}} -->

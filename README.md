@@ -145,6 +145,12 @@ check of archived transcripts.
 
 `history index --format json` groups routine record exclusions under
 `data.exclusion_counts`; it does not emit one warning per excluded record.
+Each exclusion count includes `expected`; expected non-prompt records are
+reported as one summary line, while `unknown` classifications remain visible
+as anomalies. Add `--settle-missing` with `--source provider` or `--source all`
+when an indexed provider file is permanently gone. The command reports how
+many source heads were acknowledged; they remain visible in `history status`
+and `doctor`, and a later successful index clears the acknowledgement.
 Add `--verbose` only when you need the bounded path-and-line details in
 `data.warnings`. Source and integrity failures remain individually listed in
 `data.errors` in either mode.
@@ -231,7 +237,9 @@ the probe time. Drift is split by a fixed 10-minute settle window: active
 sources are expected running-session churn, while settled sources are old
 enough to act on. `status_reasons` lists every reason a status is not ready;
 settled drift reports `degraded`, while active-only drift and missing-but-
-preserved source heads leave status `ready`. The probe never reads transcript
+preserved source heads leave status `ready`. Missing source heads are split
+into pending and settled counts; settling changes cost-attribution warnings,
+not the doctor record of what is gone. The probe never reads transcript
 content or updates the index.
 
 `history sample` pulls a representative, deterministic sample — same seed,
@@ -291,9 +299,12 @@ tokenomnom schedule uninstall
 
 Each tick runs one quiet `sync --scheduled`. Maintenance order is usage sync,
 due database backup, due settled-transcript auto-vault, then due history
-indexing when explicitly enabled. History failures produce one warning but do
-not discard successful usage, backup, or vault work. tokenomnom uses launchd
-on macOS, a systemd user timer on Linux, and Windows Task Scheduler on Windows.
+indexing. New installations enable history indexing by default so scheduled
+sync keeps the transcript index fresh. Existing config files that omit
+`history.auto_index` remain opt-in on upgrade; add the key explicitly to enable
+it. Set it to `false` to opt out. History failures produce one warning but do
+not discard successful usage, backup, or vault work. tokenomnom uses launchd on
+macOS, a systemd user timer on Linux, and Windows Task Scheduler on Windows.
 There is no daemon, watcher, or resident tokenomnom process.
 
 The installed unit embeds the current absolute binary path and
@@ -340,9 +351,9 @@ auto = true
 auto_interval = "24h"
 
 [history]
-auto_index = false
+auto_index = true
 index_assistant = false
-auto_interval = "24h"
+auto_interval = "1h"
 providers = ["codex", "claude"]
 
 [schedule]
@@ -377,9 +388,12 @@ selects `codex`, `claude`, or both. When `vault.auto` is true, successful syncs
 run a settled-file archive pass at most once per `vault.auto_interval`.
 Failures warn and retry on a later tick; source transcripts are never deleted.
 
-`history.auto_index` is explicit consent for scheduled plaintext indexing and
-defaults to `false`. When enabled, only `sync --scheduled` runs a due index pass
-at most once per `history.auto_interval`; ordinary reports and ordinary `sync`
+`history.auto_index` enables scheduled plaintext indexing and defaults to `true`
+for new installations. Existing config files that omit the key remain disabled
+until you explicitly add `history.auto_index = true`, so upgrading cannot begin
+creating a plaintext index without consent. Set the key to `false` to opt out.
+When enabled, only `sync --scheduled` runs a due index pass at most once per
+`history.auto_interval` (default `1h`); ordinary reports and ordinary `sync`
 never do. `history.providers` selects `codex`, `claude`, or both.
 
 `schedule.interval` controls the installed OS schedule and defaults to 24

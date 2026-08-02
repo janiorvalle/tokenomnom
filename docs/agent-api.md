@@ -147,7 +147,8 @@ and per-role coverage bounds,
 live, provider-archive, preserved-snapshot, and vault-location counts;
 provider-live-only, provider-archive-only, vault-only, exact-live-and-vaulted,
 and unavailable-metadata coverage; indexed vault bundle/version counts;
-broken/skipped bundle counts; stale/error/missing counts; nullable coverage and
+broken/skipped bundle counts; stale/error/missing counts, including settled and
+pending missing-source counts; nullable coverage and
 last-index/attempt/complete-success timestamps, `next_due`, and
 `index_generation`. `sampling_ready` is false after an upgrade that still needs
 the explicit corpus-sized sampling backfill; `history index` performs it while
@@ -156,7 +157,10 @@ database open remains bounded. It also reports `auto_index_enabled`,
 `auto_interval`, configured `providers`, and nullable `last_error_summary`
 without prompt text.
 `data.history.missing_sources` counts indexed source heads whose file is gone;
-it is intentionally different from `data.store.missing_files`.
+`settled_missing_sources` and `unsettled_missing_sources` split that total.
+Settling acknowledges that a provider source is permanently gone without
+deleting its source head or hiding it from doctor. It is intentionally
+different from `data.store.missing_files`.
 `last_run_error_count` makes an incomplete most-recent run explicit.
 `inspection_error` is nullable and lets doctor report a corrupt optional index
 without aborting its other diagnostics.
@@ -170,7 +174,7 @@ intentionally separate and existing count fields keep their original meaning.
 ## History Index
 
 `tokenomnom history index [--provider codex|claude] [--source all|provider|vault]
-[--full] [--verify] [--verbose] --format json`
+[--full] [--verify] [--verbose] [--settle-missing] --format json`
 
 The first explicit index creates `history.db`. `--source all` is the default and
 combines Codex `sessions/`, Codex `archived_sessions/`, Claude Code `projects/`,
@@ -178,7 +182,10 @@ and every selected validated vault manifest version. `provider` and `vault`
 narrow that scope. `--full` rebuilds the selected source kinds. Matching source
 size, modification time, extractor version, and source kind lets a normal
 incremental run skip a source without reading its content. `--verify` performs
-exact indexed-prefix continuity checks before skipping or appending. Vault
+exact indexed-prefix continuity checks before skipping or appending.
+`--settle-missing` is valid with `--source provider` or `--source all`; it
+acknowledges missing provider source heads after the index pass and is
+idempotent. A later successful provider index clears the acknowledgement. Vault
 indexing already verifies archive members; use `vault verify --deep` for an
 explicit deep vault check. Indexing is not triggered by usage reports or
 ordinary syncs.
@@ -214,10 +221,12 @@ idempotent.
 `data` contains aggregate `scanned_sources`, `indexed_sources`, `new_sources`,
 `skipped_sources`, `appended_sources`, `rewritten_sources`, `missing_sources`,
 `indexed_prompts`, `oversized_prompts`, `reclassified_prompts`,
-`prompt_kind_counts`, `error_count`, bounded `errors`, `full`, and
+`prompt_kind_counts`, `settled_missing_sources`, `error_count`, bounded `errors`, `full`, and
 `duration_ms`. Routine record exclusions are grouped by classification and
 reason in `exclusion_counts`; each entry contains `classification`, `reason`,
-and `count`, without prompt text. `warnings` is `[]` by default. `--verbose`
+`count`, and `expected`, without prompt text. Expected non-prompt records can
+be grouped safely; an `unknown` classification is an anomalous exclusion that
+should remain visible. `warnings` is `[]` by default. `--verbose`
 restores bounded per-record path-and-line details there, while source and
 integrity failures remain individually visible in `errors` in either mode.
 Here `missing_sources` is the number of indexed source heads whose file was
@@ -294,8 +303,11 @@ rows.
 Costs are calculated from exact indexed transcript bytes. The bytes are
 re-read only from indexed locations and must still match the indexed size and
 SHA-256 before provider usage parsing. `attribution_status` is `complete`,
-`no_usage_events`, or `unavailable`; an unavailable row includes the next step
-to restore the source or vault snapshot and rerun `history index`.
+`no_usage_events`, `unavailable`, or `settled_missing`. A settled-missing row
+has `missing_source_settled: true`, no warning, and no cost because its exact
+transcript bytes are acknowledged as unavailable. An ordinary unavailable row
+includes the next step to restore the source or vault snapshot and rerun
+`history index`.
 `incomplete` means the preferred transcript location was unavailable or the
 transcript contained usage records without timestamps. Fallback costs may omit
 newer usage, and timestamp-less tokens remain visible as unpriced
@@ -657,17 +669,20 @@ The scheduler is per-user: launchd on macOS, a systemd user timer on Linux,
 and Windows Task Scheduler on Windows. It runs the installed absolute binary
 as `sync --scheduled`; no daemon remains resident. Scheduled maintenance runs
 usage sync, due backup, due vault archive, then due history indexing. History
-indexing runs only when `history.auto_index = true`, after the usage process
-lock is released. Its failure is one bounded warning and does not make an
-otherwise successful scheduled usage sync exit nonzero.
+indexing is enabled by default with a one-hour interval; set
+`history.auto_index = false` to opt out. Existing config files that omit the
+key remain disabled until it is added explicitly. When enabled, indexing runs
+after the usage process lock is released. Its failure is one bounded warning
+and does not make an otherwise successful scheduled usage sync exit nonzero.
 
 ## Config Show
 
 `tokenomnom config show --format json` uses command `config`. `data.config`
 contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`,
 `history`, and `schedule` sections. `data.sources` maps every supported dotted key to
-`default`, `config`, an environment source, or `flag`; `path` is the resolved
-config path and `found` says whether the file existed.
+`default`, `config`, an environment source, `flag`, or the legacy
+`existing config (opt-in required)` state for an omitted history auto-index key;
+`path` is the resolved config path and `found` says whether the file existed.
 
 ## Sync
 

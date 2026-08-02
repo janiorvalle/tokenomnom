@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SchemaVersion = 11
+	SchemaVersion = 12
 	DatabaseName  = "history.db"
 )
 
@@ -476,6 +476,9 @@ CREATE TRIGGER sample_strata_group_delete AFTER DELETE ON sample_strata
 		WHERE unit_kind=old.unit_kind AND dimensions=old.dimensions AND group_values=old.group_values AND member_count>1;
 END;
 UPDATE meta SET value='0' WHERE key='sampling_ready';
+`,
+			12: `
+ALTER TABLE source_heads ADD COLUMN settled_missing INTEGER NOT NULL DEFAULT 0 CHECK (settled_missing IN (0, 1));
 `,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {

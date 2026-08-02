@@ -29,9 +29,10 @@ type SessionCostQuery struct {
 // a caller cannot accidentally expose local paths in an agent response.
 type SessionCostSession struct {
 	CatalogSession
-	Candidates          []RawCandidate `json:"-"`
-	CandidateCount      int            `json:"-"`
-	CandidatesTruncated bool           `json:"-"`
+	Candidates           []RawCandidate `json:"-"`
+	CandidateCount       int            `json:"-"`
+	CandidatesTruncated  bool           `json:"-"`
+	MissingSourceSettled bool           `json:"missing_source_settled,omitempty"`
 }
 
 // SessionCostPage is the bounded history-index half of the session-cost
@@ -141,8 +142,15 @@ func (s *Store) sessionCostSource(session CatalogSession) (SessionCostSession, s
 	candidates, err := s.RawCandidates(session.SessionID, "")
 	if err != nil {
 		if errors.Is(err, ErrNoAvailableRawLocation) {
-			return SessionCostSession{CatalogSession: session, Candidates: []RawCandidate{}},
-				fmt.Sprintf("session %s has no available exact transcript location; cost attribution will be unavailable", session.SessionID), nil
+			settled, settlementErr := s.missingSourceSettlement(session.SessionID)
+			if settlementErr != nil {
+				return SessionCostSession{}, "", settlementErr
+			}
+			value := SessionCostSession{CatalogSession: session, Candidates: []RawCandidate{}, MissingSourceSettled: settled}
+			if settled {
+				return value, "", nil
+			}
+			return value, fmt.Sprintf("session %s has no available exact transcript location; cost attribution will be unavailable", session.SessionID), nil
 		}
 		return SessionCostSession{}, "", err
 	}
@@ -156,4 +164,32 @@ func (s *Store) sessionCostSource(session CatalogSession) (SessionCostSession, s
 		return value, fmt.Sprintf("session %s has %d exact transcript locations; this bounded query will try the preferred first %d", session.SessionID, value.CandidateCount, MaxSessionCostCandidates), nil
 	}
 	return value, "", nil
+}
+
+func (s *Store) missingSourceSettlement(publicID string) (bool, error) {
+	var settled, unsettled int
+	err := s.runner.QueryRow(`SELECT
+		COALESCE(SUM(CASE WHEN sh.available=0 AND sh.settled_missing=1 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN sh.available=0 AND sh.settled_missing=0 THEN 1 ELSE 0 END),0)
+		FROM sessions session LEFT JOIN source_heads sh ON sh.session_id=session.id
+		WHERE session.public_id=?
+		AND NOT EXISTS (
+			SELECT 1 FROM source_heads unavailable_head
+			WHERE unavailable_head.session_id=session.id AND unavailable_head.available=1
+				AND (unavailable_head.current_sha256='' OR unavailable_head.complete_offset<>unavailable_head.size OR NOT EXISTS (
+					SELECT 1 FROM locations available_location
+					WHERE available_location.source_head_id=unavailable_head.id AND available_location.available=1
+				))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM preserved_snapshots unavailable_snapshot
+			WHERE unavailable_snapshot.session_id=session.id AND NOT EXISTS (
+				SELECT 1 FROM locations available_snapshot_location
+				WHERE available_snapshot_location.snapshot_id=unavailable_snapshot.id AND available_snapshot_location.available=1
+			)
+		)`, publicID).Scan(&settled, &unsettled)
+	if err != nil {
+		return false, fmt.Errorf("read missing history source settlement: %w", err)
+	}
+	return settled > 0 && unsettled == 0, nil
 }

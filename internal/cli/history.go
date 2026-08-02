@@ -47,6 +47,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	var full bool
 	var verify bool
 	var verbose bool
+	var settleMissing bool
 	command := &cobra.Command{
 		Use:   "index",
 		Short: "Incrementally index provider transcript history",
@@ -59,6 +60,9 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			}
 			if source != "all" && source != "provider" && source != "vault" {
 				return fmt.Errorf("invalid --source %q (expected all, provider, or vault)", source)
+			}
+			if settleMissing && source == "vault" {
+				return errors.New("history_index_settle_missing_scope: --settle-missing cannot run with --source vault; retry with --source provider (or --source all) to acknowledge provider source heads")
 			}
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -76,6 +80,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			providerSummary := indexer.Summary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
 			vaultSummary := indexer.VaultSummary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
 			var providerErr, vaultErr error
+			settledMissingSources := 0
 			var threadKindsBefore, threadKindDeltas historystore.ThreadKindCoverage
 			captureThreadKindBaseline := func(database *historystore.Store) error {
 				counts, err := database.ThreadKindCounts()
@@ -117,6 +122,17 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 				defer database.Close()
 				return run(database)
 			}
+			settleMissingSourcesIn := func(database *historystore.Store) error {
+				if !settleMissing {
+					return nil
+				}
+				settled, err := database.SettleMissingSources(providers...)
+				if err != nil {
+					return err
+				}
+				settledMissingSources += settled
+				return nil
+			}
 
 			if source == "provider" {
 				err = runHistoryLocked(func(database *historystore.Store) error {
@@ -127,6 +143,9 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 						Store: database, Roots: roots, Providers: providers, Full: full, Verify: verify, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true, IndexAssistant: indexAssistant,
 					})
 					markProviderError()
+					if err := settleMissingSourcesIn(database); err != nil {
+						return err
+					}
 					if err := database.RecordScopedRun(attempt, providerSummary.ErrorCount, false); err != nil {
 						return err
 					}
@@ -159,6 +178,9 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 								CompleteAssistantScope: provider == "" && current.ErrorCount == 0,
 							})
 							markProviderError()
+							if err := settleMissingSourcesIn(database); err != nil {
+								return err
+							}
 							return database.RecordScopedRun(attempt, providerSummary.ErrorCount+current.ErrorCount, provider == "")
 						},
 					})
@@ -175,6 +197,9 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 								Store: database, Roots: roots, Providers: providers, Full: full, Verify: verify, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
 							})
 							markProviderError()
+							if err := settleMissingSourcesIn(database); err != nil {
+								return err
+							}
 							if err := database.RecordScopedRun(attempt, providerSummary.ErrorCount+vaultSummary.ErrorCount, provider == ""); err != nil {
 								return err
 							}
@@ -190,7 +215,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					}
 				}
 			}
-			if writeErr := writeHistoryIndex(cmd, provider, source, providerSummary, vaultSummary, threadKindDeltas, verbose); writeErr != nil {
+			if writeErr := writeHistoryIndex(cmd, provider, source, providerSummary, vaultSummary, threadKindDeltas, settledMissingSources, verbose); writeErr != nil {
 				return writeErr
 			}
 			indexErr := errors.Join(providerErr, vaultErr)
@@ -205,6 +230,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	command.Flags().BoolVar(&full, "full", false, "rebuild selected source kinds")
 	command.Flags().BoolVar(&verify, "verify", false, "verify indexed content before skipping or appending sources")
 	command.Flags().BoolVar(&verbose, "verbose", false, "include bounded per-record exclusion details")
+	command.Flags().BoolVar(&settleMissing, "settle-missing", false, "acknowledge missing provider source heads without hiding them from doctor")
 	return command
 }
 
@@ -500,6 +526,7 @@ type jsonHistoryIndexData struct {
 	IndexedPrompts        int                             `json:"indexed_prompts"`
 	OversizedPrompts      int                             `json:"oversized_prompts"`
 	ReclassifiedPrompts   int                             `json:"reclassified_prompts"`
+	SettledMissingSources int                             `json:"settled_missing_sources"`
 	PromptKindCounts      map[history.PromptKind]int      `json:"prompt_kind_counts"`
 	ExclusionCounts       []indexer.ExclusionCount        `json:"exclusion_counts"`
 	ErrorCount            int                             `json:"error_count"`
@@ -518,7 +545,7 @@ type jsonHistoryIndexData struct {
 	ThreadKindDeltas      historystore.ThreadKindCoverage `json:"thread_kind_deltas"`
 }
 
-func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary, threadKindDeltas historystore.ThreadKindCoverage, verbose bool) error {
+func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary indexer.Summary, vaultSummary indexer.VaultSummary, threadKindDeltas historystore.ThreadKindCoverage, settledMissingSources int, verbose bool) error {
 	errorsFound := append(append([]indexer.Issue{}, summary.Errors...), vaultSummary.Errors...)
 	warnings := []indexer.Issue{}
 	if verbose {
@@ -544,7 +571,7 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 			ScannedSources: summary.ScannedSources, IndexedSources: summary.IndexedSources, NewSources: summary.NewSources,
 			SkippedSources: summary.SkippedSources, AppendedSources: summary.AppendedSources, RewrittenSources: summary.RewrittenSources,
 			MissingSources: summary.MissingSources, IndexedPrompts: summary.IndexedPrompts + vaultSummary.IndexedPrompts, OversizedPrompts: summary.OversizedPrompts + vaultSummary.OversizedPrompts,
-			ReclassifiedPrompts: summary.ReclassifiedPrompts + vaultSummary.ReclassifiedPrompts, PromptKindCounts: promptKindCounts, ExclusionCounts: exclusionCounts,
+			ReclassifiedPrompts: summary.ReclassifiedPrompts + vaultSummary.ReclassifiedPrompts, SettledMissingSources: settledMissingSources, PromptKindCounts: promptKindCounts, ExclusionCounts: exclusionCounts,
 			ErrorCount: errorCount, Errors: errorsFound, Warnings: warnings, Full: summary.Full || vaultSummary.Full,
 			DurationMS: duration.Milliseconds(), Source: source,
 			SelectedVaultBundles: vaultSummary.SelectedBundles, SelectedVaultVersions: vaultSummary.SelectedVersions,
@@ -558,10 +585,19 @@ func writeHistoryIndex(cmd *cobra.Command, provider, source string, summary inde
 	fmt.Fprintf(cmd.OutOrStdout(), "  New: %d  Appended: %d  Rewritten: %d  Missing: %d\n", summary.NewSources, summary.AppendedSources, summary.RewrittenSources, summary.MissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Vault bundles: %d indexed  %d skipped  %d failed  Versions: %d\n", vaultSummary.IndexedBundles, vaultSummary.SkippedBundles, vaultSummary.ErrorCount, vaultSummary.IndexedVersions)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Prompts: %d  Oversized: %d  Errors: %d  Duration: %s\n", summary.IndexedPrompts+vaultSummary.IndexedPrompts, summary.OversizedPrompts+vaultSummary.OversizedPrompts, errorCount, duration.Round(time.Millisecond))
+	fmt.Fprintf(cmd.OutOrStdout(), "  Settled missing: %d\n", settledMissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Reclassified prompts: %d\n", summary.ReclassifiedPrompts+vaultSummary.ReclassifiedPrompts)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Thread kinds: root %+d  subagent %+d  unknown %+d\n", threadKindDeltas.Root, threadKindDeltas.Subagent, threadKindDeltas.Unknown)
+	expectedExclusions := 0
 	for _, count := range exclusionCounts {
+		if count.Expected || (count.Classification != "" && count.Classification != history.ClassificationUnknown) {
+			expectedExclusions += count.Count
+			continue
+		}
 		fmt.Fprintf(cmd.OutOrStdout(), "  Excluded %s / %s: %d\n", count.Classification, count.Reason, count.Count)
+	}
+	if expectedExclusions > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Excluded (expected: non-prompt records): %d\n", expectedExclusions)
 	}
 	for _, indexError := range errorsFound {
 		fmt.Fprintf(cmd.OutOrStdout(), "  Error: %s\n", formatHistoryIndexIssue(indexError))
@@ -585,7 +621,7 @@ func combineExclusionCounts(values []indexer.ExclusionCount) []indexer.Exclusion
 	}
 	combined := make([]indexer.ExclusionCount, 0, len(counts))
 	for value, count := range counts {
-		combined = append(combined, indexer.ExclusionCount{Classification: value.classification, Reason: value.reason, Count: count})
+		combined = append(combined, indexer.ExclusionCount{Classification: value.classification, Reason: value.reason, Count: count, Expected: value.classification != "" && value.classification != history.ClassificationUnknown})
 	}
 	slices.SortFunc(combined, func(left, right indexer.ExclusionCount) int {
 		if compared := strings.Compare(string(left.Classification), string(right.Classification)); compared != 0 {
@@ -664,7 +700,7 @@ func writeHistoryStatus(cmd *cobra.Command, health historystore.Health, drift hi
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "User coverage:", stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.UserCoverageLast), location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s to %s\n", "Assistant coverage:", stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageFirst), location)), stringValue(presentHistoryTimestamp(optionalString(health.AssistantCoverageLast), location)))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-32s %d / %d\n", "Stale/error source heads:", health.StaleSources, health.ErrorSources)
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-32s %d\n", "Indexed source heads whose file is gone:", health.MissingSources)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-32s %d (%d settled, %d pending)\n", "Indexed source heads whose file is gone:", health.MissingSources, health.SettledMissingSources, health.UnsettledMissingSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Changed since index:", drift.ChangedSourcesSinceIndex, drift.NewSourcesSinceIndex)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Active drift:", drift.ActiveChangedSources, drift.ActiveNewSources)
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %d (%d new)\n", "Settled drift:", drift.SettledChangedSources, drift.SettledNewSources)
@@ -740,6 +776,8 @@ type jsonHistoryHealth struct {
 	StaleSources             int      `json:"stale_sources"`
 	ErrorSources             int      `json:"error_sources"`
 	MissingSources           int      `json:"missing_sources"`
+	SettledMissingSources    int      `json:"settled_missing_sources"`
+	UnsettledMissingSources  int      `json:"unsettled_missing_sources"`
 	LastIndex                *string  `json:"last_index"`
 	LastAttempt              *string  `json:"last_attempt"`
 	LastCompleteSuccess      *string  `json:"last_complete_success"`
@@ -786,6 +824,7 @@ func historyHealthJSON(health historystore.Health, drift historyfreshness.Result
 		UserCoverageFirst: optionalString(health.UserCoverageFirst), UserCoverageLast: optionalString(health.UserCoverageLast),
 		AssistantCoverageFirst: optionalString(health.AssistantCoverageFirst), AssistantCoverageLast: optionalString(health.AssistantCoverageLast),
 		StaleSources: health.StaleSources, ErrorSources: health.ErrorSources, MissingSources: health.MissingSources,
+		SettledMissingSources: health.SettledMissingSources, UnsettledMissingSources: health.UnsettledMissingSources,
 		LastIndex: optionalUnix(health.LastIndexUnix), LastAttempt: optionalUnix(health.LastAttemptUnix),
 		LastCompleteSuccess: optionalUnix(health.LastCompleteSuccessUnix), SamplingReady: health.SamplingReady, IndexGeneration: health.IndexGeneration,
 		LastRunErrorCount:        health.LastRunErrorCount,

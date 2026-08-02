@@ -238,6 +238,7 @@ type historySessionCostRow struct {
 	AttributionStatus    string                    `json:"attribution_status"`
 	TokenSource          string                    `json:"token_source"`
 	RawLocationKind      string                    `json:"raw_location_kind,omitempty"`
+	MissingSourceSettled bool                      `json:"missing_source_settled,omitempty"`
 	Warnings             []string                  `json:"warnings"`
 	attributionTimestamp string
 }
@@ -278,15 +279,21 @@ func priceHistorySessionForWindow(cmd *cobra.Command, session historystore.Sessi
 
 func priceHistorySessionMatching(cmd *cobra.Command, session historystore.SessionCostSession, table pricinglib.Table, codexDir, claudeDir string, selectEvents func([]ingest.UsageEvent) ([]ingest.UsageEvent, []string)) (historySessionCostRow, error) {
 	row := historySessionCostRow{
-		CatalogSession: session.CatalogSession,
-		Models:         []historySessionCostModel{},
-		TokenSource:    "indexed_exact_transcript",
-		Warnings:       []string{},
+		CatalogSession:       session.CatalogSession,
+		Models:               []historySessionCostModel{},
+		TokenSource:          "indexed_exact_transcript",
+		MissingSourceSettled: session.MissingSourceSettled,
+		Warnings:             []string{},
 	}
 	if session.CandidatesTruncated {
 		row.Warnings = append(row.Warnings, fmt.Sprintf("only the preferred first %d of %d exact transcript locations were considered", len(session.Candidates), session.CandidateCount))
 	}
 	if len(session.Candidates) == 0 {
+		if session.MissingSourceSettled {
+			row.AttributionStatus = "settled_missing"
+			row.TokenSource = "settled_missing"
+			return row, nil
+		}
 		row.AttributionStatus = "unavailable"
 		row.Warnings = append(row.Warnings, "no readable exact transcript bytes were available; restore the source or vault snapshot and rerun `tokenomnom history index`")
 		return row, nil
