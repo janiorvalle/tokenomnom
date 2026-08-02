@@ -250,7 +250,11 @@ func pricingHeader(render theme.Context, modelWidth, rateWidth, statusWidth, eff
 func pricingTableRow(render theme.Context, row PricingRow, modelWidth, rateWidth, statusWidth, effectiveWidth, sourceWidth, width int) string {
 	status := row.Status
 	if row.Override != "" {
-		status = row.Override
+		if status == "user rate" {
+			status = status + " · " + row.Override
+		} else {
+			status = row.Override
+		}
 	}
 	statusStyle := render.Palette.Subtle()
 	if strings.Contains(strings.ToLower(status), "warn") || strings.Contains(strings.ToLower(status), "unpriced") {

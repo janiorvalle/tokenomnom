@@ -39,6 +39,7 @@ type jsonExportRow struct {
 	ReasoningOutputTokens        int64    `json:"reasoning_output_tokens"`
 	TotalTokens                  int64    `json:"total_tokens"`
 	CostUSD                      *float64 `json:"cost_usd"`
+	Provenance                   string   `json:"provenance"`
 }
 
 type jsonExportData struct {
@@ -174,7 +175,20 @@ func exportRow(row store.Usage, table pricing.Table) (jsonExportRow, error) {
 		CacheWrite1hTokens: row.CacheWrite1h, CacheWriteUnclassifiedTokens: row.CacheWriteUnclassified,
 		CacheWriteInputTokens: writes, UncachedInputTokens: row.Input - row.CacheRead,
 		OutputTokens: row.Output, ReasoningOutputTokens: row.Reasoning, TotalTokens: row.Input + row.Output, CostUSD: cost,
+		Provenance: breakdownProvenance(table, row),
 	}, nil
+}
+
+func breakdownProvenance(table pricing.Table, row store.Usage) string {
+	breakdown := table.Cost(row)
+	if breakdown.PricedTokens == 0 {
+		return ""
+	}
+	entry, found := table.RateFor(row.Model, row.Date)
+	if !found {
+		return ""
+	}
+	return entry.Status
 }
 
 func atomicWrite(path string, write func(io.Writer) error) (err error) {

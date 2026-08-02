@@ -53,6 +53,7 @@ type jsonTokenTotals struct {
 	OutputTokens     int64   `json:"output_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
+	Provenance       string  `json:"provenance"`
 }
 
 type jsonReportContext struct {
@@ -121,6 +122,7 @@ type jsonModelRow struct {
 	CostUSD          float64  `json:"cost_usd"`
 	CostShare        *float64 `json:"cost_share"`
 	Priced           bool     `json:"priced"`
+	Provenance       string   `json:"provenance"`
 }
 
 type jsonModelsData struct {
@@ -223,7 +225,7 @@ func tokenTotalsJSON(totals store.TokenTotals, cost aggregateCost) jsonTokenTota
 	return jsonTokenTotals{
 		InputTokens: totals.Input, CacheReadTokens: totals.CacheRead,
 		CacheWriteTokens: totals.CacheWrite, OutputTokens: totals.Output,
-		TotalTokens: totals.Total, CostUSD: moneyUSD(cost.Total),
+		TotalTokens: totals.Total, CostUSD: moneyUSD(cost.Total), Provenance: cost.Provenance,
 	}
 }
 

@@ -1220,7 +1220,7 @@ func TestFloorFooterKeepsDisclaimerAndQuitHint(t *testing.T) {
 	model := realisticEvidenceModel()
 	model.request.Width, model.request.Height = 80, 24
 	view := model.View()
-	if !strings.Contains(view, "API list-price equivalents, not actual bills") || !strings.Contains(view, "q quit") {
+	if !strings.Contains(view, "user rate") || !strings.Contains(view, "not actual bills") || !strings.Contains(view, "q quit") {
 		t.Fatalf("floor footer omitted required copy:\n%s", view)
 	}
 }

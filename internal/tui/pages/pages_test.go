@@ -237,6 +237,17 @@ func TestQuest151WidePanesKeepWrappedValuesVisible(t *testing.T) {
 	}
 }
 
+func TestSystemPricingRendersUserRateLabel(t *testing.T) {
+	data := SystemPageData{
+		PricingDisclaimer: "Dollar figures are API list-price equivalents; user rate figures are estimates, not actual bills.",
+		Pricing:           []PricingRow{{Model: "gpt-5.6-terra", BaseInput: "$1.00", Output: "$5.00", Status: "user rate", Source: "user rate"}},
+	}
+	view := RenderSystem(testRender(), data, 136, 20, 0)
+	if !strings.Contains(view, "gpt-5.6-terra") || !strings.Contains(view, "user rate") {
+		t.Fatalf("system effective pricing omitted user-rate label:\\n%s", view)
+	}
+}
+
 func TestQuest151WideSystemWarningsCanScroll(t *testing.T) {
 	_, system := quest151PageFixtures()
 	system.Pricing = nil

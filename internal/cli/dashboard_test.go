@@ -1207,6 +1207,41 @@ func TestModelPricingLabelUsesStableTieBreak(t *testing.T) {
 	}
 }
 
+func TestModelPricingLabelPrefersUserRateOnTie(t *testing.T) {
+	stats := dashboardModelPricingStats{
+		PricedTokens: 20,
+		Statuses:     map[string]int64{"live": 10, "user rate": 10},
+	}
+	if got, want := modelPricingLabel(stats), "user rate"; got != want {
+		t.Fatalf("pricing label = %q, want %q", got, want)
+	}
+}
+
+func TestPricingProvenanceLabelHandlesRawUserTier(t *testing.T) {
+	if got, want := pricingProvenanceLabel("user"), "user rate"; got != want {
+		t.Fatalf("raw user provenance label = %q, want %q", got, want)
+	}
+}
+
+func TestAggregateCostAccumulatesProvenanceTokens(t *testing.T) {
+	published := aggregateCost{Provenance: "published", ProvenanceTokens: 10}
+	user := aggregateCost{Provenance: "user", ProvenanceTokens: 15}
+	combined := addAggregateCost(addAggregateCost(published, published), user)
+	if combined.Provenance != "user" || combined.ProvenanceTokens != 15 {
+		t.Fatalf("aggregate provenance = %q/%d, want conservative user/15", combined.Provenance, combined.ProvenanceTokens)
+	}
+}
+
+func TestAggregateCostMarksOverflowAsUnpriced(t *testing.T) {
+	value := pricing.Money(5_000_000_000_000_000_000)
+	left := aggregateCost{Total: value, PricedTokens: 5_000_000_000, Provenance: "published", ProvenanceTokens: 5_000_000_000}
+	right := aggregateCost{Total: value, PricedTokens: 5_000_000_000, Provenance: "user", ProvenanceTokens: 5_000_000_000}
+	combined := addAggregateCost(left, right)
+	if combined.Total != value || combined.PricedTokens != 5_000_000_000 || combined.UnpricedTokens != 5_000_000_000 || combined.Provenance != "published" || combined.ProvenanceTokens != 5_000_000_000 {
+		t.Fatalf("overflowing aggregate = %+v, want right priced tokens marked unpriced", combined)
+	}
+}
+
 func TestModelCalendarDatesUsesReportDate(t *testing.T) {
 	dates := modelCalendarDates([]string{"2026-01-01"}, "2026-02-01")
 	if len(dates) != 30 || dates[0] != "2026-01-03" || dates[len(dates)-1] != "2026-02-01" {

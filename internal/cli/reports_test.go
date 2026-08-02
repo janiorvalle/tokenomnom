@@ -72,6 +72,16 @@ func TestReportCommandsRenderSeededStore(t *testing.T) {
 	}
 }
 
+func TestPrettyReportCostLabelsUserRate(t *testing.T) {
+	user := aggregateCost{Total: 1_000_000_000, PricedTokens: 1, Provenance: "user"}
+	if got, want := formatReportCost(user), "$1.00 (user rate)"; got != want {
+		t.Fatalf("user-rate report cost = %q, want %q", got, want)
+	}
+	if got, want := formatReportCost(aggregateCost{Total: user.Total, PricedTokens: 1, Provenance: "published"}), "$1.00"; got != want {
+		t.Fatalf("published report cost = %q, want %q", got, want)
+	}
+}
+
 func TestReportFiltersAndValidation(t *testing.T) {
 	stateDir, codexDir, claudeDir := seedReportStore(t)
 	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)

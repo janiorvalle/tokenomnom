@@ -13,9 +13,12 @@ import (
 )
 
 type aggregateCost struct {
-	Total          pricing.Money
-	PricedTokens   int64
-	UnpricedTokens int64
+	Total                 pricing.Money
+	PricedTokens          int64
+	UnpricedTokens        int64
+	Provenance            string
+	ProvenanceTokens      int64
+	ProvenanceTokenCounts map[string]int64
 }
 
 type modelCostKey struct {
@@ -54,6 +57,13 @@ func calculateReportCosts(table pricing.Table, rows []store.Usage) reportCosts {
 	for _, row := range rows {
 		breakdown := table.Cost(row)
 		value := aggregateCost{Total: breakdown.Total, PricedTokens: breakdown.PricedTokens, UnpricedTokens: breakdown.UnpricedTokens}
+		if breakdown.PricedTokens > 0 {
+			if entry, found := table.RateFor(row.Model, row.Date); found {
+				value.Provenance = entry.Status
+				value.ProvenanceTokens = breakdown.PricedTokens
+				value.ProvenanceTokenCounts = map[string]int64{entry.Status: breakdown.PricedTokens}
+			}
+		}
 		costs.Grand = addAggregateCost(costs.Grand, value)
 		costs.ByDate[row.Date] = addAggregateCost(costs.ByDate[row.Date], value)
 		month := row.Date
@@ -88,11 +98,67 @@ func addProviderChartValue(target map[string]map[discover.Provider]providerChart
 }
 
 func addAggregateCost(left, right aggregateCost) aggregateCost {
-	return aggregateCost{
-		Total:          left.Total.Add(right.Total),
-		PricedTokens:   left.PricedTokens + right.PricedTokens,
+	total, totalFits := addAggregateMoney(left.Total, right.Total)
+	if !totalFits {
+		total = left.Total
+	}
+	result := aggregateCost{
+		Total:          total,
+		PricedTokens:   left.PricedTokens,
 		UnpricedTokens: left.UnpricedTokens + right.UnpricedTokens,
 	}
+	if totalFits {
+		result.PricedTokens += right.PricedTokens
+	} else {
+		result.UnpricedTokens += right.PricedTokens
+	}
+	if totalFits {
+		result.ProvenanceTokenCounts = mergeProvenanceTokenCounts(left, right)
+	} else {
+		result.ProvenanceTokenCounts = provenanceTokenCounts(left)
+	}
+	counts := result.ProvenanceTokenCounts
+	if userTokens := counts["user"]; userTokens > 0 {
+		result.Provenance, result.ProvenanceTokens = "user", userTokens
+		return result
+	}
+	for status, tokens := range counts {
+		if tokens > result.ProvenanceTokens || (tokens == result.ProvenanceTokens && pricing.ProvenancePriority(status) < pricing.ProvenancePriority(result.Provenance)) {
+			result.Provenance, result.ProvenanceTokens = status, tokens
+		}
+	}
+	return result
+}
+
+func addAggregateMoney(left, right pricing.Money) (pricing.Money, bool) {
+	if right > 0 && left > pricing.Money(^uint64(0)>>1)-right {
+		return 0, false
+	}
+	if right < 0 && left < -pricing.Money(^uint64(0)>>1)-1-right {
+		return 0, false
+	}
+	return left + right, true
+}
+
+func mergeProvenanceTokenCounts(left, right aggregateCost) map[string]int64 {
+	counts := make(map[string]int64)
+	for status, tokens := range provenanceTokenCounts(left) {
+		counts[status] += tokens
+	}
+	for status, tokens := range provenanceTokenCounts(right) {
+		counts[status] += tokens
+	}
+	return counts
+}
+
+func provenanceTokenCounts(value aggregateCost) map[string]int64 {
+	if len(value.ProvenanceTokenCounts) > 0 {
+		return value.ProvenanceTokenCounts
+	}
+	if value.Provenance == "" || value.ProvenanceTokens <= 0 {
+		return nil
+	}
+	return map[string]int64{value.Provenance: value.ProvenanceTokens}
 }
 
 func loadReportCosts(database *store.Store, filter store.Filter, keep func(store.Usage) bool) (reportCosts, error) {
@@ -125,6 +191,14 @@ func formatCost(cost aggregateCost) string {
 		return "—"
 	}
 	return formatUSD(cost.Total)
+}
+
+func formatReportCost(cost aggregateCost) string {
+	value := formatCost(cost)
+	if cost.Provenance == "user" || cost.Provenance == "user rate" {
+		return value + " (user rate)"
+	}
+	return value
 }
 
 func formatUSD(value pricing.Money) string {

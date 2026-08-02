@@ -430,11 +430,11 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 
 	fmt.Fprintln(writer)
 	writeHeading(cmd, "Cost")
-	writeStyledLine(cmd, fmt.Sprintf("Total: %s", formatCost(costs.Grand)), theme.FromContext(cmd.Context()).Palette.Money())
+	writeStyledLine(cmd, fmt.Sprintf("Total: %s", formatReportCost(costs.Grand)), theme.FromContext(cmd.Context()).Palette.Money())
 	fmt.Fprintln(writer)
 	providerCostRows := make([][]string, 0, len(totals.Providers))
 	for _, provider := range totals.Providers {
-		providerCostRows = append(providerCostRows, []string{providerName(provider.Provider), formatCost(costs.ByProvider[provider.Provider])})
+		providerCostRows = append(providerCostRows, []string{providerName(provider.Provider), formatReportCost(costs.ByProvider[provider.Provider])})
 	}
 	writeReportTable(cmd, []string{"PROVIDER", "COST"}, providerCostRows, []bool{false, true}, tableStyle{hasProvider: true, providerCol: 0, moneyColumns: map[int]bool{1: true}})
 	fmt.Fprintln(writer)
@@ -458,7 +458,7 @@ func writeSummaryReport(cmd *cobra.Command, database *store.Store, filter store.
 	}
 	topCostRows := make([][]string, 0, len(keys))
 	for _, key := range keys {
-		topCostRows = append(topCostRows, []string{providerName(key.Provider), key.Model, formatCost(costs.ByModel[key])})
+		topCostRows = append(topCostRows, []string{providerName(key.Provider), key.Model, formatReportCost(costs.ByModel[key])})
 	}
 	writeReportTable(cmd, []string{"PROVIDER", "MODEL", "COST"}, topCostRows, []bool{false, false, true}, tableStyle{hasProvider: true, providerCol: 0, hasModel: true, modelCol: 1, modelRanks: ranks, moneyColumns: map[int]bool{2: true}})
 	writeCostNotes(cmd, costs)
@@ -485,7 +485,7 @@ func writeDailyReport(cmd *cobra.Command, rows []store.DailyRow, costs reportCos
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		tableRows = append(tableRows, append(tokenRow(row.Date, row.TokenTotals), formatCost(costs.ByDate[row.Date])))
+		tableRows = append(tableRows, append(tokenRow(row.Date, row.TokenTotals), formatReportCost(costs.ByDate[row.Date])))
 	}
 	if chartsEnabled(cmd) {
 		writeDailyChart(cmd, rows, costs)
@@ -515,7 +515,7 @@ func writeMonthlyReport(cmd *cobra.Command, rows []store.MonthlyRow, costs repor
 	}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		tableRows = append(tableRows, append(tokenRow(row.Month, row.TokenTotals), formatCost(costs.ByMonth[row.Month])))
+		tableRows = append(tableRows, append(tokenRow(row.Month, row.TokenTotals), formatReportCost(costs.ByMonth[row.Month])))
 	}
 	if chartsEnabled(cmd) {
 		writeMonthlyChart(cmd, rows, costs)
@@ -544,7 +544,7 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 				CacheReadTokens: row.CacheRead, CacheWriteTokens: row.CacheWrite,
 				OutputTokens: row.Output, TotalTokens: row.Total, Share: share,
 				ActiveDays: row.ActiveDays, FirstDate: row.FirstDate, LastDate: row.LastDate,
-				CostUSD: moneyUSD(modelCost.Total), CostShare: costShare, Priced: modelCost.UnpricedTokens == 0,
+				CostUSD: moneyUSD(modelCost.Total), CostShare: costShare, Priced: modelCost.UnpricedTokens == 0, Provenance: modelCost.Provenance,
 			})
 		}
 		warnings := reportWarnings(context.Warnings, costs)
@@ -572,7 +572,7 @@ func writeModelsReport(cmd *cobra.Command, rows []store.ModelRow, grandTotal int
 		}
 		tableRows = append(tableRows, []string{
 			providerName(row.Provider), row.Model, formatNumber(row.Input), formatNumber(row.CacheRead), formatNumber(row.CacheWrite), formatNumber(row.Output), formatNumber(row.Total),
-			fmt.Sprintf("%.1f%%", share), formatNumber(int64(row.ActiveDays)), row.FirstDate + " to " + row.LastDate, formatCost(modelCost), costShare,
+			fmt.Sprintf("%.1f%%", share), formatNumber(int64(row.ActiveDays)), row.FirstDate + " to " + row.LastDate, formatReportCost(modelCost), costShare,
 		})
 	}
 	writeReportTable(cmd,

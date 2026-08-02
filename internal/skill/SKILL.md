@@ -6,8 +6,9 @@ description: Reports local coding-agent (Codex, Claude Code) token usage and API
 # tokenomnom
 
 tokenomnom summarizes local Codex and Claude Code token usage. Dollar figures
-are API list-price equivalents of subscription usage, not actual bills. Always
-relay that caveat when reporting a cost.
+are API list-price equivalents of subscription usage unless a `user rate` is
+shown; user-rate figures are estimates, not actual bills. Always relay that
+caveat when reporting a cost.
 
 ## Calling The CLI
 
@@ -26,7 +27,8 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Overall usage: `tokenomnom summary --format json`; read `data.totals`, `data.active_days`, and `data.top_models`.
 - Per-model breakdown: `tokenomnom models --format json`; read `data.rows`, especially `model`, `total_tokens`, `cost_usd`, and `cost_share`.
 - Usage patterns: `tokenomnom heatmap --format json`; read `data.window`, `data.metric`, `data.days`, and `data.stats`.
-- Effective rates: `tokenomnom pricing --format json`; read `data.models[].entries` and their status and source.
+- Effective rates: `tokenomnom pricing --format json`; read `data.models[].entries` and their status, provenance, and source. A `user` provenance tier is displayed as `user rate` and takes precedence over published, proxy, and estimated rates.
+- Set a rate estimate: `tokenomnom pricing set-rate MODEL --input USD_PER_1M --output USD_PER_1M [--cache-read USD_PER_1M] [--cache-write USD_PER_1M] --format json`; clear it with `tokenomnom pricing set-rate MODEL --clear --format json`. Read the mutation receipt in `data` and branch on `data.error.code` for JSON errors.
 - Full data export: `tokenomnom export --format json`; read `data.rows` and the diagnostic token counters.
 - Discovery and store health: `tokenomnom doctor --format json`; read `data.providers`, `data.skills`, and `data.store`.
 - Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`.

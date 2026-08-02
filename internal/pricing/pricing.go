@@ -1,4 +1,5 @@
-// Package pricing loads model rates and computes API list-price equivalents.
+// Package pricing loads model rates and computes API list-price equivalents or
+// user-rate estimates.
 package pricing
 
 import (
@@ -19,7 +20,8 @@ import (
 var embeddedPricing []byte
 
 // Money stores nanodollars. With rates represented to three decimal places,
-// tokens * rate-per-million is exact in nanodollars and sums without drift.
+// tokens * rate-per-million is exact in nanodollars; pricing accumulators
+// check sums before storing them.
 type Money int64
 
 // Add returns the sum of two monetary values.
@@ -55,6 +57,7 @@ type Entry struct {
 type Table struct {
 	models     map[string][]Entry
 	overridden map[string]bool
+	userRated  map[string]bool
 }
 
 // CostBreakdown carries exact per-bucket costs and pricing diagnostics.
@@ -91,7 +94,7 @@ func Load(overrides ...io.Reader) (Table, error) {
 	if err != nil {
 		return Table{}, fmt.Errorf("load embedded pricing: %w", err)
 	}
-	table := Table{models: embedded, overridden: make(map[string]bool)}
+	table := Table{models: embedded, overridden: make(map[string]bool), userRated: make(map[string]bool)}
 	for _, override := range overrides {
 		if override == nil {
 			continue
@@ -177,7 +180,7 @@ func convertEntry(model string, raw rawEntry) (Entry, error) {
 			return Entry{}, fmt.Errorf("%s: %w", field.name, err)
 		}
 	}
-	if entry.Status != "published" && entry.Status != "proxy" && entry.Status != "estimated" {
+	if entry.Status != "published" && entry.Status != "proxy" && entry.Status != "estimated" && entry.Status != "user" {
 		return Entry{}, fmt.Errorf("invalid status %q", entry.Status)
 	}
 	parsedURL, err := url.ParseRequestURI(entry.Source)
@@ -232,6 +235,9 @@ func parseRate(number *json.Number) (*Rate, error) {
 			return nil, fmt.Errorf("invalid rate %q", text)
 		}
 	}
+	if whole > (int64(^uint64(0)>>1)-frac)/1000 {
+		return nil, fmt.Errorf("rate %q is too large", text)
+	}
 	rate := Rate(whole*1000 + frac)
 	return &rate, nil
 }
@@ -281,6 +287,47 @@ func (t Table) Entries() []Entry {
 // IsOverridden reports whether a user's file replaced this model.
 func (t Table) IsOverridden(model string) bool { return t.overridden[model] }
 
+// IsUserRated reports whether a user rate is active for the model.
+func (t Table) IsUserRated(model string) bool { return t.userRated[model] }
+
+// Models returns every model known to the effective pricing table in order.
+func (t Table) Models() []string {
+	models := make([]string, 0, len(t.models))
+	for model := range t.models {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
+// ProvenanceLabel returns the human-facing label for a pricing tier.
+func ProvenanceLabel(status string) string {
+	if status == "user" {
+		return "user rate"
+	}
+	return status
+}
+
+// ProvenancePriority orders tiers from most specific to least specific when
+// an aggregate contains more than one pricing source.
+func ProvenancePriority(status string) int {
+	switch status {
+	case "user":
+		return 0
+	case "published":
+		return 1
+	case "proxy":
+		return 2
+	case "estimated":
+		return 3
+	default:
+		return 4
+	}
+}
+
+// ProvenanceLabel returns the human-facing provenance label for this entry.
+func (entry Entry) ProvenanceLabel() string { return ProvenanceLabel(entry.Status) }
+
 // RateFor returns the model entry in force on date.
 func (t Table) RateFor(model, date string) (Entry, bool) {
 	for _, entry := range t.models[model] {
@@ -316,12 +363,47 @@ func (t Table) Cost(row store.Usage) CostBreakdown {
 			result.UnpricedTokens += bucket.tokens
 			continue
 		}
-		cost := Money(bucket.tokens * int64(*bucket.rate(entry)))
+		cost, ok := multiplyMoney(bucket.tokens, *bucket.rate(entry))
+		if !ok {
+			result.UnpricedTokens += bucket.tokens
+			continue
+		}
+		total, ok := addMoney(result.Total, cost)
+		if !ok {
+			result.UnpricedTokens += bucket.tokens
+			continue
+		}
 		*bucket.dest(&result) = cost
-		result.Total += cost
+		result.Total = total
 		result.PricedTokens += bucket.tokens
 	}
 	return result
+}
+
+func addMoney(left, right Money) (Money, bool) {
+	maxInt64 := Money(^uint64(0) >> 1)
+	minInt64 := -maxInt64 - 1
+	if right > 0 && left > maxInt64-right {
+		return 0, false
+	}
+	if right < 0 && left < minInt64-right {
+		return 0, false
+	}
+	return left + right, true
+}
+
+func multiplyMoney(tokens int64, rate Rate) (Money, bool) {
+	if tokens < 0 || rate < 0 {
+		return 0, false
+	}
+	if tokens == 0 || rate == 0 {
+		return 0, true
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	if tokens > maxInt64/int64(rate) {
+		return 0, false
+	}
+	return Money(tokens * int64(rate)), true
 }
 
 // CostRows prices independent date/model buckets and sums their exact costs.
@@ -331,16 +413,21 @@ func (t Table) CostRows(rows []store.Usage) CostBreakdown {
 	var result CostBreakdown
 	for _, row := range rows {
 		value := t.Cost(row)
+		result.UnclassifiedCacheWriteTokens += value.UnclassifiedCacheWriteTokens
+		total, ok := addMoney(result.Total, value.Total)
+		if !ok {
+			result.UnpricedTokens += value.UnpricedTokens + value.PricedTokens
+			continue
+		}
 		result.BaseInput += value.BaseInput
 		result.CacheRead += value.CacheRead
 		result.CacheWrite5m += value.CacheWrite5m
 		result.CacheWrite1h += value.CacheWrite1h
 		result.CacheWriteUnclassified += value.CacheWriteUnclassified
 		result.Output += value.Output
-		result.Total += value.Total
+		result.Total = total
 		result.PricedTokens += value.PricedTokens
 		result.UnpricedTokens += value.UnpricedTokens
-		result.UnclassifiedCacheWriteTokens += value.UnclassifiedCacheWriteTokens
 	}
 	return result
 }

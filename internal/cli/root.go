@@ -27,11 +27,11 @@ func newRootCommand(renderOptions theme.ResolveOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "tokenomnom",
-		Short: "See what your coding agents' tokens would cost at API list prices",
+		Short: "See what your coding agents' tokens would cost at API or user rates",
 		Long: `Your agents nom tokens. This shows the bill they would have run up.
 
-tokenomnom reconstructs local coding-agent token usage. All dollar figures are
-API list-price equivalents, not actual bills.`,
+tokenomnom reconstructs local coding-agent token usage. Dollar figures are API
+list-price equivalents or user rate estimates, not actual bills.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if theme.FromContext(cmd.Context()).Interactive {
@@ -40,7 +40,12 @@ API list-price equivalents, not actual bills.`,
 			return cmd.Help()
 		},
 		Version: version.Version,
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.CommandPath() == "tokenomnom pricing set-rate" {
+				if err := preparePricingSetRateFlags(cmd, args); err != nil {
+					return err
+				}
+			}
 			validFormats := "pretty or json"
 			usageExport := cmd.CommandPath() == "tokenomnom export"
 			if usageExport {

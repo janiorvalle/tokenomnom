@@ -1708,7 +1708,7 @@ func dashboardPricingRows(table pricing.Table) []tuipages.PricingRow {
 		rows = append(rows, tuipages.PricingRow{
 			Model: entry.Model, BaseInput: pricing.FormatRate(entry.BaseInput), CacheRead: pricing.FormatRate(entry.CacheRead),
 			Write5m: pricing.FormatRate(entry.Write5m), Write1h: pricing.FormatRate(entry.Write1h), Output: pricing.FormatRate(entry.Output),
-			Status: entry.Status, Effective: effectiveWindow(entry), Source: entry.Source, Override: override,
+			Status: entry.ProvenanceLabel(), Effective: effectiveWindow(entry), Source: entry.Source, Override: override,
 		})
 	}
 	return rows
@@ -2554,7 +2554,7 @@ func dashboardLedgerModels(models []store.ModelRow, costs reportCosts, pricingTa
 		}
 		entry, found := pricingTable.RateFor(model.Model, model.LastDate)
 		if found {
-			row.HasRate, row.Status, row.Source = true, entry.Status, entry.Source
+			row.HasRate, row.Status, row.Source = true, entry.ProvenanceLabel(), entry.Source
 		}
 		result = append(result, row)
 	}
@@ -2742,6 +2742,10 @@ func ledgerPricingProvenance(database *store.Store, filter store.Filter, table p
 				provenance.PublishedModels++
 				provenance.PublishedCost += pricingInfo.costs[status]
 				provenance.PublishedTokens += pricingInfo.tokens[status]
+			case "user":
+				provenance.UserModels++
+				provenance.UserCost += pricingInfo.costs[status]
+				provenance.UserTokens += pricingInfo.tokens[status]
 			}
 		}
 	}
@@ -3081,6 +3085,8 @@ func modelPricingStatus(status string) string {
 		return "proxy"
 	case "estimated":
 		return "estimated"
+	case "user":
+		return "user rate"
 	default:
 		return "unpriced"
 	}
@@ -3107,13 +3113,15 @@ func modelPricingLabel(stats dashboardModelPricingStats) string {
 func modelPricingPriority(status string) int {
 	switch status {
 	case "live":
+		return 1
+	case "user rate":
 		return 0
 	case "proxy":
-		return 1
-	case "estimated":
 		return 2
-	default:
+	case "estimated":
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -3125,6 +3133,10 @@ func pricingProvenanceLabel(status string) string {
 		return "proxy rates"
 	case "estimated":
 		return "estimated"
+	case "user":
+		return "user rate"
+	case "user rate":
+		return "user rate"
 	case "partial":
 		return "partial"
 	default:
