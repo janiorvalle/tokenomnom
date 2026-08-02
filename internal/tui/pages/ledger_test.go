@@ -465,6 +465,49 @@ func TestLedgerDayRollupBandFillsWideTallPane(t *testing.T) {
 	}
 }
 
+func TestLedgerDayRollupHeadersAlignWithValues(t *testing.T) {
+	const width = 110
+	leftWidth := (width - 2) / 2
+	rightWidth := width - leftWidth - 2
+	modelHeader := ledgerDayModelHeader(leftWidth)
+	projectHeader := ledgerDayProjectHeader(rightWidth)
+	modelLabelWidth := ledgerDayModelLabelWidth(leftWidth)
+	projectLabelWidth := ledgerDayProjectLabelWidth(rightWidth)
+
+	for _, column := range []struct {
+		name string
+		end  int
+	}{
+		{name: "COST", end: modelLabelWidth + 1 + 9},
+		{name: "SHARE", end: modelLabelWidth + 1 + 9 + 1 + 5},
+		{name: "TOKENS", end: modelLabelWidth + 1 + 9 + 1 + 5 + 1 + 9},
+	} {
+		if got := strings.Index(modelHeader, column.name) + len(column.name); got != column.end {
+			t.Fatalf("model %s header edge=%d, want %d: %q", column.name, got, column.end, modelHeader)
+		}
+	}
+	for _, column := range []struct {
+		name string
+		end  int
+	}{
+		{name: "SESSIONS", end: projectLabelWidth + 1 + 8},
+		{name: "SHARE", end: projectLabelWidth + 1 + 8 + 1 + 6},
+	} {
+		if got := strings.Index(projectHeader, column.name) + len(column.name); got != column.end {
+			t.Fatalf("project %s header edge=%d, want %d: %q", column.name, got, column.end, projectHeader)
+		}
+	}
+
+	data := Data{
+		DayModels:   []LedgerModel{{Provider: "codex", Model: "gpt-5.2", Tokens: 9_900_000, Cost: pricing.Money(72_500_000_000)}},
+		DayProjects: []LedgerProject{{Label: "tokenomnom", Sessions: 10, Share: 1}},
+	}
+	view := renderLedgerDayRollups(ledgerTestRender(), data, width, 59)
+	if !strings.Contains(view, strings.TrimRight(modelHeader, " ")) || !strings.Contains(view, strings.TrimRight(projectHeader, " ")) {
+		t.Fatalf("day rollup does not use aligned headers:\n%s", view)
+	}
+}
+
 func TestLedgerDayRollupBandFillsSparseWideTallPane(t *testing.T) {
 	stamp := "2026-07-14T09:00:00Z"
 	data := Data{

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 )
@@ -353,6 +354,23 @@ func assertNoDenseVoids(t *testing.T, name, view string) {
 }
 
 func isDenseVoidLine(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return trimmed == "" || trimmed == "·"
+	trimmed := strings.TrimSpace(ansi.Strip(line))
+	if trimmed == "" {
+		return true
+	}
+	runes := []rune(trimmed)
+	if len(runes) == 0 {
+		return true
+	}
+	for _, r := range runes[1:] {
+		if r != runes[0] {
+			return false
+		}
+	}
+	switch runes[0] {
+	case '·', '—':
+		return true
+	default:
+		return false
+	}
 }

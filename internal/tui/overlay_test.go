@@ -111,11 +111,11 @@ func TestQuest152KeyboardOnlyOverlayWalk(t *testing.T) {
 }
 
 func TestQuest152READMEFrameEvidence(t *testing.T) {
-	dashboard := quest152RichPageModel(DailyPageID, 80, 24)
-	writeQuest152EvidenceFrameForTest(t, "readme-dashboard", 80, 24, dashboard.View(), "TestQuest152READMEFrameEvidence")
+	dashboard := quest152RichPageModel(DailyPageID, 192, 66)
+	writeQuest152EvidenceFrameForTest(t, "readme-dashboard", 192, 66, dashboard.View(), "TestQuest152READMEFrameEvidence")
 
-	detail := quest152HistoryDetailModel(80, 24)
-	writeQuest152EvidenceFrameForTest(t, "readme-history-detail", 80, 24, detail.View(), "TestQuest152READMEFrameEvidence")
+	detail := quest152HistoryDetailModel(192, 66)
+	writeQuest152EvidenceFrameForTest(t, "readme-history-detail", 192, 66, detail.View(), "TestQuest152READMEFrameEvidence")
 }
 
 func TestQuest152OverlayEvidence(t *testing.T) {
@@ -128,6 +128,17 @@ func TestQuest152OverlayEvidence(t *testing.T) {
 	writeQuest152EvidenceFrameForTest(t, "palette-wide", 192, 66, palette.View(), "TestQuest152OverlayEvidence")
 }
 
+func TestQuest152NoVoidSweepTreatsStyledGlyphRowsAsVoid(t *testing.T) {
+	for _, line := range []string{"\x1b[2m·\x1b[0m", "\x1b[2m—\x1b[0m", " ···· "} {
+		if !isDenseVoidContentLine(line) {
+			t.Errorf("glyph-only line %q was not treated as void", line)
+		}
+	}
+	if isDenseVoidContentLine("  recent activity") {
+		t.Fatal("content line was treated as void")
+	}
+}
+
 func paletteRows(layout cockpitLayout, itemCount int) int {
 	if itemCount == 0 {
 		return 1
@@ -138,7 +149,7 @@ func paletteRows(layout cockpitLayout, itemCount int) int {
 func maxBlankContentRun(value string) int {
 	maximum, current := 0, 0
 	for _, line := range strings.Split(value, "\n") {
-		if strings.TrimSpace(ansi.Strip(line)) == "" {
+		if isDenseVoidContentLine(line) {
 			current++
 			maximum = max(maximum, current)
 			continue
@@ -146,6 +157,28 @@ func maxBlankContentRun(value string) int {
 		current = 0
 	}
 	return maximum
+}
+
+func isDenseVoidContentLine(line string) bool {
+	trimmed := strings.TrimSpace(ansi.Strip(line))
+	if trimmed == "" {
+		return true
+	}
+	runes := []rune(trimmed)
+	if len(runes) == 0 {
+		return true
+	}
+	for _, r := range runes[1:] {
+		if r != runes[0] {
+			return false
+		}
+	}
+	switch runes[0] {
+	case '·', '—':
+		return true
+	default:
+		return false
+	}
 }
 
 func quest152RichPageModel(pageID PageID, width, height int) Model {

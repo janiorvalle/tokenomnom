@@ -58,15 +58,15 @@ Run the dashboard:
 tokenomnom
 ```
 
-The dashboard stays readable in an 80x24 terminal, with the help overlay and
+The dashboard stays readable in a 192x66 terminal, with the help overlay and
 history detail available without leaving the keyboard:
 
 <p align="center">
-  <img src="assets/dashboard.png" alt="tokenomnom dashboard at 80 columns and 24 rows" width="900">
+  <img src="assets/dashboard.png" alt="tokenomnom dashboard at 192 columns and 66 rows" width="900">
 </p>
 
 <p align="center">
-  <img src="assets/history-detail.png" alt="tokenomnom history session detail at 80 columns and 24 rows" width="900">
+  <img src="assets/history-detail.png" alt="tokenomnom ledger day and history session detail at 192 columns and 66 rows" width="900">
 </p>
 
 Get the overall picture:
