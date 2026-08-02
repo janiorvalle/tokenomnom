@@ -85,9 +85,20 @@ func (m Model) statusBarWarning(sync statusBarSegment, width int) string {
 	const warningPrefix = "! "
 	separator := "  ·  "
 	available := width - lipgloss.Width(sync.text) - lipgloss.Width(separator)
-	warning := warningPrefix + m.warning
 	if available <= 0 {
 		return sync.styled
+	}
+	warning := warningPrefix + m.warning
+	message := m.statusBarMessage()
+	if message != "" {
+		warningWidth := available - lipgloss.Width(message) - lipgloss.Width(separator)
+		minimumWarningWidth := lipgloss.Width(warningPrefix + "warn…")
+		if lipgloss.Width(message) <= available && warningWidth >= minimumWarningWidth {
+			if lipgloss.Width(warning) > warningWidth {
+				warning = truncate(warning, warningWidth)
+			}
+			return sync.styled + m.render.Palette.Subtle().Render(separator) + m.render.Palette.Success().Render(message) + m.render.Palette.Subtle().Render(separator) + m.render.Palette.Warning().Render(warning)
+		}
 	}
 	if lipgloss.Width(warning) > available {
 		warning = truncate(warning, available)

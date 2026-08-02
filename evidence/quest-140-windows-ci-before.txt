@@ -1,0 +1,13 @@
+Windows CI reproduction from PR #63, captured before the fix.
+
+The Windows job completed every package except the lock test:
+
+```text
+--- FAIL: TestSyncLockWaitsBoundedlyAndReleases (4.25s)
+    store_test.go:100: second lock error is not actionable: usage store is busy: lock C:\Users\RUNNER~1\AppData\Local\Temp\TestSyncLockWaitsBoundedlyAndReleases2482744235\001\usage.db.lock is held but its owner record is unreadable; run tokenomnom doctor, wait for any sync to finish, then retry
+    testing.go:1369: TempDir RemoveAll cleanup: unlinkat C:\Users\RUNNER~1\AppData\Local\Temp\TestSyncLockWaitsBoundedlyAndReleases2482744235\001\usage.db.lock: The process cannot access the file because it is being used by another process.
+FAIL
+FAIL    github.com/janiorvalle/tokenomnom/internal/store  8.728s
+```
+
+The holder metadata was unreadable while Windows held the byte-range lock, so the timeout could not name the PID or start time.

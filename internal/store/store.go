@@ -27,14 +27,19 @@ const (
 	DatabaseName = "usage.db"
 )
 
-// ErrStoreInUse reports that another tokenomnom process owns the sync lock.
-var ErrStoreInUse = errors.New("usage store is busy")
-
 // Store owns a SQLite usage database.
 type Store struct {
 	db   *sql.DB
 	path string
 }
+
+// ErrStoreNeedsMigration indicates that a read-only consumer found an older
+// supported schema and must hand the store to a writer before reading it.
+var ErrStoreNeedsMigration = errors.New("usage store requires migration")
+
+// ErrStoreNeedsInitialization indicates that a read-only consumer found a
+// database file without schema metadata and must hand it to a writer.
+var ErrStoreNeedsInitialization = errors.New("usage store requires initialization")
 
 // Checkpoint records the last complete JSONL position processed for a file.
 type Checkpoint struct {
@@ -112,15 +117,10 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure state directory: %w", err)
 	}
-	absolutePath, err := filepath.Abs(path)
+	dsn, err := usageStoreDSN(path, false)
 	if err != nil {
-		return nil, fmt.Errorf("resolve usage store path: %w", err)
+		return nil, err
 	}
-	uriPath := filepath.ToSlash(absolutePath)
-	if runtime.GOOS == "windows" && len(filepath.VolumeName(absolutePath)) == 2 {
-		uriPath = "/" + uriPath
-	}
-	dsn := (&url.URL{Scheme: "file", Path: uriPath}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open usage store: %w", err)
@@ -143,6 +143,72 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	return store, nil
+}
+
+// OpenReadOnly opens an existing current-schema usage database without
+// creating storage, migrating, changing permissions, or taking the sync lock.
+// The dashboard uses this path for its first paint so a live sync cannot block
+// already persisted data from rendering.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("usage store does not exist: %w", err)
+		}
+		return nil, fmt.Errorf("stat usage store: %w", err)
+	}
+	dsn, err := usageStoreDSN(path, true)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open usage store read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	store := &Store{db: db, path: path}
+	var hasMeta bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')`).Scan(&hasMeta); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("inspect usage store schema read-only: %w", err)
+	}
+	if !hasMeta {
+		db.Close()
+		return nil, fmt.Errorf("%w: schema metadata is missing; run tokenomnom sync", ErrStoreNeedsInitialization)
+	}
+	var schemaVersion int
+	if err := db.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')`).Scan(&schemaVersion); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("inspect usage store read-only: %w", err)
+	}
+	if schemaVersion > SchemaVersion {
+		db.Close()
+		return nil, fmt.Errorf("usage store schema %d is newer than this tokenomnom; upgrade tokenomnom", schemaVersion)
+	}
+	if schemaVersion != SchemaVersion {
+		db.Close()
+		return nil, fmt.Errorf("%w: schema %d requires migration; run tokenomnom sync", ErrStoreNeedsMigration, schemaVersion)
+	}
+	return store, nil
+}
+
+func usageStoreDSN(path string, readOnly bool) (string, error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve usage store path: %w", err)
+	}
+	uriPath := filepath.ToSlash(absolutePath)
+	if runtime.GOOS == "windows" && len(filepath.VolumeName(absolutePath)) == 2 {
+		uriPath = "/" + uriPath
+	}
+	uri := &url.URL{Scheme: "file", Path: uriPath}
+	if readOnly {
+		query := url.Values{}
+		query.Set("mode", "ro")
+		query.Add("_pragma", "busy_timeout(5000)")
+		uri.RawQuery = query.Encode()
+	}
+	return uri.String(), nil
 }
 
 func (s *Store) initialize() error {
@@ -499,61 +565,6 @@ func (s *Store) VacuumInto(path string) error {
 		return fmt.Errorf("vacuum usage store into %q: %w", path, err)
 	}
 	return nil
-}
-
-// LockSync prevents two tokenomnom processes from racing checkpoints and
-// double-applying the same source records.
-func (s *Store) LockSync() (func(), error) {
-	return Lock(s.path)
-}
-
-// Lock acquires the process-wide sync lock before SQLite is opened.
-func Lock(databasePath string) (func(), error) {
-	stateDir := filepath.Dir(databasePath)
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create state directory: %w", err)
-	}
-	if err := os.Chmod(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure state directory: %w", err)
-	}
-	lockPath := databasePath + ".lock"
-	return lockPathFile(lockPath, fmt.Errorf("%w; another sync may be running (lock %s)", ErrStoreInUse, lockPath))
-}
-
-// LockPath acquires an advisory process lock without changing its parent directory.
-func LockPath(path string) (func(), error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("create lock %s: %w", path, err)
-	}
-	if err := lockFileWait(file); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("acquire lock %s: %w", path, err)
-	}
-	return func() {
-		_ = unlockFile(file)
-		_ = file.Close()
-	}, nil
-}
-
-func lockPathFile(lockPath string, busyError error) (func(), error) {
-	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("create sync lock: %w", err)
-	}
-	if err := lockFile(file); err != nil {
-		file.Close()
-		if isLockBusy(err) {
-			return nil, busyError
-		}
-		return nil, fmt.Errorf("acquire sync lock: %w", err)
-	}
-	_ = file.Truncate(0)
-	_, _ = file.WriteAt([]byte(fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))), 0)
-	return func() {
-		_ = unlockFile(file)
-		_ = file.Close()
-	}, nil
 }
 
 // PromoteAlias transfers all contribution ownership to a changed duplicate

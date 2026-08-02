@@ -106,7 +106,11 @@ and `output`, plus `status`, nullable `effective_from`, nullable
 `jsonl_files`, `total_bytes`, nullable `oldest`, nullable `newest`, and
 `walk_errors`. `data.store` contains `path`, `exists`, `size_bytes`, nullable
 `schema_version`, nullable `timezone`, nullable `last_sync`, `usage_rows`,
-`distinct_models`, `date_range`, and `missing_files`.
+`distinct_models`, `date_range`, `missing_files`, and `lock`. `lock` contains
+the persistent lock `path`, `exists`, `held`, `stale`, `owner_known`,
+`released`, nullable `pid`, nullable `started`, and nullable `pid_alive`. A
+stale lock is safe to reclaim by retrying tokenomnom after confirming the
+recorded process is gone; a released lock is the normal clean-shutdown state.
 
 `data.store.missing_files` counts synced transcript files whose source file is
 no longer present. It is a usage-store denominator, not a history-index count.

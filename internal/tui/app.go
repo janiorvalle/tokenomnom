@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -88,14 +89,44 @@ type Request struct {
 	SessionReturnToEnd   bool
 	SessionDetailID      string
 	SessionDetailOffset  int
+	VaultOffset          int
+	SystemOffset         int
+	RefreshPages         bool
 	Sync                 bool
+	Action               string
+	LoadID               uint64
 	PageLoadToken        string
-	HistoryQuery         string
-	HistorySelect        int
-	HistorySessionID     string
-	HistoryExportID      string
-	HistoryExportToken   string
-	FullSync             bool
+	// Initial marks the store-only load used to make the first dashboard frame.
+	Initial            bool
+	HistoryQuery       string
+	HistorySelect      int
+	HistorySessionID   string
+	HistoryExportID    string
+	HistoryExportToken string
+	FullSync           bool
+	Progress           *LoadProgressReporter
+}
+
+// LoadProgress is the user-facing progress reported by a dashboard loader.
+// The callback stays on Request so existing loaders can opt into streaming
+// status without changing the Loader function signature.
+type LoadProgress struct {
+	Phase          string
+	FilesFound     int
+	FilesProcessed int
+}
+
+// LoadProgressReporter receives progress updates from a dashboard loader.
+type LoadProgressReporter func(LoadProgress)
+
+// ProgressSink delivers background loader progress to the running TUI.
+type ProgressSink func(Request, uint64, LoadProgress)
+
+// ProgressMsg carries a loader update into the Bubble Tea event loop.
+type ProgressMsg struct {
+	Request    Request
+	Generation uint64
+	Progress   LoadProgress
 }
 
 // MetricKind selects the value treatment for one summary metric.
@@ -125,6 +156,8 @@ type Snapshot struct {
 	Sessions  tuipages.SessionPageData
 	StatusBar StatusBar
 	Ledger    tuipages.Data
+	Vault     tuipages.VaultPageData
+	System    tuipages.SystemPageData
 	// DailyCursor is the normalized distance from the newest active daily bar.
 	DailyCursor          int
 	DailyCursorMax       int
@@ -135,6 +168,8 @@ type Snapshot struct {
 	FilesScanned         int
 	SyncDuration         time.Duration
 	Warning              string
+	ActionStatus         string
+	ActionWarning        string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -228,6 +263,11 @@ type Model struct {
 	started                  time.Time
 	status                   string
 	warning                  string
+	actionInFlight           string
+	loadID                   uint64
+	pendingAction            bool
+	pendingActionStatus      string
+	pendingActionWarning     string
 	offerState               skillOfferState
 	offerChecked             bool
 	offerResults             []string
@@ -249,6 +289,8 @@ type Model struct {
 	commandOutputFailure     bool
 	commandOutputHint        string
 	dashboardLoadBusy        bool
+	progress                 LoadProgress
+	progressSink             ProgressSink
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
@@ -261,6 +303,11 @@ func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, prov
 	model := newModel(render, loader, offer, provider)
 	model.commandRegistry = mergeCommandRegistries(registries...)
 	return model
+}
+
+// NewWithPages creates a dashboard with additional registered pages.
+func NewWithPages(render theme.Context, loader Loader, offer SkillOffer, pages ...Page) Model {
+	return NewWithProviderAndPages(render, loader, offer, AllProviders, pages...)
 }
 
 // NewWithProviderAndPages creates a dashboard with additional registered
@@ -286,8 +333,8 @@ func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Pr
 		render: render, loader: loader, offer: offer, spinner: spin,
 		router:  newRouter(pages...),
 		palette: newPalette(render.Palette.Emphasis()),
-		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, Ledger: tuipages.State{Cursor: -1}},
-		loading: true, dashboardLoadBusy: true, started: time.Now(),
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Initial: true, Ledger: tuipages.State{Cursor: -1}},
+		loading: true, dashboardLoadBusy: true, started: time.Now(), progress: LoadProgress{Phase: "starting sync"},
 		pageLoadTokens: make(map[PageID]string),
 	}
 }
@@ -298,6 +345,11 @@ func mergeCommandRegistries(registries ...CommandRegistry) CommandRegistry {
 		merged.Actions = append(merged.Actions, registry.Actions...)
 	}
 	return merged
+}
+
+// SetProgressSink connects loader progress to the running TUI program.
+func (m *Model) SetProgressSink(sink ProgressSink) {
+	m.progressSink = sink
 }
 
 // Init starts the initial store load.
@@ -318,15 +370,95 @@ func (m *Model) loadCmd(request Request) tea.Cmd {
 }
 
 func (m *Model) startDashboardLoad(request Request) tea.Cmd {
+	if request.Action != "" {
+		m.clearPendingActionOutcome()
+	} else if request.Sync {
+		m.clearPendingActionOutcome()
+	}
+	if request.Sync {
+		m.progress = LoadProgress{Phase: "discovering files"}
+	}
+	request.Initial = false
+	m.loadID++
+	request.LoadID = m.loadID
+	m.request.LoadID = request.LoadID
+	m.request.Initial = false
 	m.dashboardLoadBusy = true
 	return m.loadCmd(request)
 }
 
+func (m *Model) finishAction(request Request, snapshot Snapshot) {
+	m.actionInFlight = ""
+	m.request.Action = ""
+	if request.Sync && request.LoadID == m.loadID {
+		m.syncInFlight = false
+	}
+	if !m.syncInFlight {
+		m.syncing = false
+	}
+	m.status = snapshot.ActionStatus
+	if snapshot.ActionWarning != "" {
+		m.status = ""
+		m.warning = snapshot.ActionWarning
+	}
+}
+
+func (m *Model) queueActionOutcome(snapshot Snapshot) {
+	m.pendingAction = true
+	m.pendingActionStatus = snapshot.ActionStatus
+	m.pendingActionWarning = snapshot.ActionWarning
+}
+
+func (m *Model) clearPendingActionOutcome() {
+	m.pendingAction = false
+	m.pendingActionStatus = ""
+	m.pendingActionWarning = ""
+}
+
+func (m *Model) applyPendingActionOutcome() {
+	if !m.pendingAction {
+		return
+	}
+	m.status = m.pendingActionStatus
+	if m.pendingActionWarning != "" {
+		m.status = ""
+		m.warning = m.pendingActionWarning
+	}
+	m.clearPendingActionOutcome()
+}
+
+func (m *Model) refreshCurrentSnapshotWithActionOutcome(snapshot Snapshot) tea.Cmd {
+	next := m.request
+	next.Action = ""
+	next.Sync = false
+	next.RefreshPages = true
+	if next.Width < minimumWidth || next.Height < minimumHeight {
+		m.clearPendingActionOutcome()
+		return nil
+	}
+	m.queueActionOutcome(snapshot)
+	return m.startDashboardLoad(next)
+}
+
 func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
-	return func() tea.Msg {
-		if m.loader == nil {
+	if m.loader == nil {
+		return func() tea.Msg {
 			return loadedMsg{request: request, generation: generation, err: fmt.Errorf("dashboard loader is unavailable")}
 		}
+	}
+	if !request.Sync {
+		return func() tea.Msg {
+			snapshot, err := m.loader(request)
+			return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
+		}
+	}
+	if request.Sync && m.progressSink != nil {
+		reportProgress := LoadProgressReporter(func(update LoadProgress) {
+			m.progressSink(request, generation, update)
+		})
+		request.Progress = &reportProgress
+	}
+	return func() tea.Msg {
 		snapshot, err := m.loader(request)
 		return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
 	}
@@ -409,6 +541,7 @@ func (m *Model) resumeInitialSync() tea.Cmd {
 	m.syncing = true
 	next := m.request
 	next.Sync = true
+	next.RefreshPages = true
 	return m.startDashboardLoad(next)
 }
 
@@ -465,6 +598,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var command tea.Cmd
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
+	case ProgressMsg:
+		if msg.Generation == m.loadGeneration && sameRequestIgnoringSync(msg.Request, m.request) {
+			m.progress = msg.Progress
+		}
+		return m, nil
 	case pageLoadedMsg:
 		if m.pageLoadTokens[msg.id] != msg.request.PageLoadToken {
 			return m, nil
@@ -485,6 +623,44 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		if msg.generation == m.loadGeneration {
 			m.dashboardLoadBusy = false
+		}
+		current := msg.request.LoadID == m.loadID
+		if msg.request.LoadID == 0 && msg.generation == m.loadGeneration {
+			current = true
+		}
+		if msg.request.Action != "" {
+			if msg.err != nil {
+				m.actionInFlight = ""
+				m.request.Action = ""
+				m.loading = false
+				if current && msg.request.Sync {
+					m.syncInFlight = false
+				}
+				if !m.syncInFlight {
+					m.syncing = false
+				}
+				m.status = ""
+				m.warning = msg.err.Error()
+				m.clearPendingActionOutcome()
+				if !current {
+					return m, m.refreshCurrentSnapshotWithActionOutcome(Snapshot{ActionWarning: msg.err.Error()})
+				}
+				return m, m.resumePendingWork()
+			}
+			if !current {
+				m.finishAction(msg.request, msg.snapshot)
+				return m, m.refreshCurrentSnapshotWithActionOutcome(msg.snapshot)
+			}
+			m.snapshot = msg.snapshot
+			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
+			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
+			m.request.RefreshPages = false
+			m.loading = false
+			m.loaded = true
+			m.warning = msg.snapshot.Warning
+			m.finishAction(msg.request, msg.snapshot)
+			return m, m.resumePendingWork()
 		}
 		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
 			if msg.err != nil {
@@ -517,9 +693,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.generation != m.loadGeneration {
 			return m, nil
 		}
-		requestMatches := sameRequestIgnoringSync(msg.request, m.request)
+		// The first store-only load does not depend on terminal dimensions, but a
+		// resize can update the live request before its result arrives. Keep that
+		// result so the current request can start the initial sync.
+		initialLoad := !m.loaded && msg.request.Initial && msg.request.LoadID == 0
+		requestMatches := initialLoad || sameRequestIgnoringSync(msg.request, m.request)
 		if !requestMatches {
-			return m, nil
+			return m, m.resumePendingWork()
 		}
 		if msg.err != nil {
 			m.loading, m.syncFresh = false, false
@@ -541,6 +721,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
+		if initial {
+			m.request.Initial = false
+		}
 		m.snapshot = msg.snapshot
 		if requestMatches {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
@@ -549,6 +732,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		m.loaded = true
+		m.request.RefreshPages = false
 		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
 			m.syncCompletionPending = false
@@ -583,6 +767,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
+		m.applyPendingActionOutcome()
 		if !initial {
 			return m, m.resumePendingWork()
 		}
@@ -675,8 +860,12 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	// Dashboard loads do not own the history-search page's private state.
 	left.Sync = false
 	right.Sync = false
+	left.LoadID = 0
+	right.LoadID = 0
 	left.PageLoadToken = ""
 	right.PageLoadToken = ""
+	left.Initial = false
+	right.Initial = false
 	left.HistoryQuery = ""
 	right.HistoryQuery = ""
 	left.HistorySelect = 0
@@ -689,7 +878,18 @@ func sameRequestIgnoringSync(left, right Request) bool {
 	right.HistoryExportID = ""
 	left.HistoryExportToken = ""
 	right.HistoryExportToken = ""
-	return left == right
+	left.Progress = nil
+	right.Progress = nil
+	return reflect.DeepEqual(left, right)
+}
+
+func actionProgress(action string) string {
+	switch action {
+	case VerifyVaultAction:
+		return "verifying vault…"
+	default:
+		return "working…"
+	}
 }
 
 func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -808,6 +1008,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
+		request.RefreshPages = true
 		return m.loadDashboardAndActivePage(request)
 	case keyActionPageCommand:
 		page := m.activePage()
@@ -822,10 +1023,25 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		if !changed {
 			return m, nil
 		}
-		m.request = request
+		if request.Action != "" {
+			if m.actionInFlight != "" || m.syncInFlight || m.dashboardLoadBusy {
+				return m, nil
+			}
+			request.RefreshPages = true
+			loadRequest := request
+			request.Action = ""
+			m.request = request
+			m.warning = ""
+			m.status = actionProgress(loadRequest.Action)
+			m.syncing = true
+			m.actionInFlight = loadRequest.Action
+			return m, m.startDashboardLoad(loadRequest)
+		}
 		if !page.NeedsReload(context, request) {
+			m.request = request
 			return m, nil
 		}
+		m.request = request
 		command := m.startDashboardLoad(m.request)
 		return m, command
 	}
@@ -1042,10 +1258,31 @@ func (m Model) baseView() string {
 	}
 	if m.loading {
 		elapsed := time.Since(m.started).Round(time.Second)
-		line := fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
+		line := fmt.Sprintf("%s Syncing Codex + Claude · %s · %s\n", m.spinner.View(), m.syncProgressText(), elapsed)
 		return m.place(line)
 	}
 	return m.cockpitView()
+}
+
+func (m Model) syncProgressText() string {
+	switch m.progress.Phase {
+	case "starting sync":
+		return "starting sync"
+	case "discovering files":
+		return "discovering files"
+	case "preparing sync":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("preparing sync · %s files found", formatStatusNumber(m.progress.FilesFound))
+		}
+		return "preparing sync"
+	case "ingesting files":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("ingesting %s/%s files", formatStatusNumber(m.progress.FilesProcessed), formatStatusNumber(m.progress.FilesFound))
+		}
+		return "ingesting files"
+	default:
+		return fmt.Sprintf("%d files scanned", m.snapshot.FilesScanned)
+	}
 }
 
 func (m Model) cockpitView() string {

@@ -1,0 +1,26 @@
+Quest 139 reproduction before fix
+
+Baseline commit: fa05d9e (origin/main)
+
+Command:
+go build -buildvcs=false -o /tmp/tokenomnom-quest139 ./cmd/tokenomnom
+
+Probe environment:
+HOME=/tmp/tokenomnom-quest139-drained.Ghh5zy
+XDG_STATE_HOME=$HOME/state
+CODEX_HOME=/Users/janiorvalle/.codex
+CLAUDE_CONFIG_DIR=/Users/janiorvalle/.claude
+TERM=screen
+
+The temporary HOME was fresh and the PTY reader drained output continuously.
+The real Codex and Claude transcript roots contained 4,133 JSONL files.
+
+Observed after 15 seconds:
+
+  Syncing Codex + Claude · starting sync · 0s
+  Syncing Codex + Claude · starting sync · 15s
+
+The captured output contained 151 `starting sync` frames and no
+`discovering files`, `preparing sync`, or `ingesting` frames. A fresh
+`state/tokenomnom/usage.db` existed, but the dashboard never advanced to the
+initial sync. This is the pre-fix failure state.

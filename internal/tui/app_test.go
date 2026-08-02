@@ -262,7 +262,7 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
 	updated, command := model.Update(loadedMessage(model, model.request, Snapshot{Empty: true, FilesScanned: 12}))
 	model = updated.(Model)
-	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · 12 files scanned") {
+	if !model.loading || !model.syncing || command == nil || !strings.Contains(model.View(), "Syncing Codex + Claude · discovering files") || strings.Contains(model.View(), "0 files scanned") {
 		t.Fatalf("empty initial transition = %+v, command %v", model, command != nil)
 	}
 
@@ -281,6 +281,146 @@ func TestSyncProgressLoadedAndFailureTransitions(t *testing.T) {
 	model = updated.(Model)
 	if model.warning != "sync failed" || model.snapshot.Views[0] != "daily" || !strings.Contains(model.View(), "sync failed") {
 		t.Fatalf("failure transition = %+v", model)
+	}
+}
+
+func TestSyncProgressViewRendersLiveIngestCount(t *testing.T) {
+	model := loadedTestModel()
+	model.loading = true
+	model.progress = LoadProgress{Phase: "ingesting files", FilesFound: 3712, FilesProcessed: 128}
+	view := model.View()
+	if !strings.Contains(view, "Syncing Codex + Claude · ingesting 128/3,712 files") {
+		t.Fatalf("live progress missing from loading view:\n%s", view)
+	}
+	if strings.Contains(view, "0 files scanned") {
+		t.Fatalf("loading view still rendered a frozen zero:\n%s", view)
+	}
+	t.Log("\n" + view)
+}
+
+func TestSyncProgressViewRendersHonestPhaseCopy(t *testing.T) {
+	model := loadedTestModel()
+	model.loading = true
+	for _, progress := range []LoadProgress{
+		{Phase: "discovering files"},
+		{Phase: "preparing sync", FilesFound: 3712},
+	} {
+		model.progress = progress
+		view := model.View()
+		if strings.Contains(view, "0 files scanned") {
+			t.Fatalf("phase view still rendered a frozen zero:\n%s", view)
+		}
+		t.Log("\n" + view)
+	}
+}
+
+func TestSyncLoaderStreamsProgressThroughSink(t *testing.T) {
+	var received []LoadProgress
+	model := New(testRender(), func(request Request) (Snapshot, error) {
+		if request.Progress == nil {
+			t.Fatal("sync loader did not receive a progress reporter")
+		}
+		report := *request.Progress
+		report(LoadProgress{Phase: "ingesting files", FilesFound: 4, FilesProcessed: 2})
+		return Snapshot{}, nil
+	}, SkillOffer{})
+	model.SetProgressSink(func(_ Request, _ uint64, progress LoadProgress) {
+		received = append(received, progress)
+	})
+	request := model.request
+	request.Sync = true
+	message := model.loadCmd(request)()
+	if _, ok := message.(loadedMsg); !ok {
+		t.Fatalf("sync command returned %T, want loadedMsg", message)
+	}
+	if len(received) != 1 || received[0].FilesProcessed != 2 {
+		t.Fatalf("received progress = %+v", received)
+	}
+	updated, _ := model.Update(ProgressMsg{
+		Request:    request,
+		Generation: model.loadGeneration,
+		Progress:   received[0],
+	})
+	model = updated.(Model)
+	if model.progress.FilesProcessed != 2 {
+		t.Fatalf("model progress = %+v", model.progress)
+	}
+}
+
+func TestInitialSnapshotShowsPendingOptionalSegments(t *testing.T) {
+	model := New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{})
+	model.request.Width, model.request.Height = 100, 30
+	initialRequest := model.request
+	if !initialRequest.Initial {
+		t.Fatal("new dashboard request was not marked initial")
+	}
+	pending := Snapshot{
+		Sessions: tuipages.SessionPageData{Pending: true},
+		StatusBar: StatusBar{
+			History: HistoryStatus{Hint: "pending"},
+			Vault:   VaultStatus{Hint: "pending"},
+		},
+	}
+	updated, command := model.Update(loadedMsg{request: initialRequest, generation: model.loadGeneration, snapshot: pending})
+	model = updated.(Model)
+	if command == nil || model.request.Initial || !model.loaded || model.loading || !model.syncing {
+		t.Fatalf("initial snapshot transition = initial=%v loaded=%v loading=%v syncing=%v command=%v", model.request.Initial, model.loaded, model.loading, model.syncing, command != nil)
+	}
+	view := model.View()
+	if !strings.Contains(view, "index pending") || !strings.Contains(view, "vault pending") {
+		t.Fatalf("pending optional segments missing from first frame:\n%s", view)
+	}
+	model.router.Select(SessionsPageID)
+	sessionsView := model.View()
+	if !strings.Contains(sessionsView, "Loading sessions…") || strings.Contains(sessionsView, "No history index is available.") {
+		t.Fatalf("pending sessions page made a false availability claim:\n%s", sessionsView)
+	}
+	t.Log("\n" + view)
+}
+
+func TestInitialSnapshotSurvivesResizeBeforeLoadCompletes(t *testing.T) {
+	model := New(testRender(), func(Request) (Snapshot, error) {
+		return Snapshot{}, nil
+	}, SkillOffer{})
+	initialRequest := model.request
+
+	updated, command := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = updated.(Model)
+	if command != nil || model.request.Height != 30 {
+		t.Fatalf("resize while initial load is busy = request=%+v command=%v", model.request, command != nil)
+	}
+
+	updated, command = model.Update(loadedMsg{
+		request:    initialRequest,
+		generation: model.loadGeneration,
+		snapshot:   Snapshot{Empty: true},
+	})
+	model = updated.(Model)
+	if command == nil || !model.loaded || !model.loading || !model.syncing {
+		t.Fatalf("initial load after resize = loaded=%v loading=%v syncing=%v command=%v", model.loaded, model.loading, model.syncing, command != nil)
+	}
+	message := command()
+	loaded, ok := message.(loadedMsg)
+	if !ok || loaded.request.Height != 30 {
+		t.Fatalf("initial sync used stale dimensions: message=%T request=%+v", message, loaded.request)
+	}
+}
+
+func TestDroppedLoadedSnapshotResumesPendingResize(t *testing.T) {
+	model := loadedTestModel()
+	model.pendingResize = true
+	model.dashboardLoadBusy = true
+	staleRequest := model.request
+	staleRequest.DailyCursor = 1
+
+	updated, command := model.Update(loadedMsg{
+		request:    staleRequest,
+		generation: model.loadGeneration,
+		snapshot:   Snapshot{Views: [4]string{"stale"}},
+	})
+	model = updated.(Model)
+	if command == nil || !model.dashboardLoadBusy || model.pendingResize {
+		t.Fatalf("stale loaded snapshot stranded pending resize: command=%v busy=%v pending=%v", command != nil, model.dashboardLoadBusy, model.pendingResize)
 	}
 }
 
@@ -779,6 +919,61 @@ func TestActivePageOwnsPageSpecificKeys(t *testing.T) {
 	model = updateKeyForTest(t, model, "y")
 	if model.router.ActivePage().ID() != HeatmapPageID || !model.request.HeatmapYear {
 		t.Fatalf("heatmap page did not handle year key: page=%v request=%+v", model.router.ActivePage().ID(), model.request)
+	}
+}
+
+func TestVaultPageAdapterLaunchesOneShotVerification(t *testing.T) {
+	page := NewVaultPage()
+	context := PageContext{
+		Render:   testRender(),
+		Snapshot: Snapshot{Vault: tuipages.VaultPageData{Directory: "/tmp/vault", Format: "v1"}},
+		Request:  Request{},
+		Width:    60,
+		Height:   10,
+	}
+	request, changed := page.Update(context, "v")
+	if !changed || request.Action != VerifyVaultAction || !page.NeedsReload(context, request) {
+		t.Fatalf("verification update = changed %v request %#v", changed, request)
+	}
+	context.Request = request
+	if _, changed := page.Update(context, "v"); changed {
+		t.Fatal("vault verification was allowed to queue twice")
+	}
+}
+
+func TestPageActionReportsProgressAndCompletion(t *testing.T) {
+	model := loadedTestModel()
+	model.loader = func(request Request) (Snapshot, error) {
+		if request.Action != VerifyVaultAction {
+			return Snapshot{}, errors.New("vault action was not passed to the loader")
+		}
+		return Snapshot{ActionStatus: "vault verified · 4 files checked"}, nil
+	}
+	model.router = newPageRouter(NewVaultPage())
+
+	updated, command := model.Update(keyMsg("v"))
+	model = updated.(Model)
+	if command == nil || !model.syncing || model.status != "verifying vault…" {
+		t.Fatalf("action start = command %v syncing %v status %q", command != nil, model.syncing, model.status)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.syncing || model.actionInFlight != "" || model.request.Action != "" || model.status != "vault verified · 4 files checked" {
+		t.Fatalf("action completion = syncing %v in-flight %q action %q status %q", model.syncing, model.actionInFlight, model.request.Action, model.status)
+	}
+
+	model = loadedTestModel()
+	model.router = newPageRouter(NewVaultPage())
+	model.loader = func(Request) (Snapshot, error) { return Snapshot{}, errors.New("verification failed") }
+	updated, command = model.Update(keyMsg("v"))
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("failed action returned no command")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.syncing || model.actionInFlight != "" || model.request.Action != "" || model.status != "" || model.warning != "verification failed" {
+		t.Fatalf("action failure = syncing %v in-flight %q action %q status %q warning %q", model.syncing, model.actionInFlight, model.request.Action, model.status, model.warning)
 	}
 }
 
