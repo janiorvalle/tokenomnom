@@ -170,13 +170,18 @@ intentionally separate and existing count fields keep their original meaning.
 ## History Index
 
 `tokenomnom history index [--provider codex|claude] [--source all|provider|vault]
-[--full] [--verbose] --format json`
+[--full] [--verify] [--verbose] --format json`
 
 The first explicit index creates `history.db`. `--source all` is the default and
 combines Codex `sessions/`, Codex `archived_sessions/`, Claude Code `projects/`,
 and every selected validated vault manifest version. `provider` and `vault`
-narrow that scope. `--full` rebuilds the selected source kinds. Indexing is not
-triggered by usage reports or ordinary syncs.
+narrow that scope. `--full` rebuilds the selected source kinds. Matching source
+size, modification time, extractor version, and source kind lets a normal
+incremental run skip a source without reading its content. `--verify` performs
+exact indexed-prefix continuity checks before skipping or appending. Vault
+indexing already verifies archive members; use `vault verify --deep` for an
+explicit deep vault check. Indexing is not triggered by usage reports or
+ordinary syncs.
 
 `history.index_assistant` defaults to false and is the only consent switch; it
 has no environment or flag override. Enabling it marks existing sources stale,

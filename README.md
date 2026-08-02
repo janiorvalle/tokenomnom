@@ -138,6 +138,11 @@ detects rewrites and missing sources, so live and vaulted copies of the same
 session show up as one logical session with availability and version counts
 in `history list`.
 
+Normal incremental indexing trusts matching source metadata instead of rereading
+unchanged transcript content. Use `history index --verify` when you need exact
+indexed-prefix continuity checks; use `vault verify --deep` for an explicit deep
+check of archived transcripts.
+
 `history index --format json` groups routine record exclusions under
 `data.exclusion_counts`; it does not emit one warning per excluded record.
 Add `--verbose` only when you need the bounded path-and-line details in
