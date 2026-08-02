@@ -35,6 +35,7 @@ type Options struct {
 	Roots     []discover.Root
 	Providers []history.Provider
 	Full      bool
+	Verify    bool
 	Now       func() time.Time
 	LockHeld  bool
 	// SkipRunRecord lets a combined provider+vault command record one scope-wide
@@ -141,7 +142,7 @@ func Index(options Options) (Summary, error) {
 	if err := reconcileMoves(options.Store, files, checkpoints, discoveryFailed); err != nil {
 		return summary, err
 	}
-	classifications := classifyFiles(files, checkpoints, options.Full, options.hashWorkers)
+	classifications := classifyFiles(files, checkpoints, classificationOptions{full: options.Full, verify: options.Verify}, options.hashWorkers)
 	seen := make(map[string]bool, len(files))
 	for index, file := range files {
 		provider := history.Provider(file.Provider)
@@ -252,7 +253,12 @@ type fileClassification struct {
 	err  error
 }
 
-func classifyFiles(files []discover.SourceFile, checkpoints map[string]historystore.Checkpoint, full bool, requestedWorkers int) []fileClassification {
+type classificationOptions struct {
+	full   bool
+	verify bool
+}
+
+func classifyFiles(files []discover.SourceFile, checkpoints map[string]historystore.Checkpoint, options classificationOptions, requestedWorkers int) []fileClassification {
 	result := make([]fileClassification, len(files))
 	workers := requestedWorkers
 	if workers <= 0 {
@@ -267,7 +273,7 @@ func classifyFiles(files []discover.SourceFile, checkpoints map[string]historyst
 	classifyAt := func(index int) {
 		file := files[index]
 		checkpoint, found := checkpoints[historystore.CheckpointKey(history.Provider(file.Provider), file.Path)]
-		result[index].kind, result[index].err = classify(file, checkpoint, found, full)
+		result[index].kind, result[index].err = classify(file, checkpoint, found, options)
 	}
 	if workers <= 1 {
 		for index := range files {
@@ -405,17 +411,34 @@ func discoverFiles(database *historystore.Store, roots []discover.Root, selected
 	return files, failed
 }
 
-func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, found, full bool) (fileKind, error) {
+func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, found bool, options classificationOptions) (fileKind, error) {
 	if !found {
 		return fileNew, nil
 	}
-	if full || checkpoint.Missing || checkpoint.ExtractorVersion != history.ExtractorVersion || checkpoint.Kind != locationKind(file.Kind) {
+	if options.full || checkpoint.Missing || checkpoint.ExtractorVersion != history.ExtractorVersion || checkpoint.Kind != locationKind(file.Kind) {
 		return fileRewrite, nil
 	}
 	if file.Size < checkpoint.Size || file.Size < checkpoint.CompleteOffset {
 		return fileRewrite, nil
 	}
-	if file.Size == checkpoint.Size && file.ModTime.UnixNano() != checkpoint.ModTimeUnixNano {
+	if file.Size == checkpoint.Size {
+		if file.ModTime.UnixNano() == checkpoint.ModTimeUnixNano && !options.verify {
+			return fileUnchanged, nil
+		}
+		if options.verify {
+			// The checkpoint hash covers only complete JSONL bytes. A pending
+			// suffix has no stored continuity hash, so verification must reread it.
+			if file.Size != checkpoint.CompleteOffset {
+				return fileRewrite, nil
+			}
+			continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
+			if err != nil {
+				return fileRewrite, err
+			}
+			if continuityHash == checkpoint.ContentSHA256 {
+				return fileUnchanged, nil
+			}
+		}
 		return fileRewrite, nil
 	}
 	prefix, err := prefixFingerprint(file.Path, checkpoint.CompleteOffset)
@@ -426,17 +449,10 @@ func classify(file discover.SourceFile, checkpoint historystore.Checkpoint, foun
 	if err != nil {
 		return fileRewrite, err
 	}
-	if file.Size == checkpoint.Size && prefix == checkpoint.PrefixFingerprint && tail == checkpoint.TailFingerprint {
-		continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
-		if err != nil {
-			return fileRewrite, err
-		}
-		if continuityHash == checkpoint.ContentSHA256 {
-			return fileUnchanged, nil
-		}
-		return fileRewrite, nil
-	}
 	if file.Size > checkpoint.Size && file.Size >= checkpoint.CompleteOffset && prefix == checkpoint.PrefixFingerprint && tail == checkpoint.TailFingerprint {
+		if !options.verify {
+			return fileAppend, nil
+		}
 		continuityHash, err := hashPathPrefix(file.Path, checkpoint.CompleteOffset)
 		if err != nil {
 			return fileRewrite, err

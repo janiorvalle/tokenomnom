@@ -365,6 +365,71 @@ func TestHistoryIndexStatusAndProviderKinds(t *testing.T) {
 	}
 }
 
+func TestHistoryIndexVerifyDetectsSameMetadataRewrite(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	path := filepath.Join(codexDir, "sessions", "verify.jsonl")
+	initial := historyCodexFixture("verify", "first prompt")
+	writeTextFixture(t, path, initial)
+
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	database, err := historystore.OpenReadOnly(filepath.Join(stateDir, historystore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := database.Checkpoints()
+	_ = database.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, ok := checkpoints[historystore.CheckpointKey(history.ProviderCodex, canonicalPath)]
+	if !ok {
+		t.Fatalf("checkpoint not found for %q", path)
+	}
+
+	rewritten := strings.Replace(initial, "first prompt", "other prompt", 1)
+	writeTextFixture(t, path, rewritten)
+	checkpointTime := time.Unix(0, checkpoint.ModTimeUnixNano)
+	if err := os.Chtimes(path, checkpointTime, checkpointTime); err != nil {
+		t.Fatal(err)
+	}
+
+	normalOutput, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normal jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, normalOutput).Data, &normal); err != nil {
+		t.Fatal(err)
+	}
+	if normal.SkippedSources != 1 || normal.RewrittenSources != 0 {
+		t.Fatalf("unverified rewrite = %+v", normal)
+	}
+
+	verifiedOutput, err := executeReport([]string{"history", "index", "--source", "provider", "--verify", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verified jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, verifiedOutput).Data, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if verified.RewrittenSources != 1 || verified.SkippedSources != 0 {
+		t.Fatalf("verified rewrite = %+v", verified)
+	}
+}
+
 func TestHistoryIndexReportsStableLegacyThreadReclassification(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")

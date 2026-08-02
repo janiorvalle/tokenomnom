@@ -45,6 +45,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	var provider string
 	var source string
 	var full bool
+	var verify bool
 	var verbose bool
 	command := &cobra.Command{
 		Use:   "index",
@@ -123,7 +124,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 						return err
 					}
 					providerSummary, providerErr = indexer.Index(indexer.Options{
-						Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true, IndexAssistant: indexAssistant,
+						Store: database, Roots: roots, Providers: providers, Full: full, Verify: verify, Now: func() time.Time { return attempt }, LockHeld: true, NarrowSource: true, IndexAssistant: indexAssistant,
 					})
 					markProviderError()
 					if err := database.RecordScopedRun(attempt, providerSummary.ErrorCount, false); err != nil {
@@ -154,7 +155,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 								return nil
 							}
 							providerSummary, providerErr = indexer.Index(indexer.Options{
-								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
+								Store: database, Roots: roots, Providers: providers, Full: full, Verify: verify, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
 								CompleteAssistantScope: provider == "" && current.ErrorCount == 0,
 							})
 							markProviderError()
@@ -171,7 +172,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 						}
 						if source == "all" {
 							providerSummary, providerErr = indexer.Index(indexer.Options{
-								Store: database, Roots: roots, Providers: providers, Full: full, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
+								Store: database, Roots: roots, Providers: providers, Full: full, Verify: verify, Now: func() time.Time { return attempt }, LockHeld: true, SkipRunRecord: true, IndexAssistant: indexAssistant,
 							})
 							markProviderError()
 							if err := database.RecordScopedRun(attempt, providerSummary.ErrorCount+vaultSummary.ErrorCount, provider == ""); err != nil {
@@ -202,6 +203,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 	command.Flags().StringVar(&provider, "provider", "", "index only codex or claude")
 	command.Flags().StringVar(&source, "source", "all", "source set to index (all, provider, or vault)")
 	command.Flags().BoolVar(&full, "full", false, "rebuild selected source kinds")
+	command.Flags().BoolVar(&verify, "verify", false, "verify indexed content before skipping or appending sources")
 	command.Flags().BoolVar(&verbose, "verbose", false, "include bounded per-record exclusion details")
 	return command
 }
