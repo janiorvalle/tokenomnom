@@ -1525,7 +1525,7 @@ func TestQuest147LedgerDayFullWindowFrame(t *testing.T) {
 
 	view := model.View()
 	assertFullWindowFrame(t, view, width, height, "Ledger day")
-	for _, fragment := range []string{"tokenomnom", "LEDGER", "TIME", "PROVIDER", "SESSION", "FIRST PROMPT", "OVERVIEW", "COST & TOKENS", "Investigate the production latency regression"} {
+	for _, fragment := range []string{"tokenomnom", "LEDGER", "TIME", "PROVIDER", "SESSION", "FIRST PROMPT", "MODELS ON THIS DAY", "PROJECTS ON THIS DAY", "SESSION STARTS BY HOUR", "OVERVIEW", "COST & TOKENS", "Investigate the production latency regression"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("day full window missing %q:\n%s", fragment, view)
 		}
@@ -1655,6 +1655,15 @@ func quest147LedgerDayFrameData() tuipages.Data {
 			day.Codex = day.Codex.Add(value)
 		}
 	}
+	data.DayModels = []tuipages.LedgerModel{
+		{Provider: "codex", Model: "gpt-5.2", Tokens: 9_900_000, Cost: pricing.Money(72_500_000_000), PricedTokens: 9_900_000},
+		{Provider: "claude", Model: "claude-sonnet", Tokens: 10_000_000, Cost: pricing.Money(75_000_000_000), PricedTokens: 10_000_000},
+	}
+	data.DayProjects = []tuipages.LedgerProject{
+		{Label: "tokenomnom", Sessions: 10, Share: 0.5},
+		{Label: "billing-api", Sessions: 10, Share: 0.5},
+	}
+	data.DayProjectCount = len(data.DayProjects)
 	day.Sessions = len(data.Sessions)
 	data.Rows, data.Total = []tuipages.Row{day, previous}, day.Add(previous)
 	return data

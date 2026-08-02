@@ -419,6 +419,128 @@ func TestLedgerDayPreviewMovesWithSessionCursor(t *testing.T) {
 	}
 }
 
+func TestLedgerDayRollupBandFillsWideTallPane(t *testing.T) {
+	sessions := make([]LedgerSession, 0, 20)
+	for index := 0; index < 20; index++ {
+		stamp := fmt.Sprintf("2026-07-14T%02d:00:00Z", 9+index%10)
+		provider, project := history.ProviderCodex, "tokenomnom"
+		if index%2 == 1 {
+			provider, project = history.ProviderClaude, "billing-api"
+		}
+		sessions = append(sessions, LedgerSession{
+			CatalogSession: historystore.CatalogSession{Provider: provider, Project: project, FirstTimestamp: &stamp},
+			Tokens:         int64(900_000 + index*10_000), Cost: pricing.Money(5_000_000_000 + int64(index)*250_000_000),
+			PricedTokens: int64(900_000 + index*10_000), ActivityTimestamp: stamp,
+		})
+	}
+	data := Data{
+		SessionDay: "2026-07-14", SessionIndexAvailable: true, Location: time.UTC, Sessions: sessions,
+		Rows: []Row{{Key: "2026-07-14", Label: "Jul 14", Sessions: len(sessions)}},
+		DayModels: []LedgerModel{
+			{Provider: "codex", Model: "gpt-5.2", Tokens: 9_900_000, Cost: pricing.Money(72_500_000_000), PricedTokens: 9_900_000},
+			{Provider: "claude", Model: "claude-sonnet", Tokens: 10_000_000, Cost: pricing.Money(75_000_000_000), PricedTokens: 10_000_000},
+		},
+		DayProjects: []LedgerProject{{Label: "tokenomnom", Sessions: 10, Share: 0.5}, {Label: "billing-api", Sessions: 10, Share: 0.5}},
+	}
+	state := State{Zoom: ZoomDay, ExpandedDay: "2026-07-14"}
+	view := renderExpandedDayList(ledgerTestRender(), data, state, 110, 59)
+	if lines := strings.Split(view, "\n"); len(lines) != 59 {
+		t.Fatalf("wide tall day pane rendered %d lines, want 59:\n%s", len(lines), view)
+	}
+	for _, fragment := range []string{"MODELS ON THIS DAY", "PROJECTS ON THIS DAY", "gpt-5.2", "billing-api", "SESSION STARTS BY HOUR"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("day rollup missing %q:\n%s", fragment, view)
+		}
+	}
+	blankRun := 0
+	for index, line := range strings.Split(view, "\n") {
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+			if blankRun > 1 {
+				t.Fatalf("day pane has a blank void at row %d:\n%s", index+1, view)
+			}
+			continue
+		}
+		blankRun = 0
+	}
+}
+
+func TestLedgerDayRollupBandFillsSparseWideTallPane(t *testing.T) {
+	stamp := "2026-07-14T09:00:00Z"
+	data := Data{
+		SessionDay: "2026-07-14", SessionIndexAvailable: true, Location: time.UTC,
+		Sessions: []LedgerSession{{
+			CatalogSession: historystore.CatalogSession{Provider: history.ProviderCodex, Project: "tokenomnom", FirstTimestamp: &stamp},
+			Tokens:         900_000, Cost: pricing.Money(5_000_000_000), PricedTokens: 900_000, ActivityTimestamp: stamp,
+		}},
+		Rows:        []Row{{Key: "2026-07-14", Label: "Jul 14", Sessions: 1}},
+		DayModels:   []LedgerModel{{Provider: "codex", Model: "gpt-5.2", Tokens: 900_000, Cost: pricing.Money(5_000_000_000), PricedTokens: 900_000}},
+		DayProjects: []LedgerProject{{Label: "tokenomnom", Sessions: 1, Share: 1}},
+	}
+	view := renderExpandedDayList(ledgerTestRender(), data, State{Zoom: ZoomDay, ExpandedDay: "2026-07-14"}, 110, 59)
+	if lines := strings.Split(view, "\n"); len(lines) != 59 {
+		t.Fatalf("sparse wide tall day pane rendered %d lines, want 59:\n%s", len(lines), view)
+	}
+	for _, fragment := range []string{"MODELS ON THIS DAY", "PROJECTS ON THIS DAY", "SESSION STARTS BY HOUR"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("sparse day rollup missing %q:\n%s", fragment, view)
+		}
+	}
+}
+
+func TestLedgerDayRollupFactsKeepUnknownCountsHonest(t *testing.T) {
+	stamp := "2026-07-14T09:00:00Z"
+	projects := make([]LedgerProject, 8)
+	for index := range projects {
+		projects[index] = LedgerProject{Label: fmt.Sprintf("project-%d", index), Sessions: 1, Share: 1.0 / 8}
+	}
+	data := Data{
+		SessionDay: "2026-07-14", SessionIndexAvailable: true, Location: time.UTC, SessionsHaveMore: true,
+		Sessions: []LedgerSession{{
+			CatalogSession: historystore.CatalogSession{Provider: history.ProviderCodex, Project: "project-0", FirstTimestamp: &stamp},
+			Tokens:         900_000, Cost: pricing.Money(5_000_000_000), PricedTokens: 900_000, ActivityTimestamp: stamp,
+		}},
+		Rows:            []Row{{Key: "2026-07-14", Label: "Jul 14", Sessions: 12}},
+		DayProjects:     projects,
+		DayProjectCount: 12,
+	}
+	view := renderExpandedDayList(ledgerTestRender(), data, State{Zoom: ZoomDay, ExpandedDay: "2026-07-14"}, 110, 59)
+	for _, fragment := range []string{"projects represented 12", "sessions on day      ≥ 1"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("day rollup fact missing %q:\n%s", fragment, view)
+		}
+	}
+}
+
+func TestLedgerDayHourProfileUsesSessionStart(t *testing.T) {
+	first, activity := "2026-07-14T09:00:00Z", "2026-07-14T17:00:00Z"
+	profiles := ledgerDayHourProfiles([]LedgerSession{{
+		CatalogSession:    historystore.CatalogSession{FirstTimestamp: &first},
+		ActivityTimestamp: activity,
+	}}, time.UTC)
+	if profiles[9].Value != 1 || profiles[17].Value != 0 {
+		t.Fatalf("hour profile = %+v, want the session start bucket", profiles)
+	}
+}
+
+func TestMonthlyCaptionKeepsCompleteRecentEntries(t *testing.T) {
+	months := make([]LedgerMonth, 0, 12)
+	for month := 1; month <= 12; month++ {
+		months = append(months, LedgerMonth{
+			Key: fmt.Sprintf("2026-%02d", month), Label: time.Date(2026, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Format("Jan 2006"),
+			Codex: ProviderTotals{Cost: pricing.Money(month) * 1_000_000_000, Tokens: 1, PricedTokens: 1},
+		})
+	}
+	caption := monthlyCaption(months, 80)
+	entries := strings.Split(caption, "  ·  ")
+	if len(entries) != 3 || !strings.HasPrefix(entries[0], "Oct 2026 ") || !strings.HasPrefix(entries[1], "Nov 2026 ") || !strings.HasPrefix(entries[2], "Dec 2026 ") {
+		t.Fatalf("monthly caption = %q, want the three complete recent entries", caption)
+	}
+	if strings.Contains(caption, "Sep 2026") || strings.HasSuffix(caption, "2026") {
+		t.Fatalf("monthly caption contains a dangling month label: %q", caption)
+	}
+}
+
 func ledgerRightPane(view string, offset int) string {
 	lines := strings.Split(view, "\n")
 	for index, line := range lines {

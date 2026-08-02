@@ -68,8 +68,8 @@ func (s *Store) LedgerAnalyticsWithCounts(profileQuery, countsQuery CatalogQuery
 	if location == nil {
 		location = time.Local
 	}
-	profileWhere, profileArgs := catalogWhere(profileQuery, false)
-	countsWhere, countsArgs := catalogWhere(countsQuery, false)
+	profileWhere, profileArgs := catalogWhere(profileQuery, true)
+	countsWhere, countsArgs := catalogWhere(countsQuery, true)
 	profileCondition := strings.Join(profileWhere, " AND ")
 	countsCondition := strings.Join(countsWhere, " AND ")
 	args := make([]any, 0, len(profileArgs)*2+len(countsArgs)*2)

@@ -3,6 +3,7 @@ package pages
 import (
 	"fmt"
 	"math/bits"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -203,7 +204,16 @@ type Data struct {
 	SessionDataUnavailable bool
 	SessionWarning         string
 	Location               *time.Location
-	Analytics              LedgerAnalytics
+	// DayModels and DayProjects are bounded display rollups; count fields preserve full totals.
+	DayModels           []LedgerModel
+	DayModelTotalCost   pricing.Money
+	DayModelTotalTokens int64
+	DayModelCount       int
+	DayProjects         []LedgerProject
+	DayProjectCount     int
+	DaySessionCount     int
+	DayHours            []LedgerProfile
+	Analytics           LedgerAnalytics
 }
 
 // Matches reports whether data was loaded for the requested zoom and anchor.
@@ -516,23 +526,232 @@ func renderExpandedDayList(render theme.Context, data Data, state State, width, 
 	if width < 72 {
 		rowHeight = 2
 	}
-	reservedLines := 2
-	if selectedWarning != "" {
-		reservedLines++
+	controlLines := 1
+	if data.SessionsHaveMore {
+		controlLines++
 	}
-	capacity := max(1, (height-len(lines)-reservedLines)/rowHeight)
+	if selectedWarning != "" {
+		controlLines++
+	}
+	rollupHeight := 0
+	if width >= 72 && height >= ledgerTallHeight {
+		rollupHeight = min(35, max(0, height-len(lines)-controlLines))
+	}
+	capacity := max(1, (height-len(lines)-controlLines-rollupHeight)/rowHeight)
 	start, end := visibleWindow(len(data.Sessions), selected, capacity)
 	for index := start; index < end; index++ {
-		lines = append(lines, expandedSessionRow(render, data.Sessions[index], index == selected, width, data.Location)...)
+		rows := expandedSessionRow(render, data.Sessions[index], index == selected, width, data.Location)
+		lines = append(lines, rows...)
+	}
+	if width >= 72 && height >= ledgerTallHeight {
+		rollupHeight = max(0, height-len(lines)-controlLines)
 	}
 	if data.SessionsHaveMore {
 		lines = append(lines, render.Palette.Subtle().Render(truncate("↓ more sessions", width)))
+	}
+	if rollupHeight > 0 {
+		lines = append(lines, strings.Split(renderLedgerDayRollups(render, data, width, rollupHeight), "\n")...)
 	}
 	if selectedWarning != "" {
 		lines = append(lines, render.Palette.Warning().Render(truncate("~ "+selectedWarning, width)))
 	}
 	lines = append(lines, render.Palette.Subtle().Render(truncate("↑/↓ select  ·  enter open  ·  esc collapse", width)))
 	return strings.Join(lines, "\n")
+}
+
+func renderLedgerDayRollups(render theme.Context, data Data, width, height int) string {
+	models := append([]LedgerModel(nil), data.DayModels...)
+	projects := ledgerDayProjects(data)
+	leftWidth := max(1, (width-2)/2)
+	rightWidth := max(1, width-leftWidth-2)
+
+	modelLines := []string{
+		fitLine(render.Palette.Header().Render("MODELS ON THIS DAY"), leftWidth),
+		fitLine(render.Palette.Subtle().Render("MODEL                 COST  SHARE  TOKENS"), leftWidth),
+	}
+	totalModelCost, totalModelTokens := data.DayModelTotalCost, data.DayModelTotalTokens
+	if totalModelCost == 0 && totalModelTokens == 0 {
+		for _, model := range models {
+			totalModelCost += model.Cost
+			totalModelTokens += model.Tokens
+		}
+	}
+	modelCount := data.DayModelCount
+	if modelCount == 0 {
+		modelCount = len(models)
+	}
+	projectCount := data.DayProjectCount
+	if projectCount == 0 {
+		projectCount = len(projects)
+	}
+	for _, model := range models {
+		modelLines = append(modelLines, renderLedgerDayModel(render, model, leftWidth, totalModelCost, totalModelTokens))
+	}
+	if len(models) == 0 {
+		message := "no model attribution"
+		if data.SessionsHaveMore {
+			message = "model rollup unavailable"
+		}
+		modelLines = append(modelLines, fitLine(render.Palette.Subtle().Render(message), leftWidth))
+	}
+
+	projectLines := []string{
+		fitLine(render.Palette.Header().Render("PROJECTS ON THIS DAY"), rightWidth),
+		fitLine(render.Palette.Subtle().Render("PROJECT                  SESSIONS  SHARE"), rightWidth),
+	}
+	for _, project := range projects {
+		projectLines = append(projectLines, renderLedgerDayProject(render, project, rightWidth))
+	}
+	if len(projects) == 0 {
+		message := "no indexed project activity"
+		if data.SessionsHaveMore {
+			message = "project rollup unavailable"
+		}
+		projectLines = append(projectLines, fitLine(render.Palette.Subtle().Render(message), rightWidth))
+	}
+	pairHeight := max(len(modelLines), len(projectLines))
+	lines := strings.Split(joinLedgerColumns(strings.Join(modelLines, "\n"), strings.Join(projectLines, "\n"), leftWidth, rightWidth, pairHeight), "\n")
+	lines = append(lines, ledgerRule(render, "SESSION STARTS BY HOUR  ·  LOCAL TIME", width))
+
+	hours := append([]LedgerProfile(nil), data.DayHours...)
+	if len(hours) == 0 {
+		if data.SessionsHaveMore {
+			hours = defaultHourProfiles()
+		} else {
+			hours = ledgerDayHourProfiles(data.Sessions, data.Location)
+		}
+	}
+	hours = completeHourProfiles(hours)
+	maximum := maxProfileValue(hours)
+	for _, hour := range hours {
+		lines = append(lines, renderLedgerDayHour(render, hour, maximum, width))
+	}
+	profileStatus := "complete"
+	if data.SessionsHaveMore && len(data.DayHours) == 0 {
+		profileStatus = "unavailable · page is incomplete"
+	}
+	facts := []string{
+		fmt.Sprintf("loaded page sessions %s", formatCount(len(data.Sessions))),
+		fmt.Sprintf("models represented   %s", formatCount(modelCount)),
+		fmt.Sprintf("projects represented %s", formatCount(projectCount)),
+		fmt.Sprintf("sessions on day      %s", ledgerDaySessionCount(data)),
+		fmt.Sprintf("hour profile         %s", profileStatus),
+		"session starts        local time",
+		"source                history catalog",
+		"rollups               selected day",
+	}
+	for _, fact := range facts {
+		lines = append(lines, render.Palette.Subtle().Render(fitText(fact, width)))
+	}
+	return fitLedgerBlock(strings.Join(lines, "\n"), width, height)
+}
+
+func renderLedgerDayModel(render theme.Context, model LedgerModel, width int, totalCost pricing.Money, totalTokens int64) string {
+	label := cleanInline(model.Model)
+	if model.Provider != "" {
+		label = cleanInline(model.Provider + "/" + label)
+	}
+	labelWidth := max(8, width-28)
+	cost := fitMoney(formatMoney(model.Cost, model.PricedTokens, false, model.UnpricedTokens > 0), 9)
+	share := ledgerDayShare(model.Cost, totalCost, model.Tokens, totalTokens)
+	line := padRight(truncate(label, labelWidth), labelWidth) + " " + padLeft(cost, 9) + " " + padLeft(share, 5) + " " + padLeft(fitText(compactTokens(model.Tokens), 9), 9)
+	return fitLine(render.Palette.Subtle().Render(line), width)
+}
+
+func renderLedgerDayProject(render theme.Context, project LedgerProject, width int) string {
+	labelWidth := max(8, width-18)
+	line := padRight(truncate(cleanInline(project.Label), labelWidth), labelWidth) + " " + padLeft(formatCount(project.Sessions), 8) + " " + padLeft(fmt.Sprintf("%3.0f%%", project.Share*100), 6)
+	return fitLine(render.Palette.Subtle().Render(line), width)
+}
+
+func ledgerDayShare(value pricing.Money, totalCost pricing.Money, tokens, totalTokens int64) string {
+	if totalCost > 0 {
+		return fmt.Sprintf("%3.0f%%", float64(value)/float64(totalCost)*100)
+	}
+	if totalTokens > 0 && tokens > 0 {
+		return fmt.Sprintf("%3.0f%%", float64(tokens)/float64(totalTokens)*100)
+	}
+	return "—"
+}
+
+func ledgerDaySessionCount(data Data) string {
+	if data.DaySessionCount > 0 {
+		return formatCount(data.DaySessionCount)
+	}
+	if data.SessionsHaveMore {
+		if len(data.Sessions) > 0 {
+			return "≥ " + formatCount(len(data.Sessions))
+		}
+		return "unavailable"
+	}
+	return formatCount(len(data.Sessions))
+}
+
+func ledgerDayProjects(data Data) []LedgerProject {
+	if len(data.DayProjects) > 0 {
+		return append([]LedgerProject(nil), data.DayProjects...)
+	}
+	if data.SessionsHaveMore {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, session := range data.Sessions {
+		label := cleanInline(session.Project)
+		if label == "" {
+			label = "unknown"
+		}
+		counts[label]++
+	}
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	projects := make([]LedgerProject, 0, len(counts))
+	for label, count := range counts {
+		share := 0.0
+		if total > 0 {
+			share = float64(count) / float64(total)
+		}
+		projects = append(projects, LedgerProject{Label: label, Sessions: count, Share: share})
+	}
+	sort.SliceStable(projects, func(left, right int) bool {
+		if projects[left].Sessions != projects[right].Sessions {
+			return projects[left].Sessions > projects[right].Sessions
+		}
+		return projects[left].Label < projects[right].Label
+	})
+	if len(projects) > 8 {
+		projects = projects[:8]
+	}
+	return projects
+}
+
+func ledgerDayHourProfiles(sessions []LedgerSession, location *time.Location) []LedgerProfile {
+	profiles := defaultHourProfiles()
+	for _, session := range sessions {
+		timestamp := ""
+		if session.FirstTimestamp != nil {
+			timestamp = *session.FirstTimestamp
+		} else {
+			timestamp = session.ActivityTimestamp
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+		if err != nil {
+			continue
+		}
+		if location != nil {
+			parsed = parsed.In(location)
+		}
+		profiles[parsed.Hour()].Value++
+		profiles[parsed.Hour()].Sessions++
+	}
+	return profiles
+}
+
+func renderLedgerDayHour(render theme.Context, hour LedgerProfile, maximum, width int) string {
+	barWidth := max(8, min(48, width-30))
+	bar := profileBlock(render, hour.Value, maximum, barWidth)
+	return fitLine(fmt.Sprintf("%s:00  %3d sessions  %s", hour.Label, hour.Value, bar), width)
 }
 
 type ledgerDisplayRow struct {
@@ -1061,7 +1280,7 @@ func renderSpendByMonth(render theme.Context, data Data, state State, width, hei
 		labels = append(labels, padLeft(label, cellWidth))
 	}
 	lines = append(lines, fitLine("      "+strings.Join(labels, " "), width))
-	caption := monthlyCaption(months)
+	caption := monthlyCaption(months, width)
 	lines = append(lines, fitLine(render.Palette.Subtle().Render(caption), width))
 	return fitLedgerBlock(strings.Join(lines, "\n"), width, height)
 }
@@ -1136,7 +1355,7 @@ func chartYear(months []LedgerMonth, state State) string {
 	return "all time"
 }
 
-func monthlyCaption(months []LedgerMonth) string {
+func monthlyCaption(months []LedgerMonth, width int) string {
 	active := []string{}
 	for _, month := range months {
 		if month.Total().Tokens == 0 {
@@ -1147,7 +1366,28 @@ func monthlyCaption(months []LedgerMonth) string {
 	if len(active) == 0 {
 		return "no indexed activity in this period"
 	}
-	return strings.Join(active, "  ·  ")
+	const separator = "  ·  "
+	selected := []string{}
+	used := 0
+	for index := len(active) - 1; index >= 0 && len(selected) < 3; index-- {
+		entryWidth := lipgloss.Width(active[index])
+		separatorWidth := 0
+		if len(selected) > 0 {
+			separatorWidth = lipgloss.Width(separator)
+		}
+		if len(selected) > 0 && used+separatorWidth+entryWidth > width {
+			break
+		}
+		if len(selected) == 0 && entryWidth > width {
+			break
+		}
+		selected = append([]string{active[index]}, selected...)
+		used += separatorWidth + entryWidth
+	}
+	if len(selected) == 0 {
+		return "activity details exceed this width"
+	}
+	return strings.Join(selected, separator)
 }
 
 func renderLedgerProfiles(render theme.Context, data Data, state State, width, height int) string {

@@ -587,6 +587,13 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	data.SessionDay = day
 	data.SessionPageCursor = request.Ledger.SessionPageCursor
 	data.Location = location
+	if request.SessionProjectActive {
+		// The usage store has no project dimension, so discard its unscoped model
+		// rollup and let the filtered history query own this day view.
+		data.DayModels = nil
+		data.DayModelTotalCost, data.DayModelTotalTokens, data.DayModelCount = 0, 0, 0
+		data.DayProjects, data.DayHours, data.DayProjectCount, data.DaySessionCount = nil, nil, 0, 0
+	}
 	info, err := historystore.Inspect(path)
 	if err != nil {
 		data.SessionWarning = "History index unavailable; run tokenomnom history index to rebuild it."
@@ -615,10 +622,29 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		return data
 	}
 	end := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
-	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: historystore.CatalogQuery{
-		Provider: historyProvider(request.Provider), Since: &start, Until: &end,
-		Source: historystore.CatalogSourceAny, Limit: historystore.DefaultSessionCostPageSize, Cursor: request.Ledger.SessionPageCursor,
-	}})
+	dayQuery := historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider), Since: &start, Until: &end, Source: historystore.CatalogSourceAny,
+		Project: request.SessionProject, ProjectSet: request.SessionProjectActive,
+	}
+	dayProfile, profileErr := database.LedgerAnalytics(dayQuery, location)
+	if profileErr == nil {
+		data.DayHours = ledgerDayHours(dayProfile.Hours)
+		data.DaySessionCount = ledgerProfileSessionCount(dayProfile.Hours)
+		projectCounts := make(map[string]int)
+		for _, value := range dayProfile.ProjectMonths {
+			project := strings.TrimSpace(value.Project)
+			if project == "" {
+				project = "unknown"
+			}
+			projectCounts[project] += value.Sessions
+		}
+		data.DayProjects = dashboardLedgerDayProjects(projectCounts, ledgerProjectSessionCount(projectCounts))
+		data.DayProjectCount = len(projectCounts)
+	}
+	sessionQuery := dayQuery
+	sessionQuery.Limit = historystore.DefaultSessionCostPageSize
+	sessionQuery.Cursor = request.Ledger.SessionPageCursor
+	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: sessionQuery})
 	if err != nil {
 		data.SessionWarning = "Indexed sessions for this day could not be read; press R to retry or run tokenomnom history index."
 		data.SessionDataUnavailable = true
@@ -634,7 +660,10 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	data.SessionsHaveMore = page.Page.HasMore
 	data.SessionsNextCursor = page.Page.NextCursor
 	data.Sessions = make([]tuipages.LedgerSession, 0, len(page.Sessions))
+	modelTotals := make(map[ledgerDayModelKey]tuipages.LedgerModel)
+	projectCounts := make(map[string]int)
 	unavailable := 0
+	incomplete := 0
 	for _, session := range page.Sessions {
 		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
 		if priceErr != nil {
@@ -642,6 +671,25 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		}
 		if row.AttributionStatus == "unavailable" {
 			unavailable++
+		}
+		if row.AttributionStatus != "complete" {
+			incomplete++
+		}
+		project := strings.TrimSpace(row.Project)
+		if project == "" {
+			project = "unknown"
+		}
+		projectCounts[project]++
+		for _, model := range row.Models {
+			key := ledgerDayModelKey{provider: string(model.Provider), model: model.Model}
+			value := modelTotals[key]
+			value.Provider, value.Model = key.provider, key.model
+			value.Tokens += model.TotalTokens
+			value.Cost += model.cost
+			value.PricedTokens += model.PricedTokens
+			value.UnpricedTokens += model.UnpricedTokens
+			value.CostPerMillion = weightedRate(value.Cost, value.PricedTokens)
+			modelTotals[key] = value
 		}
 		data.Sessions = append(data.Sessions, tuipages.LedgerSession{
 			CatalogSession: row.CatalogSession,
@@ -651,12 +699,116 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 			Warning: strings.Join(uniqueStrings(row.Warnings), "; "),
 		})
 	}
+	pageModels := dashboardLedgerDayModels(modelTotals)
+	completeDayPage := request.Ledger.SessionPageCursor == "" && !page.Page.HasMore && len(data.Sessions) == len(page.Sessions) && incomplete == 0
+	// A partial catalog page is not a valid day-wide model denominator. When the
+	// usage aggregate is unavailable, leave the model band honest instead of
+	// presenting the first page as the whole selected day.
+	if len(data.DayModels) == 0 && completeDayPage {
+		data.DayModels = boundedLedgerModels(pageModels)
+		data.DayModelTotalCost, data.DayModelTotalTokens = dashboardLedgerModelTotals(pageModels)
+		data.DayModelCount = len(pageModels)
+	}
+	if len(data.DayProjects) == 0 && completeDayPage {
+		data.DayProjects = dashboardLedgerDayProjects(projectCounts, len(data.Sessions))
+		data.DayProjectCount = len(projectCounts)
+	}
+	if data.DaySessionCount == 0 && completeDayPage {
+		data.DaySessionCount = len(data.Sessions)
+	}
 	warnings := uniqueStrings(page.Warnings)
 	if unavailable > 0 {
 		warnings = append(warnings, fmt.Sprintf("Cost attribution is unavailable for %d of %d sessions.", unavailable, len(data.Sessions)))
 	}
 	data.SessionWarning = strings.Join(warnings, "; ")
 	return data
+}
+
+type ledgerDayModelKey struct {
+	provider string
+	model    string
+}
+
+func dashboardLedgerDayModels(values map[ledgerDayModelKey]tuipages.LedgerModel) []tuipages.LedgerModel {
+	models := make([]tuipages.LedgerModel, 0, len(values))
+	for _, value := range values {
+		models = append(models, value)
+	}
+	sort.SliceStable(models, func(left, right int) bool {
+		if models[left].Cost != models[right].Cost {
+			return models[left].Cost > models[right].Cost
+		}
+		if models[left].Tokens != models[right].Tokens {
+			return models[left].Tokens > models[right].Tokens
+		}
+		if models[left].Provider != models[right].Provider {
+			return models[left].Provider < models[right].Provider
+		}
+		return models[left].Model < models[right].Model
+	})
+	return models
+}
+
+func boundedLedgerModels(models []tuipages.LedgerModel) []tuipages.LedgerModel {
+	if len(models) <= 8 {
+		return models
+	}
+	return models[:8]
+}
+
+func dashboardLedgerModelTotals(models []tuipages.LedgerModel) (pricing.Money, int64) {
+	var cost pricing.Money
+	var tokens int64
+	for _, model := range models {
+		cost += model.Cost
+		tokens += model.Tokens
+	}
+	return cost, tokens
+}
+
+func ledgerDayHours(values []historystore.LedgerProfileStat) []tuipages.LedgerProfile {
+	profiles := make([]tuipages.LedgerProfile, 0, len(values))
+	for _, value := range values {
+		profiles = append(profiles, tuipages.LedgerProfile{Label: fmt.Sprintf("%02d", value.Bucket), Value: value.Sessions, Sessions: value.Sessions})
+	}
+	return profiles
+}
+
+func ledgerProfileSessionCount(values []historystore.LedgerProfileStat) int {
+	total := 0
+	for _, value := range values {
+		total += value.Sessions
+	}
+	return total
+}
+
+func ledgerProjectSessionCount(values map[string]int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+func dashboardLedgerDayProjects(counts map[string]int, total int) []tuipages.LedgerProject {
+	projects := make([]tuipages.LedgerProject, 0, len(counts))
+	for label, sessions := range counts {
+		share := 0.0
+		if total > 0 {
+			share = float64(sessions) / float64(total)
+		}
+		projects = append(projects, tuipages.LedgerProject{Label: label, Sessions: sessions, Share: share})
+	}
+	sort.SliceStable(projects, func(left, right int) bool {
+		if projects[left].Sessions != projects[right].Sessions {
+			return projects[left].Sessions > projects[right].Sessions
+		}
+		return projects[left].Label < projects[right].Label
+	})
+	if len(projects) > 8 {
+		projects = projects[:8]
+	}
+	return projects
 }
 
 func loadDashboardLedgerHistory(path string, data tuipages.Data, request tui.Request, location *time.Location) tuipages.Data {
@@ -2120,7 +2272,43 @@ func dashboardLedgerData(database *store.Store, filter store.Filter, costs repor
 			total = total.Add(row)
 		}
 	}
-	return tuipages.Data{Available: true, Zoom: zoom, Year: effectiveYear, Month: effectiveMonth, Rows: rows, Total: total, Analytics: analytics}, nil
+	data := tuipages.Data{Available: true, Zoom: zoom, Year: effectiveYear, Month: effectiveMonth, Rows: rows, Total: total, Analytics: analytics}
+	if zoom == tuipages.ZoomDay && request.Ledger.ExpandedDay != "" {
+		dayFilter := filter
+		dayFilter.Since, dayFilter.Until = request.Ledger.ExpandedDay, request.Ledger.ExpandedDay
+		dayRows, err := database.FilteredUsageRows(dayFilter)
+		if err != nil {
+			return tuipages.Data{}, err
+		}
+		dayCosts := calculateReportCosts(pricingTable, dayRows)
+		dayModels, err := database.ByModel(dayFilter)
+		if err != nil {
+			return tuipages.Data{}, err
+		}
+		allDayModels := dashboardLedgerModels(dayModels, dayCosts, pricingTable)
+		data.DayModels = boundedLedgerModels(allDayModels)
+		data.DayModelTotalCost, data.DayModelTotalTokens = dashboardLedgerModelTotals(allDayModels)
+		data.DayModelCount = len(allDayModels)
+	}
+	return data, nil
+}
+
+func dashboardLedgerModels(models []store.ModelRow, costs reportCosts, pricingTable pricing.Table) []tuipages.LedgerModel {
+	result := make([]tuipages.LedgerModel, 0, len(models))
+	for _, model := range models {
+		value := costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
+		row := tuipages.LedgerModel{
+			Provider: string(model.Provider), Model: model.Model, Tokens: model.Total,
+			Cost: value.Total, PricedTokens: value.PricedTokens, UnpricedTokens: value.UnpricedTokens,
+			CostPerMillion: weightedRate(value.Total, value.PricedTokens),
+		}
+		entry, found := pricingTable.RateFor(model.Model, model.LastDate)
+		if found {
+			row.HasRate, row.Status, row.Source = true, entry.Status, entry.Source
+		}
+		result = append(result, row)
+	}
+	return result
 }
 
 func dashboardLedgerAnalytics(database *store.Store, filter store.Filter, costs reportCosts, pricingTable pricing.Table, daily []store.DailyRow, selectedYear int) (tuipages.LedgerAnalytics, error) {
@@ -2176,20 +2364,7 @@ func dashboardLedgerAnalytics(database *store.Store, filter store.Filter, costs 
 	if err != nil {
 		return tuipages.LedgerAnalytics{}, err
 	}
-	analytics := tuipages.LedgerAnalytics{Months: months, Models: make([]tuipages.LedgerModel, 0, len(models))}
-	for _, model := range models {
-		value := costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
-		row := tuipages.LedgerModel{
-			Provider: string(model.Provider), Model: model.Model, Tokens: model.Total,
-			Cost: value.Total, PricedTokens: value.PricedTokens, UnpricedTokens: value.UnpricedTokens,
-			CostPerMillion: weightedRate(value.Total, value.PricedTokens),
-		}
-		entry, found := pricingTable.RateFor(model.Model, model.LastDate)
-		if found {
-			row.HasRate, row.Status, row.Source = true, entry.Status, entry.Source
-		}
-		analytics.Models = append(analytics.Models, row)
-	}
+	analytics := tuipages.LedgerAnalytics{Months: months, Models: dashboardLedgerModels(models, costs, pricingTable)}
 	analytics.Provenance, err = ledgerPricingProvenance(database, filter, pricingTable)
 	if err != nil {
 		return tuipages.LedgerAnalytics{}, err

@@ -55,6 +55,13 @@ func TestLedgerAnalyticsGroupsCatalogProfiles(t *testing.T) {
 	if len(codex.Months) != 2 || codex.Months[0].Sessions != 1 || codex.Months[1].Sessions != 1 || len(codex.ProjectMonths) != 2 {
 		t.Fatalf("provider-filtered profile = %+v", codex)
 	}
+	alpha, err := database.LedgerAnalytics(CatalogQuery{Project: "alpha", ProjectSet: true, Source: CatalogSourceAny}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alpha.Days) != 2 || len(alpha.ProjectMonths) != 1 || alpha.ProjectMonths[0].Project != "alpha" {
+		t.Fatalf("project-filtered profile = %+v", alpha)
+	}
 
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
