@@ -910,6 +910,10 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.help {
+		if value == "esc" {
+			m.help = false
+			return m, nil
+		}
 		if binding, ok := keyBindingFor(value, len(m.router.Pages())); ok && binding.Action == keyActionQuit {
 			return m.updateBinding(binding, value)
 		}

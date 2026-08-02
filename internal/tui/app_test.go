@@ -834,6 +834,30 @@ func TestHelpStillAllowsQuit(t *testing.T) {
 	}
 }
 
+func TestQuest143HelpEscClosesAndRestoresPageNavigation(t *testing.T) {
+	model := loadedTestModel()
+	model = updateKeyForTest(t, model, "?")
+	if !model.help {
+		t.Fatal("help did not open")
+	}
+	helpView := model.View()
+
+	model = updateKeyForTest(t, model, "esc")
+	helpAfterEsc := model.help
+	pageAfterEsc := model.activePageID()
+	afterEscView := model.View()
+	model = updateKeyForTest(t, model, "2")
+	pageTwoView := model.View()
+	t.Logf("Source: internal/tui/app_test.go::TestQuest143HelpEscClosesAndRestoresPageNavigation\nCommand: go test -v ./internal/tui -run TestQuest143HelpEscClosesAndRestoresPageNavigation -count=1\n\n-- help before esc --\n%s\n\n-- after esc --\nhelp=%v page=%s\n%s\n\n-- after page 2 --\nhelp=%v page=%s\n%s", helpView, helpAfterEsc, pageAfterEsc, afterEscView, model.help, model.activePageID(), pageTwoView)
+
+	if helpAfterEsc {
+		t.Fatal("esc did not close help")
+	}
+	if model.router.ActiveIndex() != 1 {
+		t.Fatalf("page number was swallowed after esc: active index=%d page=%s", model.router.ActiveIndex(), model.activePageID())
+	}
+}
+
 func TestEditingPageDoesNotLoseGlobalNavigation(t *testing.T) {
 	page := &interactiveTestPage{id: "history-search", section: HistorySection, title: "Search"}
 	model := loadedTestModel()
