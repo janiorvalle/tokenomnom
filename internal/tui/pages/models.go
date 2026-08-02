@@ -544,7 +544,7 @@ func modelProviderLines(render theme.Context, data ModelPageData) []string {
 	for _, row := range data.Pricing {
 		lines = append(lines, fmt.Sprintf("%-14s %2d %10s %s", truncate(row.Label, 14), row.Models, commaShort(row.Tokens), formatMoney(row.Cost, row.PricedTokens, false, row.UnpricedTokens > 0)))
 	}
-	lines = append(lines, render.Palette.Header().Render("TOKENS PER SESSION"))
+	lines = append(lines, render.Palette.Header().Render("TOKENS PER SESSION · INDEXED"))
 	for _, row := range data.PerSession[:min(6, len(data.PerSession))] {
 		value := "—"
 		if row.Sessions > 0 {
@@ -590,7 +590,7 @@ func modelStandardAnalysisLines(render theme.Context, data ModelPageData) []stri
 	for _, row := range data.Providers {
 		lines = append(lines, fmt.Sprintf("%-9s %2d models  %s", truncate(modelProviderLabel(row.Provider), 9), row.Models, modelPercent(row.CostShare, 1)))
 	}
-	lines = append(lines, render.Palette.Header().Render("TOKENS PER SESSION"))
+	lines = append(lines, render.Palette.Header().Render("TOKENS PER SESSION · INDEXED"))
 	for _, row := range data.PerSession[:min(6, len(data.PerSession))] {
 		value := "—"
 		if row.Sessions > 0 {

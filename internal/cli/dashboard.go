@@ -2692,6 +2692,7 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 	var totalTokens int64
 	var totalCost pricing.Money
 	var totalPriced, totalUnpriced int64
+	var totalModelSessions int
 	for _, row := range rows {
 		key := modelCostKey{Provider: row.Provider, Model: row.Model}
 		value := costs.ByModel[key]
@@ -2706,6 +2707,7 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 			Pricing: modelPricingLabel(stats), Sessions: modelSessions.ByModel[key],
 			Days: row.ActiveDays, FirstDate: row.FirstDate, LastDate: row.LastDate,
 		}
+		totalModelSessions += modelRow.Sessions
 		modelRow.Sparkline = modelSparklineValues(dailyCosts[key], recentDates)
 		data.Rows = append(data.Rows, modelRow)
 	}
@@ -2747,7 +2749,7 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 		Provider: "TOTAL", Model: fmt.Sprintf("%d models", len(data.Rows)), Tokens: totalTokens,
 		Cost: totalCost, PricedTokens: totalPriced, UnpricedTokens: totalUnpriced,
 		TokenShare: totalTokenShare, CostShare: totalCostShare, Pricing: fmt.Sprintf("%d priced", countPricedModels(data.Rows)),
-		Sessions: modelSessions.Total,
+		Sessions: totalModelSessions,
 		Days:     len(dates),
 	}
 	if len(dates) > 0 {
@@ -2891,9 +2893,24 @@ func modelPricingLabel(stats dashboardModelPricingStats) string {
 	for status, tokens := range stats.Statuses {
 		if tokens > bestTokens {
 			best, bestTokens = status, tokens
+		} else if tokens == bestTokens && modelPricingPriority(status) < modelPricingPriority(best) {
+			best = status
 		}
 	}
 	return best
+}
+
+func modelPricingPriority(status string) int {
+	switch status {
+	case "live":
+		return 0
+	case "proxy":
+		return 1
+	case "estimated":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func pricingProvenanceLabel(status string) string {

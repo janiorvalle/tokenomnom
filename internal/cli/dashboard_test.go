@@ -1104,6 +1104,16 @@ func TestForcedColorDoesNotLaunchDashboardWithoutTerminal(t *testing.T) {
 	}
 }
 
+func TestModelPricingLabelUsesStableTieBreak(t *testing.T) {
+	stats := dashboardModelPricingStats{
+		PricedTokens: 20,
+		Statuses:     map[string]int64{"proxy": 10, "live": 10},
+	}
+	if got, want := modelPricingLabel(stats), "live"; got != want {
+		t.Fatalf("pricing label = %q, want %q", got, want)
+	}
+}
+
 func syncSummaryForTest() syncer.Summary {
 	return syncer.Summary{}
 }
