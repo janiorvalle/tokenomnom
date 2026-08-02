@@ -188,6 +188,59 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsStaleUsageLock(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	configDir := filepath.Join(root, "config")
+	dataDir := filepath.Join(root, "data")
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(stateDir, store.DatabaseName+".lock")
+	if err := os.WriteFile(lockPath, []byte("pid=2147483647 started=2026-08-01T23:00:00Z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	cmd := NewRootCommand()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"doctor", "--codex-dir", codexDir, "--claude-dir", claudeDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"Sync lock:", "stale", lockPath, "pid=2147483647", "retry tokenomnom to reclaim it"} {
+		if !strings.Contains(output.String(), fragment) {
+			t.Errorf("doctor output missing %q:\n%s", fragment, output.String())
+		}
+	}
+
+	jsonOutput, err := executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, jsonOutput)
+	var data jsonDoctorData
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if !data.Store.Lock.Exists || !data.Store.Lock.Stale || data.Store.Lock.PID == nil || *data.Store.Lock.PID != 2147483647 {
+		t.Fatalf("doctor lock JSON = %+v", data.Store.Lock)
+	}
+	if !strings.Contains(strings.Join(envelope.Warnings, "\n"), "retry tokenomnom to reclaim it") {
+		t.Fatalf("doctor lock warning = %#v", envelope.Warnings)
+	}
+}
+
 func TestSyncPrintsResidualWarningsAndRejectsInvalidTimezone(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(tempDir, "state"))
