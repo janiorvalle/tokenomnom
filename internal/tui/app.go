@@ -693,7 +693,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.generation != m.loadGeneration {
 			return m, nil
 		}
-		requestMatches := sameRequestIgnoringSync(msg.request, m.request)
+		// The first store-only load does not depend on terminal dimensions, but a
+		// resize can update the live request before its result arrives. Keep that
+		// result so the current request can start the initial sync.
+		initialLoad := !m.loaded && msg.request.Initial && msg.request.LoadID == 0
+		requestMatches := initialLoad || sameRequestIgnoringSync(msg.request, m.request)
 		if !requestMatches {
 			return m, nil
 		}
