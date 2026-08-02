@@ -19,3 +19,15 @@ ok      github.com/janiorvalle/tokenomnom/internal/store  2.063s
 GOOS=windows GOARCH=amd64 go build -buildvcs=false ./... PASS
 GOOS=windows GOARCH=amd64 go test -c ./internal/store PASS
 ```
+
+GitHub Actions confirmation for commit `b15db03`:
+
+```text
+Go (windows-latest)  pass  1m45s
+Verify                pass  1m43s
+Go (macos-latest)     pass  50s
+Installer smoke       pass  52s
+All 8 checks successful.
+```
+
+Windows job: https://github.com/janiorvalle/tokenomnom/actions/runs/30727543238/job/91441934447
