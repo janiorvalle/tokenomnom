@@ -1,0 +1,66 @@
+tokenomnom / MODELS                                                                                                                                                        LOCAL  ·  ALL  ·  30D
+TOTAL $107,027.21 · TOKENS 160,250,065,801 · ACTIVE DAYS 30 · AVG/DAY $3,567.57 · PEAK $28,474.65                                                                                               
+────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SPEND               │ MODELS  ·  ALL TIME ───────────────────────────────────────────────────────────────────────────────────────────────────── 10 models  ·  2 providers  ·  sorted by tokens ─
+  1  Daily          │PROV    MODEL                              TOKENS  TOK% SHARE OF TOKENS        COST COST% SHARE OF COST    $/1M  PRICING   SESSIONS  DAYS  FIRST      LAST       COST 30D  
+  2  Ledger         ›Codex   gpt-5.6-sol               127,717,316,852  79.7 ██████████████   $78,639.66 73.48 ██████████████  $0.62  live         3,210    30  2026-06-14 2026-08-01 ▃█▆▇▃▂▃▄▄▆
+› 3  Models         │Codex   gpt-5.5                    18,811,139,157  11.7 ██░░░░░░░░░░░░   $14,140.41 13.21 ███░░░░░░░░░░░  $0.75  live           812    28  2026-06-14 2026-07-30 █▃▄▄▃▂▄▅▇▅
+  4  Heatmap        │Claude  claude-fable-5              7,989,237,549   5.0 █░░░░░░░░░░░░░   $12,955.78 12.11 ██░░░░░░░░░░░░  $1.62  live         1,104    27  2026-06-18 2026-08-01 ▃▃██▅▂▆▄▂▄
+                    │Codex   gpt-5.6-luna                4,968,127,596   3.1 █░░░░░░░░░░░░░      $634.78  0.59 ▏░░░░░░░░░░░░░  $0.13  live           396    22  2026-07-02 2026-08-01 █▇▇▅▆▃▂▅▄▄
+HISTORY             │Claude  claude-opus-4-8               414,444,190   0.3 ▏░░░░░░░░░░░░░      $637.12  0.60 ▏░░░░░░░░░░░░░  $1.54  live           188    16  2026-06-14 2026-07-24 ▃█▅▁█▃▄▆▆▃
+  5  Sessions       │Claude  claude-opus-5                 265,530,709   0.2 ▏░░░░░░░░░░░░░            —     — ··············      —  unpriced        96    11  2026-07-11 2026-08-01 █▂▃▄█▄▆▆█▂
+  6  Search         │Claude  claude-sonnet-5                50,057,721   0.0 ▏░░░░░░░░░░░░░       $19.02  0.02 ▏░░░░░░░░░░░░░  $0.38  proxy           61     9  2026-06-20 2026-07-28 ▃▅██▂▄▂▆▃▃
+                    │Codex   gpt-5.6-terra                  31,052,414   0.0 ▏░░░░░░░░░░░░░            —     — ··············      —  unpriced        28     6  2026-07-05 2026-07-19 █▆▆▅▂▅▃▆▅▂
+VAULT               │Claude  claude-haiku-4-5-20251001       1,668,953   0.0 ▏░░░░░░░░░░░░░        $0.45  0.00 ▏░░░░░░░░░░░░░  $0.27  live            14     4  2026-06-22 2026-07-08 ▄█▄█▄▄▅▆▆▁
+  7  Vault          │Codex   codex-auto-review               1,490,660   0.0 ▏░░░░░░░░░░░░░            —     — ··············      —  unpriced         7     3  2026-07-14 2026-07-31 █▁▂▅▄▅▇▇▂▆
+                    │TOTAL   10 models                 160,250,065,801 100.0                 $107,027.22 100.0                 $0.67  7 priced     5,916    30  2026-06-14 2026-08-01           
+SYSTEM              ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  8  System         │ TOKENS  ↔  COST ─────────────────────────── same model, both scales ─│ PROVIDER ROLLUP ───────────────────────────── 2 ─│ COST PER 1M TOKENS ────────────────── 7 priced ─
+                    │                    TOKENS      MODEL           COST                  │PROVIDER   MODELS  TOKENS         COST  SHARE     │claude-fable-5          $1.62  ██████████████████
+ FILTERS ───────────┤██████████████████████████     gpt-5.6-sol      ██████████████████████│Codex           5 151.53B   $93,414.85  ████████░ │claude-opus-4-8         $1.54  █████████████████░
+ provider       all │······················████       gpt-5.5        ████··················│Claude          5   8.72B   $13,612.37  █░░░░░░░░ │gpt-5.5                 $0.75  ████████░░░░░░░░░░
+ range          30d │························██    claude-fable-5    ████··················│                                                  │gpt-5.6-sol             $0.62  ███████░░░░░░░░░░░
+ project        all │·························█     gpt-5.6-luna     █·····················│Codex holds 94.6% of tokens and 87.3% of cost.    │claude-sonnet-5         $0.38  ████░░░░░░░░░░░░░░
+ SNAPSHOT ──────────┤·························█   claude-opus-4-8    █·····················│Claude costs 6.9x more per million tokens.        │claude-haiku-4-5-2025…  $0.27  ███░░░░░░░░░░░░░░░
+ today    $1,134.96 │·························█    claude-opus-5     ······················│                                                  │gpt-5.6-luna            $0.13  █░░░░░░░░░░░░░░░░░
+ 7d       $9,555.41 │·························█   claude-sonnet-5    █·····················│ PRICING PROVENANCE ────────────────── 10 models ─│Blended rate across all tokens: $0.67 / 1M       
+ 30d    $107,027.21 │·························█    gpt-5.6-terra     ······················│SOURCE     MODELS          COST    TOKENS         │                                                 
+ peak    $28,474.65 │·························█ claude-haiku-4-5-20… █·····················│live rates      6   $107,008.20   159.90B         │ UNPRICED MODELS ──────────── 3 · 298.1M tokens ─
+             Jul 09 │·························█  codex-auto-review   ······················│proxy rates     1        $19.02     50.1M         │claude-opus-5                265.5M       no rate
+ MIX · 30D ─────────┤claude-fable-5 is 5.0% of tokens but 12.1% of cost;                   │unpriced        3             —    298.1M         │gpt-5.6-terra                 31.1M       no rate
+ Codex  87% ██████░ │gpt-5.6-luna is 3.1% of tokens and 0.6% of cost.                      │                                                  │codex-auto-review              1.5M       no rate
+ Claude 13% █░░░░░░ │                                                                      │298.1M tokens carry no list price, so the         │Add a rate in Vault, or accept the floor.        
+                    │ COST CONCENTRATION ───────────────────────────────────── cumulative ─│all-time total is a floor, not a ceiling.         │                                                 
+ PROJECTS 30D ──────┤top 1 gpt-5.6-sol         ██████████████████░░░░░░ 73.48%   $78,639.66│                                                  │ RECENCY ────────────────── days since last use ─
+ project-a 38% ▪·· │top 2 gpt-5.5             █████████████████████░░░ 86.69%   $92,780.07│ TOKENS PER SESSION ────────────────────── top 6 ─│gpt-5.6-sol                  today █████████████ 
+ project-b   22% ▪·· │top 3 claude-fable-5      ████████████████████████ 98.79%  $105,735.85│gpt-5.6-sol             39.8M  ███████████████████│claude-fable-5               today █████████████ 
+ project-f      16% ▏·· │top 4 gpt-5.6-luna        ████████████████████████ 99.39%  $106,370.63│gpt-5.5                 23.2M  ███████████░░░░░░░░│gpt-5.6-luna                 today █████████████ 
+ project-c… 11% ▏·· │top 5 claude-opus-4-8     ████████████████████████ 99.98%  $107,007.75│gpt-5.6-luna            12.5M  ██████░░░░░░░░░░░░░│claude-opus-5                today █████████████ 
+ project-d      7% ▏·· │                                                                      │claude-fable-5           7.2M  ███░░░░░░░░░░░░░░░░│gpt-5.5                     2d ago ████████████░ 
+ project-e      4% ▏·· │Two models carry 86.7% of all spend. Everything below                 │claude-opus-5            2.8M  █░░░░░░░░░░░░░░░░░░│claude-sonnet-5             4d ago ███████████░░ 
+ other       2% ▏·· │claude-fable-5 together accounts for $1,291.37.                       │claude-opus-4-8          2.2M  █░░░░░░░░░░░░░░░░░░│claude-haiku-4-5-202510…   24d ago ███░░░░░░░░░░ 
+                    ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                    │ MODEL × DAY  ·  30 DAYS ───────────────────────────────────────────────────────────────────────────────────────────────────────────── cost intensity  ·  Jul 03 – Aug 01 ─
+                    │MODEL                    03                  08                  13                  18                  23                  28              01                 30-DAY COST
+                    │gpt-5.6-sol              ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                 $78,639.66
+                    │gpt-5.5                  ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                 $14,140.41
+                    │claude-fable-5           ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                 $12,955.78
+                    │gpt-5.6-luna             ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                    $634.78
+                    │claude-opus-4-8          ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                    $637.12
+                    │claude-opus-5            ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                          —
+                    │claude-sonnet-5          ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                     $19.02
+                    │gpt-5.6-terra            ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                          —
+                    │claude-haiku-4-5-202510… ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                      $0.45
+                    │codex-auto-review        ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███                          —
+                    │less ███ ███ ███ ███ ███  more    Each cell is one model on one day, shaded by that day's cost share.                                                                      
+                    │                                                                                                                                                                           
+                    │The old Models page was 10 rows in 60 columns — roughly 8% of the pane. This composition keeps that table as the                                                           
+                    │spine, spends the surplus width on share bars, rate, provenance, recency and a 10-day sparkline per model, then                                                            
+                    │spends the surplus height on three analysis panes and a model × day matrix. Nothing here is a new key binding:                                                             
+                    │the page still answers 3 in the rail, and every number on it already exists in the store.                                                                                  
+                    │                                                                                                                                                                           
+                    │                                                                                                                             utilisation ≈ 96% of the 171 × 59 content pane
+────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+● fresh · index stale · vault 6.5 GiB 6.9x · 5,916 sessions                                                                                         last sync 2m ago  ·  2 sources  ·  10 models
+tab views · p provider · r range · R refresh · h/l zoom · enter open · esc back · ? help · q quit                                                                                               
+API list-price equivalents, not actual bills                                                                                                                                192×66 · wide + tall

@@ -218,7 +218,7 @@ func TestHistorySearchInputTruncatesWithCursorVisible(t *testing.T) {
 			t.Fatalf("line %d width=%d exceeds pane=%d:\n%s", index+1, width, ContentWidth(request.Width), view)
 		}
 	}
-	if !strings.Contains(view, "…that should stay inside the pane█") {
+	if !strings.Contains(view, "inside the pane█") || !strings.Contains(view, "…") {
 		t.Fatalf("search input did not preserve its tail and cursor:\n%s", view)
 	}
 }

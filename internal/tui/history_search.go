@@ -547,7 +547,7 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 		lines = append(lines, context.Render.Palette.Subtle().Render("No matching prompts."))
 	default:
 		selectedIndex := min(max(context.Request.HistorySelect, 0), len(p.hits)-1)
-		visibleCount := max(1, (ContentHeight(context.Request.Height)-10)/2)
+		visibleCount := max(1, (ContentHeightFor(context.Request.Width, context.Request.Height)-10)/2)
 		start := max(0, selectedIndex-visibleCount+1)
 		end := min(len(p.hits), start+visibleCount)
 		if start > 0 {
@@ -620,7 +620,7 @@ func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 	notices := p.detailNotices()
 	height := context.Height
 	if height <= 0 {
-		height = ContentHeight(context.Request.Height)
+		height = ContentHeightFor(context.Request.Width, context.Request.Height)
 	}
 	return tuipages.RenderHistorySearchSessionDetail(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, notices)
 }
@@ -647,7 +647,7 @@ func (p *HistorySearchPage) detailMaxOffset(request Request) int {
 	if p.detail == nil {
 		return 0
 	}
-	width, height := ContentWidth(request.Width), ContentHeight(request.Height)
+	width, height := ContentWidth(request.Width), ContentHeightFor(request.Width, request.Height)
 	render := theme.Context{Mode: theme.Plain, Width: width, Palette: theme.NewPalette(nil)}
 	return tuipages.HistorySearchSessionDetailMaxOffset(render, *p.detail, width, height, p.detailNotices())
 }

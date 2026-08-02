@@ -1,58 +1,6 @@
 package tui
 
-import (
-	"fmt"
-	"strings"
-
-	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
-)
-
-func (m Model) railView(layout cockpitLayout) string {
-	rows := make([]string, 0, len(m.router.Pages())+10)
-	active := m.activePageID()
-	for _, group := range m.router.groups() {
-		if len(group.pages) == 0 {
-			continue
-		}
-		if len(rows) > 0 {
-			rows = append(rows, "")
-		}
-		rows = append(rows, m.render.Palette.Header().Render(string(group.section)))
-		for _, page := range group.pages {
-			pageIndex := m.router.IndexOf(page.ID())
-			label := fmt.Sprintf("%d  %s", pageIndex+1, page.Title())
-			style := m.render.Palette.Subtle()
-			if page.ID() == active {
-				label = "› " + label
-				style = m.render.Palette.Emphasis().Bold(true)
-			}
-			rows = append(rows, style.Render(label))
-		}
-	}
-
-	rows = append(rows, "", m.render.Palette.Header().Render("FILTERS"))
-	rows = append(rows,
-		m.render.Palette.Subtle().Render("provider"),
-		m.filterProviderView(),
-		m.render.Palette.Subtle().Render("range"),
-		m.filterRangeView(),
-	)
-	if m.activePageID() == SessionsPageID {
-		rows = append(rows,
-			m.render.Palette.Subtle().Render("project"),
-			m.filterProjectView(),
-		)
-	}
-
-	innerWidth := max(1, layout.railWidth-1)
-	content := fitBlock(strings.Join(rows, "\n"), innerWidth, layout.bodyHeight)
-	lines := strings.Split(content, "\n")
-	divider := m.render.Palette.Border().Render("│")
-	for index := range lines {
-		lines[index] += divider
-	}
-	return strings.Join(lines, "\n")
-}
+import tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 
 func (m Model) activePageID() PageID {
 	page := m.activePage()

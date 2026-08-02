@@ -149,9 +149,37 @@ type Summary struct {
 	Metrics [5]SummaryMetric
 }
 
+// RailData is the bounded ambient context rendered beside every page. The
+// loader supplies formatted snapshot values and normalized shares so the rail
+// remains a pure view and never performs its own I/O.
+type RailData struct {
+	Snapshot RailSnapshot
+	Mix      RailMix
+	Projects []RailProject
+}
+
+type RailSnapshot struct {
+	Today      string
+	SevenDays  string
+	ThirtyDays string
+	Peak       string
+	PeakDate   string
+}
+
+type RailMix struct {
+	Codex  float64
+	Claude float64
+}
+
+type RailProject struct {
+	Label string
+	Share float64
+}
+
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
 	Summary   Summary
+	Rail      RailData
 	Views     [4]string
 	Sessions  tuipages.SessionPageData
 	StatusBar StatusBar
@@ -1021,7 +1049,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		}
 		context := PageContext{
 			Render: m.render, Snapshot: m.snapshot, Request: m.request,
-			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
+			Width: ContentWidth(m.request.Width), Height: ContentHeightFor(m.request.Width, m.request.Height),
 		}
 		request, changed := page.Update(context, value)
 		if !changed {
@@ -1291,19 +1319,36 @@ func (m Model) syncProgressText() string {
 
 func (m Model) cockpitView() string {
 	layout := newCockpitLayout(m.request.Width, m.request.Height)
-	content := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.railView(layout),
-		strings.Repeat(" ", gridGap),
-		m.contentView(layout),
-	)
-	view := strings.Join([]string{
+	content := m.contentView(layout)
+	if layout.showRail {
+		content = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.railView(layout),
+			fitBlock("", gridGap, layout.bodyHeight),
+			content,
+		)
+	}
+	content = fitBlock(content, layout.bodyWidth, layout.bodyHeight)
+	rows := []string{
 		m.topBarView(layout),
 		m.summaryView(layout),
+		m.chromeDividerView(layout, '┬'),
 		content,
+		m.chromeDividerView(layout, '┴'),
 		m.statusBarView(layout),
-		m.footerView(layout),
-	}, "\n")
+	}
+	rows = append(rows, m.footerView(layout))
+	view := strings.Join(rows, "\n")
 	return frameBlock(view, layout)
+}
+
+func (m Model) chromeDividerView(layout cockpitLayout, junction rune) string {
+	if !layout.showRail {
+		return fitLine(strings.Repeat("─", layout.innerWidth), layout.innerWidth)
+	}
+	leftWidth := max(0, layout.railWidth-1)
+	rightWidth := max(0, layout.innerWidth-layout.railWidth)
+	line := strings.Repeat("─", leftWidth) + string(junction) + strings.Repeat("─", rightWidth)
+	return fitLine(line, layout.innerWidth)
 }
 
 func (m Model) topBarView(layout cockpitLayout) string {
@@ -1314,7 +1359,11 @@ func (m Model) topBarView(layout cockpitLayout) string {
 	left := m.render.Palette.Header().Render("tokenomnom") +
 		m.render.Palette.Subtle().Render("  /  ") +
 		m.render.Palette.Emphasis().Render(strings.ToUpper(active))
-	right := m.render.Palette.Subtle().Render("LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String()))
+	rightText := "LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String())
+	if !layout.showRail {
+		rightText = fmt.Sprintf("%s %dx%d  ·  1-8 pages", strings.ToUpper(layout.tiers.Width.String()), layout.width, layout.height)
+	}
+	right := m.render.Palette.Subtle().Render(rightText)
 	space := max(2, layout.innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
 	return fitLine(left+strings.Repeat(" ", space)+right, layout.innerWidth)
 }
@@ -1345,14 +1394,18 @@ func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
 
 func (m Model) contentView(layout cockpitLayout) string {
 	body := ""
+	render := m.render
+	render.Width = layout.paneWidth
 	if page := m.activePage(); page != nil {
 		body = page.View(PageContext{
-			Render: m.render, Snapshot: m.snapshot, Request: m.request,
-			Width: layout.paneWidth, Height: layout.bodyHeight,
+			Render: render, Snapshot: m.snapshot, Request: m.request,
+			Width: layout.paneWidth, Height: layout.pageHeight,
 		})
 	}
-	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
-	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)
+	// The global top bar already names the page. Keeping the band title empty
+	// here preserves the existing page body while giving later pages the same
+	// exact-fill primitive for their own titled bands.
+	return RenderBand(render, NewBand("", layout.paneWidth, layout.bodyHeight, NewPane("", body)))
 }
 
 // place centers transient states (loading, too-small) in the full window.

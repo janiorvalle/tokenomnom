@@ -129,11 +129,45 @@ func (m Model) footerHintsView(width int) string {
 func (m Model) footerView(layout cockpitLayout) string {
 	subtle := m.render.Palette.Subtle()
 	hints := m.footerHintsView(layout.innerWidth)
+	badge := subtle.Render(sizeBadgeLabel(layout))
+	if layout.tiers.Width == WidthFloor {
+		disclaimer := subtle.Render("API list-price equivalents, not actual bills")
+		shortDisclaimer := subtle.Render("API prices, not actual bills")
+		helpAndQuit := m.footerHint(KeyBinding{FooterKey: "?", Footer: "help"}) + subtle.Render(" · ") + m.footerHint(KeyBinding{FooterKey: "q", Footer: "quit"})
+		quitHint := m.footerHint(KeyBinding{FooterKey: "q", Footer: "quit"})
+		for _, left := range []string{
+			disclaimer + subtle.Render(" · ") + helpAndQuit,
+			shortDisclaimer + subtle.Render(" · ") + helpAndQuit,
+			disclaimer + subtle.Render(" · ") + quitHint,
+			shortDisclaimer + subtle.Render(" · ") + quitHint,
+			disclaimer,
+			shortDisclaimer,
+		} {
+			if lipgloss.Width(left)+1+lipgloss.Width(badge) <= layout.innerWidth {
+				return fitLine(joinFooterSegments(left, badge, layout.innerWidth), layout.innerWidth)
+			}
+		}
+		available := max(0, layout.innerWidth-lipgloss.Width(badge)-1)
+		return fitLine(joinFooterSegments(fitLine(disclaimer, available), badge, layout.innerWidth), layout.innerWidth)
+	}
+	disclaimer := subtle.Render("API list-price equivalents, not actual bills")
+	gap := layout.innerWidth - lipgloss.Width(disclaimer) - lipgloss.Width(badge)
+	disclaimerRow := fitRight(badge, layout.innerWidth)
+	if gap >= 1 {
+		disclaimerRow = fitLine(joinFooterSegments(disclaimer, badge, layout.innerWidth), layout.innerWidth)
+	}
 	return strings.Join([]string{
-		m.render.Palette.Border().Render(strings.Repeat("─", layout.innerWidth)),
 		fitLine(hints, layout.innerWidth),
-		fitLine(subtle.Render("API list-price equivalents, not actual bills"), layout.innerWidth),
+		disclaimerRow,
 	}, "\n")
+}
+
+func joinFooterSegments(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return fitRight(right, width)
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (m Model) helpView() string {

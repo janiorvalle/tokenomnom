@@ -45,6 +45,15 @@ type CatalogQuery struct {
 	Cursor     string
 }
 
+// CatalogProjectStat is a bounded project population summary for ambient
+// dashboard context. It intentionally reports session counts, the stable
+// project fact available from the history index without parsing transcripts.
+type CatalogProjectStat struct {
+	Project       string
+	Sessions      int
+	TotalSessions int
+}
+
 // FieldCoverage discloses known versus unknown metadata in the selected
 // provider/date/source/cwd population before project, repo, or branch filtering.
 type FieldCoverage struct {
@@ -300,6 +309,47 @@ func (s *Store) ListCatalogProjects(query CatalogQuery) ([]string, error) {
 		return nil, fmt.Errorf("read history catalog projects: %w", err)
 	}
 	return projects, nil
+}
+
+// ListCatalogProjectStats returns the most active projects in a bounded
+// catalog population. The dashboard uses this one grouped query for its
+// 30-day rail block instead of loading the full session catalog.
+func (s *Store) ListCatalogProjectStats(query CatalogQuery, limit int) ([]CatalogProjectStat, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fmt.Errorf("history project stats limit must be between 1 and 100")
+	}
+	if query.Source == "" {
+		query.Source = CatalogSourceAny
+	}
+	if !validCatalogSource(query.Source) {
+		return nil, fmt.Errorf("invalid history source %q", query.Source)
+	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if !validThreadKindFilter(query.ThreadKind) {
+		return nil, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
+	where, args := catalogWhere(query, false)
+	args = append(args, limit)
+	rows, err := s.runner.Query(
+		"SELECT s.project, COUNT(*) AS sessions, SUM(COUNT(*)) OVER () AS total_sessions FROM sessions s WHERE "+strings.Join(where, " AND ")+" GROUP BY s.project ORDER BY sessions DESC, LOWER(s.project), s.project LIMIT ?",
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list history project stats: %w", err)
+	}
+	defer rows.Close()
+	stats := []CatalogProjectStat{}
+	for rows.Next() {
+		var value CatalogProjectStat
+		if err := rows.Scan(&value.Project, &value.Sessions, &value.TotalSessions); err != nil {
+			return nil, fmt.Errorf("scan history project stats: %w", err)
+		}
+		stats = append(stats, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read history project stats: %w", err)
+	}
+	return stats, nil
 }
 
 func scanCatalogSession(row rowScanner) (CatalogSession, error) {

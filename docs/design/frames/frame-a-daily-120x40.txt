@@ -1,0 +1,40 @@
+tokenomnom / DAILY                                                                                 LOCAL  ·  ALL  ·  30D
+TOTAL $107,027.21 · TOKENS 160,250,065,801 · ACTIVE DAYS 30 · AVG/DAY $3,567.57 · PEAK $28,474.65                       
+────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────
+SPEND               │ COST / DAY  ·  30 DAYS ─────── ■ Codex  ■ Claude    ──────────────────────────── Jul 03 – Aug 01 ─
+› 1  Daily          │ $28.5k┤                  ██                                                                       
+  2  Ledger         │       │                  ██                                                                       
+  3  Models         │       │                  ██                                                                       
+  4  Heatmap        │ $20.7k┤                  ██                                                                       
+                    │       │                  ██                                                                       
+HISTORY             │       │            ▄▄    ██                                                                       
+  5  Sessions       │ $12.9k┤            ██ ▅▅ ██                                                                       
+  6  Search         │       │         ▄▄ ██ ██ ██                                                                       
+                    │       │         ██ ██ ██ ██ ▂▂                                                                    
+VAULT               │  $5.2k┤┈┈┈┈┈┈██┈██┈██┈██┈██┈██┈▃▃┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ avg $3,568   
+  7  Vault          │       │▄▄ ▇▇ ██ ██ ██ ██ ██ ██ ██ ▆▆ ▅▅ ▃▃ ▃▃ ▄▄ ▅▅ ▄▄ ▃▃ ▂▂ ▂▂ ▂▂ ▅▅ ▅▅ ▃▃ ▄▄ ▅▅ ▅▅ ▅▅ ▄▄ ▃▃ ▄▄  
+                    │  $0.0k└───────────────────────────────────────────────────────────────────────────────────────────
+SYSTEM              │        03    05    07    09    11    13    15    17    19    21    23    25    27    29    31 01  
+  8  System         ├───────────────────────────────────────────────────────────────────────────────────────────────────
+                    │ DAY DETAIL  ·  2026-08-01 ────────── $1,134.96 ─│ PROJECTS  ·  2026-08-01 ──────────────────── 6 ─
+ FILTERS ───────────┤PROVIDER         COST  SHARE                 SESS│project-a     $58.09    8  ██████████████ 455.4M
+ provider       all │Codex         $468.28  ███████░░░░░░░░░░░ 41%  14│project-f          $38.86    2  █████████░░░░░ 323.3M
+ range          30d │Claude        $666.68  ███████████░░░░░░░ 59%   6│project-b       $26.33    5  ██████░░░░░░░░ 213.3M
+ project        all │                                                 │project-e          $0.88    1  ▏░░░░░░░░░░░░░   1.9M
+ SNAPSHOT ──────────┤ MODELS BY COST ───────────────────────────── 6 ─│project-c         —    2  ··············      —
+ today    $1,134.96 │claude-fable-5       $666.68  ████████████  58.7%│project-d              —    2  ··············      —
+ 7d       $9,555.41 │gpt-5.6-luna         $335.00  ██████░░░░░░  29.5%│unattributed  $1,010.80  11 of 20 sessions       
+ 30d    $107,027.21 │gpt-5.6-sol          $131.40  ██░░░░░░░░░░  11.6%│                                                 
+ peak    $28,474.65 │gpt-5.5                $1.87  ▏░░░░░░░░░░░   0.2%│ 30-DAY TRENDS ─────────────────────────── 7d Δ ─
+             Jul 09 │claude-opus-5              —  ·········  unpriced│cost/day     ▁▂▂▃▅▄█▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁-18.4%
+ MIX · 30D ─────────├───────────────────────────────────────────────────────────────────────────────────────────────────
+ Codex  87% ██████░ │ SESSIONS  ·  2026-08-01 ──────────────────────────────────────────────────── top 3 by cost of 20 ─
+ Claude 13% █░░░░░░ │TIME  PROV   PROJECT           TOKENS     COST  FIRST PROMPT                                       
+                    ›00:00 codex  project-f        323,338,300   $38.86  Synthetic prompt fixture
+                    │01:07 codex  project-a   231,456,800   $28.06  Synthetic prompt fixture
+                    │01:07 codex  project-a   130,109,600   $15.78  Synthetic prompt fixture
+                    │↓ 17 more sessions · l zooms the band to full height     the wide tier shows all 20 without a pager
+────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────
+● fresh · index stale · vault 6.5 GiB 6.9x · 5,916 sessions                 last sync 2m ago  ·  2 sources  ·  10 models
+tab views · p provider · r range · R refresh · h/l zoom · enter open · esc back · ? help · q quit                       
+API list-price equivalents, not actual bills                                                           120×40 · standard

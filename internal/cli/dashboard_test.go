@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,53 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	}
 	if codex.Summary.Metrics[1].Value != "206,100" || strings.Contains(codex.Views[tui.ModelsTab], "Claude") {
 		t.Fatalf("provider filter did not apply: summary=%+v\n%s", codex.Summary.Metrics, codex.Views[tui.ModelsTab])
+	}
+}
+
+func TestDashboardRailDataUsesThirtyDayWindows(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	today := now.Format(heatmapDateLayout)
+	tenDaysAgo := now.AddDate(0, 0, -10).Format(heatmapDateLayout)
+	fortyDaysAgo := now.AddDate(0, 0, -40).Format(heatmapDateLayout)
+	priced := func(value pricing.Money) aggregateCost { return aggregateCost{Total: value, PricedTokens: 1} }
+	costs := reportCosts{
+		ByDate: map[string]aggregateCost{
+			today:        priced(4),
+			tenDaysAgo:   priced(8),
+			fortyDaysAgo: priced(100),
+		},
+		ByDateProvider: map[string]map[discover.Provider]providerChartValue{
+			today: {
+				discover.ProviderCodex:  {Cost: priced(3)},
+				discover.ProviderClaude: {Cost: priced(1)},
+			},
+			tenDaysAgo: {
+				discover.ProviderCodex:  {Cost: priced(1)},
+				discover.ProviderClaude: {Cost: priced(1)},
+			},
+			fortyDaysAgo: {discover.ProviderClaude: {Cost: priced(100)}},
+		},
+	}
+	rows := []store.DailyRow{{Date: today}, {Date: tenDaysAgo}, {Date: fortyDaysAgo}}
+	rail := dashboardRailData(rows, costs, now)
+	if rail.Snapshot.Today != formatCost(costs.ByDate[today]) {
+		t.Fatalf("today snapshot = %q", rail.Snapshot.Today)
+	}
+	wantThirty := formatCost(addAggregateCost(costs.ByDate[today], costs.ByDate[tenDaysAgo]))
+	if rail.Snapshot.ThirtyDays != wantThirty || rail.Snapshot.PeakDate != tenDaysAgo {
+		t.Fatalf("30-day snapshot = %+v, want total %q and peak %q", rail.Snapshot, wantThirty, tenDaysAgo)
+	}
+	if math.Abs(rail.Mix.Codex-2.0/3.0) > 0.0001 || math.Abs(rail.Mix.Claude-1.0/3.0) > 0.0001 {
+		t.Fatalf("30-day provider mix = %+v", rail.Mix)
+	}
+}
+
+func TestRailProviderShareDoesNotMixCostAndTokenUnits(t *testing.T) {
+	if got := railProviderShare(aggregateCost{Total: 100, PricedTokens: 1}, aggregateCost{UnpricedTokens: 900}); got != 1 {
+		t.Fatalf("priced/unpriced provider share = %v, want 1", got)
+	}
+	if got := railProviderShare(aggregateCost{UnpricedTokens: 3}, aggregateCost{UnpricedTokens: 7}); math.Abs(got-0.3) > 0.0001 {
+		t.Fatalf("unpriced provider share = %v, want 0.3", got)
 	}
 }
 

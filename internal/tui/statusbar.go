@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -13,9 +14,12 @@ import (
 // StatusBar contains the optional facts shown beneath the dashboard content.
 // It is populated by the CLI loader so rendering stays free of I/O.
 type StatusBar struct {
-	History  HistoryStatus
-	Vault    VaultStatus
-	Sessions int
+	History      HistoryStatus
+	Vault        VaultStatus
+	Sessions     int
+	LastSyncUnix int64
+	Sources      int
+	Models       int
 }
 
 // HistoryStatus describes whether the rebuildable transcript index is usable
@@ -49,7 +53,7 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 	}}
 
 	if m.warning != "" {
-		return fitLine(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
+		return fitRight(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
 	}
 	if m.commandBusy && !m.syncing {
 		working := m.spinner.View() + m.render.Palette.Subtle().Render(" working")
@@ -70,6 +74,9 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 			optional: true,
 		})
 	}
+	if metadata, ok := m.syncMetadataSegment(); ok {
+		segments = append(segments, metadata)
+	}
 	if message := m.statusBarMessage(); message != "" {
 		segments = append(segments, statusBarSegment{
 			text:     message,
@@ -78,7 +85,43 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 		})
 	}
 
-	return fitLine(joinStatusBarSegments(segments, layout.innerWidth, m.render.Palette.Subtle()), layout.innerWidth)
+	return fitRight(joinStatusBarSegments(segments, layout.innerWidth, m.render.Palette.Subtle()), layout.innerWidth)
+}
+
+func (m Model) syncMetadataSegment() (statusBarSegment, bool) {
+	status := m.snapshot.StatusBar
+	parts := make([]string, 0, 3)
+	if status.LastSyncUnix > 0 {
+		parts = append(parts, "last sync "+formatSyncAge(status.LastSyncUnix))
+	}
+	if status.Sources > 0 {
+		parts = append(parts, fmt.Sprintf("%s sources", formatStatusNumber(status.Sources)))
+	}
+	if status.Models > 0 {
+		parts = append(parts, fmt.Sprintf("%s models", formatStatusNumber(status.Models)))
+	}
+	if len(parts) == 0 {
+		return statusBarSegment{}, false
+	}
+	value := strings.Join(parts, "  ·  ")
+	return statusBarSegment{text: value, styled: m.render.Palette.Subtle().Render(value), optional: true}, true
+}
+
+func formatSyncAge(lastSyncUnix int64) string {
+	age := time.Since(time.Unix(lastSyncUnix, 0))
+	if age < 0 {
+		age = 0
+	}
+	switch {
+	case age < time.Minute:
+		return "now"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm ago", int(age/time.Minute))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(age/time.Hour))
+	default:
+		return fmt.Sprintf("%dd ago", int(age/(24*time.Hour)))
+	}
 }
 
 func (m Model) statusBarWarning(sync statusBarSegment, width int) string {
