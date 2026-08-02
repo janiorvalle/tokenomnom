@@ -75,6 +75,39 @@ func TestQuest150SessionRowsAreHeightDerived(t *testing.T) {
 	}
 }
 
+func TestQuest150SessionsKeepOverflowAndFooterWithinViewport(t *testing.T) {
+	data := quest150Sessions()
+	data.HasMore = true
+	width, height := ContentWidth(80), ContentHeightFor(80, 24)
+	view := tuirender.RenderSessions(evidenceRender(width), data, tuirender.SessionViewState{}, width, height)
+	if len(strings.Split(view, "\n")) > height || !strings.Contains(view, "↓ more sessions") || !strings.Contains(view, "↑/↓ select") {
+		t.Fatalf("sessions overflow or footer was clipped at 80x24 body %dx%d:\n%s", width, height, view)
+	}
+}
+
+func TestQuest150WideSearchKeepsFooterWithinViewport(t *testing.T) {
+	page := NewHistorySearchPage(HistorySearchOptions{})
+	page.query, page.searched, page.hasMore = "prompt", true, true
+	page.hits = make([]SearchHit, 25)
+	for index := range page.hits {
+		page.hits[index] = SearchHit{
+			PromptID: fmt.Sprintf("prm_%02d", index), SessionID: "ses_search", Provider: "codex",
+			Date: "2026-07-21", Project: "tokenomnom", Snippet: fmt.Sprintf("prompt result %02d", index),
+		}
+	}
+	request := Request{Width: 192, Height: 50, HistoryQuery: page.query, HistorySelect: len(page.hits) - 1}
+	width, height := ContentWidth(request.Width), ContentHeightFor(request.Width, request.Height)
+	view := page.View(PageContext{
+		Render:  evidenceRender(width),
+		Request: request,
+		Width:   width,
+		Height:  height,
+	})
+	if !strings.Contains(view, "↑/↓ select") {
+		t.Fatalf("wide search footer was clipped at 192x50 body %dx%d:\n%s", width, height, view)
+	}
+}
+
 func TestQuest150SessionDetailKeepsPromptAndCostColumns(t *testing.T) {
 	data := quest150BaseSessionData()
 	prompts := quest150Prompts()

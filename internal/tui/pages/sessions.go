@@ -181,7 +181,11 @@ func renderSessionsTableLines(render theme.Context, data SessionPageData, state 
 	if state.SelectLast {
 		selected = len(data.Sessions) - 1
 	}
-	rowCapacity := max(1, height-len(lines)-2)
+	trailingLines := 2 // blank line and the keyboard footer
+	if data.HasMore {
+		trailingLines += 2 // blank line and the overflow marker
+	}
+	rowCapacity := max(1, height-len(lines)-trailingLines)
 	start, end := sessionVisibleWindow(len(data.Sessions), selected, rowCapacity)
 	for index, session := range data.Sessions[start:end] {
 		actualIndex := start + index

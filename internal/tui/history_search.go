@@ -689,7 +689,39 @@ func (p *HistorySearchPage) searchResultsContent(width int, context PageContext,
 	case len(p.hits) == 0:
 		lines = append(lines, context.Render.Palette.Subtle().Render("No matching prompts."))
 	default:
-		visibleCount := max(1, (max(1, context.Height-1)-3)/2)
+		pageHeight := context.Height
+		if pageHeight <= 0 {
+			pageHeight = ContentHeightFor(context.Request.Width, context.Request.Height)
+		}
+		statusLines := 0
+		if p.exportText != "" {
+			statusLines += 2
+		}
+		if p.exporting {
+			statusLines += 2
+		}
+		if p.exportErrorText != "" {
+			statusLines += 2
+		}
+		if len(p.warnings) > 0 {
+			statusLines += 2
+		}
+		resultBudget := max(1, pageHeight-1-2-statusLines-2)
+		visibleCount := max(1, resultBudget/2)
+		for visibleCount > 1 {
+			start, end := searchVisibleWindow(len(p.hits), selectedIndex, visibleCount)
+			markerLines := 0
+			if start > 0 {
+				markerLines++
+			}
+			if end < len(p.hits) || p.hasMore {
+				markerLines++
+			}
+			if 2*visibleCount+markerLines <= resultBudget {
+				break
+			}
+			visibleCount = max(1, (resultBudget-markerLines)/2)
+		}
 		start, end := searchVisibleWindow(len(p.hits), selectedIndex, visibleCount)
 		if start > 0 {
 			lines = append(lines, context.Render.Palette.Subtle().Render("↑ earlier results"))
