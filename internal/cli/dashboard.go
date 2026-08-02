@@ -1615,7 +1615,26 @@ func dashboardHeatmapView(database *store.Store, globalFilter store.Filter, requ
 			filteredRows = append(filteredRows, row)
 		}
 	}
-	return renderHeatmap(render, buildHeatmapReport(window, filteredRows, costs)), nil
+	report := buildHeatmapReport(window, filteredRows, costs)
+	pageRender := render
+	pageRender.Width = request.Width
+	return tuipages.RenderHeatmap(pageRender, dashboardHeatmapPageData(report, costs), tui.ContentWidth(request.Width), tui.ContentHeightFor(request.Width, request.Height)), nil
+}
+
+func dashboardHeatmapPageData(report heatmapReport, costs reportCosts) tuipages.HeatmapData {
+	days := make([]tuipages.HeatmapDay, 0, len(report.Days))
+	for _, day := range report.Days {
+		key := day.Date.Format(heatmapDateLayout)
+		cost := costs.ByDate[key]
+		days = append(days, tuipages.HeatmapDay{
+			Date: day.Date, Cost: day.Cost, TotalTokens: day.TotalTokens,
+			PricedTokens: cost.PricedTokens, Level: day.Level,
+		})
+	}
+	return tuipages.HeatmapData{
+		Window: tuipages.HeatmapWindow{From: report.Window.From, To: report.Window.To},
+		Days:   days, UsesTokens: report.UsesTokens,
+	}
 }
 
 func dashboardRowCapacity(width, height int) int {

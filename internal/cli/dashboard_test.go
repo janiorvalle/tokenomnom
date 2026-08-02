@@ -54,7 +54,7 @@ func TestDashboardSnapshotRendersAllViewsAndFilteredCards(t *testing.T) {
 	viewFragments := map[int][]string{
 		int(tui.DailyTab):   {"cost/day", "DAY DETAIL", "PROVIDER SPLIT", "TOP MODELS BY"},
 		int(tui.ModelsTab):  {"PROVIDER", "MODEL"},
-		int(tui.HeatmapTab): {"Less", "active days"},
+		int(tui.HeatmapTab): {"YEAR GRID", "MONTH Σ", "WEEKDAY PROFILE", "STREAKS & RECORDS", "MONTH TABLE", "active days"},
 	}
 	for index, fragments := range viewFragments {
 		for _, fragment := range fragments {
