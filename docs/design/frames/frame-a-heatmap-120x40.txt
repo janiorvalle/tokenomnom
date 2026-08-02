@@ -1,0 +1,37 @@
+FRAME: Heatmap standard · 120x40
+Source: internal/tui/pages/heatmap_test.go::TestQuest149HeatmapReferenceFrames
+Command: go test ./internal/tui/pages -run TestQuest149HeatmapReferenceFrames -count=1 -v
+
+YEAR GRID · 2026 ───────────────────────────────────────────────────────────────────────────────
+      Apr     May       Jun     Jul     Aug       Sep     Oct       Nov     Dec        MONTH Σ
+SUN ▓ ▒ ▒ · █ ▓ █ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓ ▓ ▒ · █ ▓ ▓ ▒ · █ · █ ▓ ▒ ▒ · █ ▓ ▒ ▓ ▒ · █  MONTH Σ
+MON █ ▓ ▓ ▒ · █ · █ ▓ ▒ ▒ · █ ▓ ▒ ▓ ▒ · █ █ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓ ▓ ▒ · █ ▓ █ ▓ ▒ ·  $84.00
+TUE · █ █ ▓ ▒ · ▒ · █ ▓ ▓ ▒ · █ ▓ █ ▓ ▒ · · █ ▓ ▒ ▒ · █ ▓ ▒ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓ ▒  24 activ
+WED ▒ ▒ · █ ▓ ▒ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓ ▒ ▒ · █ ▓ ▓ ▒ · █ ▓ █ ▓ ▒ · · █ ▓ ▒ ▓ ▒ · █ ▓  Dec 2026
+THU ▓ ▓ ▒ · █ ▓ █ ▓ ▒ · · █ ▓ ▒ ▓ ▒ · █ ▓ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓ ▒ ▒ · █ ▓ █ ▓ ▒ · █  6 streak
+FRI █ █ ▓ ▒ · ▒ · █ ▓ ▒ ▒ · █ ▓ █ ▓ ▒ · █ █ ▓ ▒ · · █ ▓ ▒ ▓ ▒ · █ ▓ ▓ ▒ · █ · █ ▓ ▒
+SAT · · █ ▓ ▒ ▓ ▒ · █ ▓ ▓ ▒ · █ · █ ▓ ▒ ▒ · █ ▓ ▒ ▒ · █ ▓ █ ▓ ▒ · █ █ ▓ ▒ · ▒ · █ ▓
+Less ·░▒▓█ More  ·  cost
+showing Mar 22 2026 - Dec 31 2026 of Jan 01 2026 - Dec 31 2026
+281 active days · total $514.65 · busiest 2026-12-31  $3.65 · longest streak 6 days
+ANALYSIS ───────────────────────────────────────────────────────────────────────────────────────
+WEEKDAY PROFILE ───────────────────────────────  STREAKS & RECORDS ─────────────────────────────
+DAY  ACTIVE  COST                                BUSIEST DAY     2026-12-31  $3.65
+Sun  40  $73.28                                  LONGEST STREAK  6 days
+Mon  40  $73.40                                  CURRENT STREAK   3 days
+Tue  40  $73.80                                  ACTIVE / TOTAL   281 / 365 days
+Wed  40  $74.76                                  METRIC           COST
+Thu  41  $75.17
+Fri  40  $71.92                                  MONTH TABLE
+Sat  40  $72.32                                  MONTH       VALUE             ACTIVE
+                                                 Feb 2026   $9.45             21d
+RECENT DAILY ACTIVITY                            Mar 2026   $18.00            24d
+· Dec 23  $3.57                                  Apr 2026   $24.23            23d
+  Dec 24  —                                      May 2026   $32.64            24d
+· Dec 25  $3.59                                  Jun 2026   $38.26            23d
+· Dec 26  $3.60                                  Jul 2026   $47.28            24d
+· Dec 27  $3.61                                  Aug 2026   $54.72            24d
+  Dec 28  —                                      Sep 2026   $59.42            23d
+· Dec 29  $3.63                                  Oct 2026   $69.36            24d
+· Dec 30  $3.64                                  Nov 2026   $73.45            23d
+· Dec 31  $3.65                                  Dec 2026   $84.00            24d
