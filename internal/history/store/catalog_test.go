@@ -139,6 +139,10 @@ func TestListCatalogProjectsPreservesKeysAndExplicitEmptyFilters(t *testing.T) {
 	if err != nil || len(projects) != 2 || projects[0] != "" || projects[1] != "spaced" {
 		t.Fatalf("project keys err=%v values=%q", err, projects)
 	}
+	stats, err := database.ListCatalogProjectStats(CatalogQuery{Source: CatalogSourceAny}, 4)
+	if err != nil || len(stats) != 2 || stats[0].Project != "" || stats[0].Sessions != 1 || stats[0].TotalSessions != 2 || stats[1].Project != "spaced" || stats[1].TotalSessions != 2 {
+		t.Fatalf("project stats err=%v values=%+v", err, stats)
+	}
 	page, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, ProjectSet: true, Limit: 10})
 	if err != nil || len(page.Sessions) != 1 || page.Sessions[0].Project != "" {
 		t.Fatalf("explicit empty project filter err=%v page=%+v", err, page)

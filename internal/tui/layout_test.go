@@ -46,6 +46,12 @@ func TestCockpitLayoutExactArithmeticAtReferenceSizes(t *testing.T) {
 	if got := ContentWidth(80); got != 78 {
 		t.Fatalf("floor content width=%d, want full inner width 78", got)
 	}
+	if got := railWidthFor(WidthWide, 190); got != 20 {
+		t.Fatalf("wide rail width=%d, want fixed 20", got)
+	}
+	if got := railWidthFor(WidthStandard, 118); got != 20 {
+		t.Fatalf("standard rail width=%d, want fixed 20", got)
+	}
 }
 
 func TestRenderBandFillsEveryCellAndKeepsPaneArithmetic(t *testing.T) {
@@ -112,6 +118,27 @@ func TestRailDropsOptionalBlocksFromTheBottom(t *testing.T) {
 	shortRail := model.railView(newCockpitLayout(model.request.Width, model.request.Height))
 	if !strings.Contains(shortRail, "FILTERS") || !strings.Contains(shortRail, "provider") || !strings.Contains(shortRail, "range") {
 		t.Fatalf("short standard rail truncated required filters:\n%s", shortRail)
+	}
+}
+
+func TestRailUsesContractBlocksAndChromeJunctions(t *testing.T) {
+	model := realisticEvidenceModel()
+	model.request.Width, model.request.Height = 192, 66
+	layout := newCockpitLayout(model.request.Width, model.request.Height)
+	view := model.View()
+	for _, fragment := range []string{"today $2,209.23", "MIX · 30D", "Codex 72%", "PROJECTS 30D", "alpha 50%"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("rail missing %q:\n%s", fragment, view)
+		}
+	}
+	if !strings.Contains(view, "┬") || !strings.Contains(view, "┴") {
+		t.Fatalf("rail junctions missing:\n%s", view)
+	}
+	if !strings.Contains(view, "192x66 · wide + tall") {
+		t.Fatalf("size badge was not moved to the disclaimer row:\n%s", view)
+	}
+	if lipgloss.Width(model.chromeDividerView(layout, '┬')) != layout.innerWidth {
+		t.Fatalf("top divider width=%d, want %d", lipgloss.Width(model.chromeDividerView(layout, '┬')), layout.innerWidth)
 	}
 }
 

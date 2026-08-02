@@ -20,6 +20,34 @@ Source: internal/tui/layout_test.go::TestQuest145FoundationFrames
 Command: go test ./internal/tui -run TestQuest145FoundationFrames -count=1 -v
 Result: PASS; committed cell-exact snapshots are frame-a-foundation-{192x66,120x40,80x24}.txt.
 
+Source: internal/tui/layout_test.go::TestRailUsesContractBlocksAndChromeJunctions
+Command: go test ./internal/tui -run TestRailUsesContractBlocksAndChromeJunctions -count=1 -v
+Result: PASS; fixed 20-column rail, SNAPSHOT/MIX/PROJECTS 30D blocks, top/bottom junctions, and right-aligned size badge.
+
+Source: internal/tui/app_test.go::TestFloorFooterKeepsDisclaimerAndQuitHint
+Command: go test ./internal/tui -run TestFloorFooterKeepsDisclaimerAndQuitHint -count=1 -v
+Result: PASS; floor keeps the pricing disclaimer, quit hint, and size badge on one bounded row.
+
+Source: internal/tui/statusbar_test.go::TestStatusBarShowsSyncMetadataAsOneOptionalSegment
+Command: go test ./internal/tui -run TestStatusBarShowsSyncMetadataAsOneOptionalSegment -count=1 -v
+Result: PASS; status metadata renders as `last sync <t> · <n> sources · <m> models`.
+
+Source: internal/cli/dashboard_test.go::TestDashboardRailDataUsesThirtyDayWindows
+Command: go test ./internal/cli -run TestDashboardRailDataUsesThirtyDayWindows -count=1 -v
+Result: PASS; fixed rail windows exclude out-of-window data and calculate the bounded peak/provider mix.
+
+Source: internal/cli/dashboard_test.go::TestRailProviderShareDoesNotMixCostAndTokenUnits
+Command: go test ./internal/cli -run TestRailProviderShareDoesNotMixCostAndTokenUnits -count=1 -v
+Result: PASS; provider share uses money consistently when either side is priced and tokens only when both are unpriced.
+
+Source: internal/history/store/catalog_test.go::TestListCatalogProjectsPreservesKeysAndExplicitEmptyFilters
+Command: go test ./internal/history/store -run TestListCatalogProjectsPreservesKeysAndExplicitEmptyFilters -count=1 -v
+Result: PASS; project summary exposes the full matching-session denominator even when the result is limited to top projects.
+
+Review reproduction:
+Before: evidence/quest-145-review-before.txt captures the reviewed layout before the fixes.
+After: evidence/quest-145-review-after.txt and docs/design/frames/frame-a-foundation-{192x66,120x40,80x24}.txt capture the corrected layout, including sync metadata, disclaimer, and floor hints.
+
 Source: repository
 Command: go vet ./...
 Result: PASS

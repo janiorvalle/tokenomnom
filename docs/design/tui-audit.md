@@ -8,12 +8,12 @@ decision is to change the shell and leave page-owned content alone.
 | Surface | Current behavior | Foundation decision |
 | --- | --- | --- |
 | Width and height | One cockpit layout with a fixed rail minimum | Independent width and height tiers |
-| Global rows | Top bar, summary, body, status, footer | Add an explicit size badge row outside the floor tier |
+| Global rows | Top bar, summary, body, status, footer | Add top/bottom rail junctions; put the badge on the disclaimer row |
 | Page body | One content pane padded to the cockpit body | Render the existing page in one exact-fill band |
 | Sidebar | Navigation plus filters | Rename the role to ambient rail and add snapshot, mix, projects |
 | Status | Left-aligned facts | Right-align the segment and retain warning priority |
 | Floor width | Rail still consumed columns | Remove the rail and show the `1-8 pages` hint |
-| Data | Dashboard loader owns all store access | No new queries in the foundation |
+| Data | Dashboard loader owns all store access | Add one bounded 30-day project-population query for the rail |
 
 ## Page audit
 
@@ -39,11 +39,12 @@ the old rail width's exact cut point.
 - Sparse compatibility bands still have blank rows at wide+tall. This is
   intentional for the foundation and is the first thing the page quests must
   replace with B1/B2/B3 content; the final no-void sweep belongs to quest 152.
-- The rail's MIX block is a view of the current request and sync state until a
-  later page supplies richer provider totals. It does not invent a query or a
-  percentage.
-- The floor top bar carries the size badge inline so the compact page retains
-  the previous body height. Standard and wide tiers get a dedicated row.
+- The rail's SNAPSHOT and MIX blocks are derived from the already loaded daily
+  and provider aggregates. PROJECTS 30D uses one bounded history-index
+  population query and renders session share, not transcript cost attribution.
+- The size badge is right-aligned on the disclaimer row. The floor top bar keeps
+  the `1-8 pages` hint and combines footer hints with the badge so the page body
+  retains its compact height.
 
 ## Verification source
 

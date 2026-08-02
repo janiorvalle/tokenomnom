@@ -1,0 +1,66 @@
+tokenomnom / DAILY                                                                                                                                                         LOCAL  ·  ALL  ·  30D
+TOTAL $107,027.21 · TOKENS 160,250,065,801 · ACTIVE DAYS 30 · AVG/DAY $3,567.57 · PEAK $28,474.65                                                                                               
+────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SPEND               │ COST / DAY  ·  30 DAYS ───────────── ■ Codex  ■ Claude   peak $28,474.65 Jul 09     ─────────────────────────────────────────────────────────────── Jul 03 – Aug 01 2026 ─
+› 1  Daily          │$28,474.65┤                              ████                                                                                                                              
+  2  Ledger         │          │                              ████                                                                                                                              
+  3  Models         │          │                              ████                                                                                                                              
+  4  Heatmap        │$22,372.94┤                              ████                                                                                                                              
+                    │          │                              ████                                                                                                                              
+HISTORY             │          │                              ████                                                                                                                              
+  5  Sessions       │$16,271.23┤                              ████                                                                                                                              
+  6  Search         │          │                    ████      ████                                                                                                                              
+                    │          │                    ████ ▇▇▇▇ ████                                                                                                                              
+VAULT               │$10,169.52┤               ▃▃▃▃ ████ ████ ████                                                                                                                              
+  7  Vault          │          │               ████ ████ ████ ████                                                                                                                              
+                    │          │          ▂▂▂▂ ████ ████ ████ ████ ▇▇▇▇                                                                                                                         
+SYSTEM              │ $4,067.81┤┈┈┈┈┈▁▁▁▁┈████┈████┈████┈████┈████┈████┈▅▅▅▅┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ avg $3,568
+  8  System         │          │▅▅▅▅ ████ ████ ████ ████ ████ ████ ████ ████ ████ ▆▆▆▆ ▄▄▄▄ ▄▄▄▄ ▅▅▅▅ ▆▆▆▆ ▅▅▅▅ ▄▄▄▄ ▃▃▃▃ ▂▂▂▂ ▃▃▃▃ ▆▆▆▆ ▆▆▆▆ ▃▃▃▃ ▅▅▅▅ ▆▆▆▆ ▆▆▆▆ ▇▇▇▇ ▅▅▅▅ ▄▄▄▄ ▄▄▄▄           
+                    │     $0.00└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ FILTERS ───────────┤            03   04   05   06   07   08   09   10   11   12   13   14   15   16   17   18   19   20   21   22   23   24   25   26   27   28   29   30   31 ▏ 01            
+ provider       all ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ range          30d │ DAY DETAIL  ·  2026-08-01 ─────────────────────────────── $1,134.96 ─│ PROJECTS ────────────────────────── 20 sessions ─│ LAST 10 DAYS  ·  RESCALED ───── ymax $1,748.86 ─
+ project        all │PROVIDER             COST       SHARE                   TOKENS   SESS │PROJECT          COST  TOKENS  SE SHARE           │$1,748.86┤                        ▆▆▆            
+ SNAPSHOT ──────────┤Codex             $468.28   41% ██████████░░░░░░░░░░░░░░ 2.27B     14 │project-a     $58.09  455.4M   8 ███████████████ │         │▃▃▃             ▆▆▆     ███            
+ today    $1,134.96 │Claude            $666.68   59% ██████████████░░░░░░░░░░ 1.13B      6 │project-f          $38.86  323.3M   2 ██████████░░░░░ │         │███ ███         ███ ▇▇▇ ███            
+ 7d       $9,555.41 │                                                                      │project-b       $26.33  213.3M   5 ███████░░░░░░░░ │         │███┈███┈┈┈┈┈▆▆▆┈███┈███┈███┈▁▁▁┈┈┈┈┈┈┈┈
+ 30d    $107,027.21 │ MODELS BY COST ─────────────────────────────────────────── 6 models ─│project-e          $0.88    1.9M   1 ▏░░░░░░░░░░░░░░ │$1,210.75┤███ ███     ███ ███ ███ ███ ███ ▃▃▃ ▃▃▃
+ peak    $28,474.65 │claude-fable-5       $666.68  ████████████████████████ 58.7%    1.13B │project-c         —       —   2 ··············· │         │███ ███     ███ ███ ███ ███ ███ ███ ███
+             Jul 09 │gpt-5.6-luna         $335.00  ████████████░░░░░░░░░░░░ 29.5%    1.51B │project-d              —       —   2 ··············· │         │███ ███ ▁▁▁ ███ ███ ███ ███ ███ ███ ███
+ MIX · 30D ─────────┤gpt-5.6-sol          $131.40  █████░░░░░░░░░░░░░░░░░░░ 11.6%   742.0M │                                                  │         │███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+ Codex  87% ██████░ │gpt-5.5                $1.87  ▏░░░░░░░░░░░░░░░░░░░░░░░  0.2%    14.6M │attributed      $124.16  9 of 20 sessions         │  $672.64┤███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+ Claude 13% █░░░░░░ │claude-opus-5              —  ························       unpriced │unattributed  $1,010.80  11 of 20 · 2.41B         │         │███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+                    │codex-auto-review          —  ························       unpriced │                                                  │         │███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+ PROJECTS 30D ──────┤                                                                      │ 30-DAY TRENDS ──────────────────────────── 7d Δ ─│         │███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+ project-a 38% ▪·· │ DAY vs 30-DAY AVERAGE ───────────────────────────────────────────────│cost/day      ▁▂▂▃▅▄█▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁-18.4% │  $134.53┤███ ███ ███ ███ ███ ███ ███ ███ ███ ███
+ project-b   22% ▪·· │cost          $1,134.96  vs    $3,567.57 avg   -68.2%  ▬▬▬▬▬▬▬▬▬▬···· │tokens/day    ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▂█▄▅▃▂▂▁+4.2% │         └───────────────────────────────────────
+ project-f      16% ▏·· │tokens            3.40B  vs        5.34B avg   -36.3%  ▬▬▬▬▬········· │sessions/day  ▁▂▂▃▅▄█▃▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁-11.5% │          23  24  25  26  27  28  29  30  31  01 
+ project-c… 11% ▏·· │sessions             20  vs          197 avg   -89.9%  ▬▬▬▬▬▬▬▬▬▬▬▬▬· │claude share  ▂▂▁▂▂▃▂▃▃▄▄▃▄▅▄▄▅▆▄▅▅▆▇▆▇▆▅▇█+26.8% │Jul 23 – Aug 01  avg $1,339.69       Σ $13,396.86
+ project-d      7% ▏·· ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ project-e      4% ▏·· │ SESSIONS  ·  2026-08-01 ───────────────────────────────────────────────────────────────────────────────────────────────────────── all 20 · no pager · enter opens detail ─
+ other       2% ▏·· │TIME  PROV   PROJECT       SESSION      MODEL                  TOKENS      COST    PR FIRST PROMPT                                                                         
+                    ›23:21 codex  project-c   ses_demo01 gpt-5.6-sol                 —         —    80 Synthetic prompt preview— Synthetic prompt preview…
+                    │14:50 codex  project-a    ses_demo01 gpt-5.6-sol                 —         —     6 Synthetic prompt fixture
+                    │22:38 claude project-c   ses_demo01 claude-fable-5              —         —    14 Synthetic prompt preview…
+                    │17:26 claude project-d        ses_demo01 claude-fable-5              —         —     9 Synthetic prompt fixture…
+                    │14:54 claude project-d        ses_demo01 claude-fable-5              —         —     4 Synthetic prompt fixture
+                    │14:27 codex  project-b      ses_demo01 gpt-5.6-sol                 —         —    11 Synthetic prompt fixture…
+                    │14:29 codex  project-f         ses_demo01 gpt-5.6-sol                 —         —     7 Synthetic prompt fixture…
+                    │23:16 claude project-a    ses_demo01 claude-fable-5              —         —    22 Synthetic prompt fixture…
+                    │14:28 codex  project-a    ses_demo01 gpt-5.6-sol         5,758,884     $3.84    18 Synthetic prompt fixture…
+                    │00:00 codex  project-f         ses_demo01 gpt-5.6-sol       323,338,300    $38.86    96 Synthetic prompt fixture
+                    │01:07 codex  project-a    ses_demo01 gpt-5.6-sol       231,456,800    $28.06    74 Synthetic prompt fixture
+                    │13:53 codex  project-e        ses_demo01 gpt-5.6-luna        1,916,217     $0.88     5 Synthetic prompt fixture…
+                    │11:54 claude project-b      ses_demo01 claude-fable-5              —         —     3 Synthetic prompt fixture…
+                    │10:42 codex  project-b      ses_demo01 gpt-5.6-sol        92,866,397    $11.50    31 Synthetic prompt fixture
+                    │13:16 claude project-a    ses_demo01 claude-fable-5      4,547,889         —    12 —                                                                                    
+                    │01:07 codex  project-a    ses_demo01 gpt-5.6-sol                 —         —     8 Synthetic prompt fixture
+                    │19:38 codex  project-b      ses_demo01 gpt-5.6-sol                 —         —    16 Synthetic prompt fixture— Synthetic prompt fixture…
+                    │01:07 codex  project-a    ses_demo01 gpt-5.6-sol       130,109,600    $15.78    52 Synthetic prompt fixture
+                    │01:07 codex  project-a    ses_demo01 gpt-5.6-sol        83,533,713    $10.41    44 Synthetic prompt fixture
+                    │00:46 codex  project-b      ses_demo01 gpt-5.6-sol       120,421,300    $14.83    39 continue                                                                             
+                    │~ Cost attribution unavailable for 11 of 20 sessions · $1,010.80 unattributed                   restore the source or vault snapshot, then rerun `project-a history index`
+────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+● fresh · index stale · vault 6.5 GiB 6.9x · 5,916 sessions                                                                                         last sync 2m ago  ·  2 sources  ·  10 models
+tab views · p provider · r range · R refresh · h/l zoom · enter open · esc back · ? help · q quit                                                                                               
+API list-price equivalents, not actual bills                                                                                                                                192×66 · wide + tall

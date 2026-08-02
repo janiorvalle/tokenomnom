@@ -99,23 +99,25 @@ type LayoutTiers struct {
 // ChromeRows describes the fixed rows outside the page body. The values add
 // up with BodyHeight to the exact terminal height.
 type ChromeRows struct {
-	TopBar    int
-	Summary   int
-	SizeBadge int
-	Status    int
-	Footer    int
+	TopBar  int
+	Summary int
+	Divider int
+	Status  int
+	Footer  int
 }
 
 func (rows ChromeRows) Total() int {
-	return rows.TopBar + rows.Summary + rows.SizeBadge + rows.Status + rows.Footer
+	return rows.TopBar + rows.Summary + rows.Divider + rows.Status + rows.Footer
 }
 
 func globalChromeRows(tiers LayoutTiers) ChromeRows {
-	rows := ChromeRows{TopBar: 1, Summary: 1, SizeBadge: 1, Status: 1, Footer: footerHeight}
+	// The badge lives on the disclaimer row. The two reserved divider rows keep
+	// the body boundary stable across tiers, including the floor layout.
+	footer := footerHeight - 1 // the bottom divider is counted separately
 	if tiers.Width == WidthFloor {
-		rows.SizeBadge = 0
+		footer-- // floor combines hints and the badge into one final row
 	}
-	return rows
+	return ChromeRows{TopBar: 1, Summary: 1, Divider: 2, Status: 1, Footer: footer}
 }
 
 // Pane is a borderless rectangular content region inside a Band. Pane titles
@@ -438,14 +440,10 @@ func newCockpitLayout(width, height int) cockpitLayout {
 }
 
 func railWidthFor(tier WidthTier, innerWidth int) int {
-	switch tier {
-	case WidthWide:
-		return min(30, max(24, innerWidth/6))
-	case WidthStandard:
-		return min(22, max(18, innerWidth/5))
-	default:
-		return 0
+	if tier == WidthStandard || tier == WidthWide {
+		return min(20, innerWidth)
 	}
+	return 0
 }
 
 // ContentWidth returns the width available to the active dashboard view.
@@ -508,9 +506,13 @@ func frameBlock(value string, layout cockpitLayout) string {
 }
 
 func sizeBadge(render theme.Context, layout cockpitLayout) string {
-	label := fmt.Sprintf("%s %dx%d", strings.ToUpper(layout.tiers.Width.String()), layout.width, layout.height)
-	if !layout.showRail {
-		label += "  ·  1-8 pages"
+	return fitRight(render.Palette.Subtle().Render(sizeBadgeLabel(layout)), layout.innerWidth)
+}
+
+func sizeBadgeLabel(layout cockpitLayout) string {
+	label := fmt.Sprintf("%dx%d · %s", layout.width, layout.height, layout.tiers.Width.String())
+	if layout.tiers.Height == HeightTall {
+		label += " + tall"
 	}
-	return fitLine(render.Palette.Subtle().Render(label), layout.innerWidth)
+	return label
 }

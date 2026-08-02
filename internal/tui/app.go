@@ -149,9 +149,37 @@ type Summary struct {
 	Metrics [5]SummaryMetric
 }
 
+// RailData is the bounded ambient context rendered beside every page. The
+// loader supplies formatted snapshot values and normalized shares so the rail
+// remains a pure view and never performs its own I/O.
+type RailData struct {
+	Snapshot RailSnapshot
+	Mix      RailMix
+	Projects []RailProject
+}
+
+type RailSnapshot struct {
+	Today      string
+	SevenDays  string
+	ThirtyDays string
+	Peak       string
+	PeakDate   string
+}
+
+type RailMix struct {
+	Codex  float64
+	Claude float64
+}
+
+type RailProject struct {
+	Label string
+	Share float64
+}
+
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
 	Summary   Summary
+	Rail      RailData
 	Views     [4]string
 	Sessions  tuipages.SessionPageData
 	StatusBar StatusBar
@@ -1303,13 +1331,24 @@ func (m Model) cockpitView() string {
 	rows := []string{
 		m.topBarView(layout),
 		m.summaryView(layout),
+		m.chromeDividerView(layout, '┬'),
+		content,
+		m.chromeDividerView(layout, '┴'),
+		m.statusBarView(layout),
 	}
-	if layout.chrome.SizeBadge > 0 {
-		rows = append(rows, sizeBadge(m.render, layout))
-	}
-	rows = append(rows, content, m.statusBarView(layout), m.footerView(layout))
+	rows = append(rows, m.footerView(layout))
 	view := strings.Join(rows, "\n")
 	return frameBlock(view, layout)
+}
+
+func (m Model) chromeDividerView(layout cockpitLayout, junction rune) string {
+	if !layout.showRail {
+		return fitLine(strings.Repeat("─", layout.innerWidth), layout.innerWidth)
+	}
+	leftWidth := max(0, layout.railWidth-1)
+	rightWidth := max(0, layout.innerWidth-layout.railWidth)
+	line := strings.Repeat("─", leftWidth) + string(junction) + strings.Repeat("─", rightWidth)
+	return fitLine(line, layout.innerWidth)
 }
 
 func (m Model) topBarView(layout cockpitLayout) string {

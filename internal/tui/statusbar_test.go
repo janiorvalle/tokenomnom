@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -78,6 +79,17 @@ func TestStatusBarDoesNotInventHistoryState(t *testing.T) {
 	model.snapshot.StatusBar.History = HistoryStatus{Exists: true}
 	if view := model.View(); strings.Contains(view, "index pending") {
 		t.Fatalf("status bar invented a pending state:\n%s", view)
+	}
+}
+
+func TestStatusBarShowsSyncMetadataAsOneOptionalSegment(t *testing.T) {
+	model := loadedTestModel()
+	model.snapshot.StatusBar = StatusBar{LastSyncUnix: time.Now().Add(-2 * time.Minute).Unix(), Sources: 2, Models: 10}
+	view := model.View()
+	for _, fragment := range []string{"last sync", "2 sources", "10 models"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("sync metadata missing %q:\n%s", fragment, view)
+		}
 	}
 }
 

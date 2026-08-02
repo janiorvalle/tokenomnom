@@ -271,6 +271,9 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
 		})
+		for _, project := range snapshot.Sessions.ProjectStats {
+			snapshot.Rail.Projects = append(snapshot.Rail.Projects, tui.RailProject{Label: project.Label, Share: project.Share})
+		}
 		if request.Ledger.ExpandedDay != "" {
 			snapshot.Ledger = loadDashboardLedgerSessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location, codexDir, claudeDir)
 		}
@@ -330,7 +333,8 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	}
 	defer database.Close()
 
-	since, until := dashboardHistoryWindow(request.Range, location, time.Now())
+	now := time.Now()
+	since, until := dashboardHistoryWindow(request.Range, location, now)
 	baseQuery := historystore.CatalogQuery{
 		Provider: historyProvider(request.Provider),
 		Since:    since, Until: until, Source: historystore.CatalogSourceAny,
@@ -348,10 +352,41 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	if err != nil {
 		return tuipages.SessionPageData{Warning: "History project filters could not be read; press R to retry or run tokenomnom history index."}
 	}
+	projectSince, projectUntil := dashboardHistoryWindow(tui.Range30Days, location, now)
+	projectQuery := historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider),
+		Since:    projectSince, Until: projectUntil, Source: historystore.CatalogSourceAny,
+	}
+	projectStats, err := database.ListCatalogProjectStats(projectQuery, 4)
+	projectOptions := tuipages.ProjectOptionsFromKeys(projects)
+	projectWarning := ""
+	projectData := []tuipages.ProjectStat{}
+	if err != nil {
+		projectWarning = "History project summaries could not be read; press R to retry or run tokenomnom history index."
+	} else {
+		projectTotal := 0
+		for _, stat := range projectStats {
+			projectTotal = max(projectTotal, stat.TotalSessions)
+		}
+		projectData = make([]tuipages.ProjectStat, 0, len(projectStats))
+		for _, stat := range projectStats {
+			share := 0.0
+			if projectTotal > 0 {
+				share = float64(stat.Sessions) / float64(projectTotal)
+			}
+			projectData = append(projectData, tuipages.ProjectStat{
+				Label: tuipages.ProjectLabel(stat.Project, projectOptions), Sessions: stat.Sessions, Share: share,
+			})
+		}
+	}
+	warnings := append([]string(nil), page.Warnings...)
+	if projectWarning != "" {
+		warnings = append(warnings, projectWarning)
+	}
 	return tuipages.SessionPageData{
-		Sessions: page.Sessions, Projects: tuipages.ProjectOptionsFromKeys(projects),
+		Sessions: page.Sessions, Projects: projectOptions, ProjectStats: projectData,
 		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
-		Warning: strings.Join(uniqueStrings(page.Warnings), "; "), Location: location,
+		Warning: strings.Join(uniqueStrings(warnings), "; "), Location: location,
 	}
 }
 
@@ -606,7 +641,11 @@ func countDashboardFiles(roots []discover.Root) int {
 func dashboardStatusBar(cmd *cobra.Command, database *store.Store, stateDir, home string, roots []discover.Root) tui.StatusBar {
 	history := dashboardHistoryStatus(cmd, filepath.Join(stateDir, historystore.DatabaseName), roots)
 	vaultStatus := dashboardVaultStatus(cmd, database, home, roots)
-	return tui.StatusBar{History: history.Status, Vault: vaultStatus, Sessions: history.Sessions}
+	info, _ := database.Info()
+	return tui.StatusBar{
+		History: history.Status, Vault: vaultStatus, Sessions: history.Sessions,
+		LastSyncUnix: info.LastSyncUnix, Sources: len(roots), Models: info.DistinctModels,
+	}
 }
 
 type dashboardHistorySnapshot struct {
@@ -880,7 +919,8 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	filter := dashboardFilter(request, time.Now().In(location))
+	now := time.Now().In(location)
+	filter := dashboardFilter(request, now)
 	totals, err := database.Totals(filter)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -901,6 +941,20 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	railRows, railCosts := dailyRows, costs
+	if request.Range != tui.Range30Days {
+		railRequest := request
+		railRequest.Range = tui.Range30Days
+		railFilter := dashboardFilter(railRequest, now)
+		railRows, err = database.Daily(railFilter)
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		railCosts, err = loadReportCostsWithTable(database, railFilter, nil, pricingTable)
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+	}
 
 	ledgerFilter := filter
 	ledgerFilter.Since = ""
@@ -917,6 +971,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 		DailyCursorMax: max(0, len(dailyRows)-1),
 	}
 	snapshot.Summary = dashboardSummary(totals, costs)
+	snapshot.Rail = dashboardRailData(railRows, railCosts, now)
 	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -955,18 +1010,93 @@ func dashboardSummary(totals store.TotalsResult, costs reportCosts) tui.Summary 
 	}}
 }
 
+func dashboardRailData(rows []store.DailyRow, costs reportCosts, now time.Time) tui.RailData {
+	today := dateOnly(now)
+	sevenStart := today.AddDate(0, 0, -6).Format(heatmapDateLayout)
+	thirtyStart := today.AddDate(0, 0, -29).Format(heatmapDateLayout)
+	todayKey := today.Format(heatmapDateLayout)
+	sevenDays := railWindowCost(rows, costs.ByDate, sevenStart, todayKey)
+	thirtyByDate := railWindowValues(rows, costs.ByDate, thirtyStart, todayKey)
+	thirtyDays := sumAggregateCosts(thirtyByDate)
+	mixCosts := railProviderCosts(rows, costs.ByDateProvider, thirtyStart, todayKey)
+	peak, peakDate := peakDailyCostWithDate(thirtyByDate)
+	return tui.RailData{
+		Snapshot: tui.RailSnapshot{
+			Today:     formatCost(costs.ByDate[todayKey]),
+			SevenDays: formatCost(sevenDays), ThirtyDays: formatCost(thirtyDays),
+			Peak: formatCost(peak), PeakDate: peakDate,
+		},
+		Mix: tui.RailMix{
+			Codex:  railProviderShare(mixCosts[discover.ProviderCodex], mixCosts[discover.ProviderClaude]),
+			Claude: railProviderShare(mixCosts[discover.ProviderClaude], mixCosts[discover.ProviderCodex]),
+		},
+	}
+}
+
+func railWindowCost(rows []store.DailyRow, byDate map[string]aggregateCost, since, until string) aggregateCost {
+	return sumAggregateCosts(railWindowValues(rows, byDate, since, until))
+}
+
+func railWindowValues(rows []store.DailyRow, byDate map[string]aggregateCost, since, until string) map[string]aggregateCost {
+	values := make(map[string]aggregateCost)
+	for _, row := range rows {
+		if row.Date < since || row.Date > until {
+			continue
+		}
+		values[row.Date] = byDate[row.Date]
+	}
+	return values
+}
+
+func sumAggregateCosts(values map[string]aggregateCost) aggregateCost {
+	var total aggregateCost
+	for _, value := range values {
+		total = addAggregateCost(total, value)
+	}
+	return total
+}
+
+func railProviderCosts(rows []store.DailyRow, byDateProvider map[string]map[discover.Provider]providerChartValue, since, until string) map[discover.Provider]aggregateCost {
+	result := make(map[discover.Provider]aggregateCost)
+	for _, row := range rows {
+		if row.Date < since || row.Date > until {
+			continue
+		}
+		for provider, value := range byDateProvider[row.Date] {
+			result[provider] = addAggregateCost(result[provider], value.Cost)
+		}
+	}
+	return result
+}
+
+func railProviderShare(value, other aggregateCost) float64 {
+	valueAmount, otherAmount := float64(value.UnpricedTokens), float64(other.UnpricedTokens)
+	if value.PricedTokens > 0 || other.PricedTokens > 0 {
+		valueAmount, otherAmount = float64(value.Total), float64(other.Total)
+	}
+	if valueAmount+otherAmount == 0 {
+		return 0
+	}
+	return valueAmount / (valueAmount + otherAmount)
+}
+
 func peakDailyCost(byDate map[string]aggregateCost) (pricing.Money, bool) {
-	var peak pricing.Money
-	found := false
-	for _, cost := range byDate {
+	peak, peakDate := peakDailyCostWithDate(byDate)
+	return peak.Total, peakDate != ""
+}
+
+func peakDailyCostWithDate(byDate map[string]aggregateCost) (aggregateCost, string) {
+	var peak aggregateCost
+	peakDate := ""
+	for date, cost := range byDate {
 		if cost.PricedTokens == 0 {
 			continue
 		}
-		if !found || cost.Total > peak {
-			peak, found = cost.Total, true
+		if peakDate == "" || cost.Total > peak.Total || cost.Total == peak.Total && date < peakDate {
+			peak, peakDate = cost, date
 		}
 	}
-	return peak, found
+	return peak, peakDate
 }
 
 func dashboardFilter(request tui.Request, now time.Time) store.Filter {

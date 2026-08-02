@@ -2,12 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-
-	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 // railBlock is deliberately data-free: the rail is an ambient summary of the
@@ -91,6 +90,8 @@ func (m Model) railBlocks(width int) []railBlock {
 				m.filterProviderView(),
 				m.render.Palette.Subtle().Render("range"),
 				m.filterRangeView(),
+				m.render.Palette.Subtle().Render("project"),
+				m.filterProjectView(),
 			},
 		},
 		{
@@ -99,33 +100,43 @@ func (m Model) railBlocks(width int) []railBlock {
 			rows:     m.railSnapshotRows(width),
 		},
 		{
-			title:    "MIX",
+			title:    "MIX · 30D",
 			optional: true,
-			rows:     m.railMixRows(),
+			rows:     m.railMixRows(width),
 		},
 		{
-			title:    "PROJECTS",
+			title:    "PROJECTS 30D",
 			optional: true,
-			rows:     m.railProjectRows(),
+			rows:     m.railProjectRows(width),
 		},
 	}
 }
 
 func (m Model) railSnapshotRows(width int) []string {
-	labels := [...]string{"total", "tokens", "active days"}
-	rows := make([]string, 0, len(labels))
-	for index, label := range labels {
-		metric := m.snapshot.Summary.Metrics[index]
-		value := metric.Value
-		if value == "" {
-			value = "-"
-		}
-		labelWidth := min(lipgloss.Width(label), max(1, width/2))
-		label = truncate(label, labelWidth)
-		value = compactRailValue(value, max(1, width-labelWidth-1))
-		rows = append(rows, m.render.Palette.Subtle().Render(label)+" "+m.summaryValueStyle(metric).Render(value))
+	data := m.snapshot.Rail.Snapshot
+	rows := []string{
+		m.railMetricRow("today", data.Today, width),
+		m.railMetricRow("7d", data.SevenDays, width),
+		m.railMetricRow("30d", data.ThirtyDays, width),
+		m.railMetricRow("peak", data.Peak, width),
+	}
+	if data.PeakDate != "" {
+		rows = append(rows, m.railMetricRow("", data.PeakDate, width))
 	}
 	return rows
+}
+
+func (m Model) railMetricRow(label, value string, width int) string {
+	if value == "" {
+		value = "—"
+	}
+	labelWidth := min(lipgloss.Width(label), max(1, width/2))
+	label = truncate(label, labelWidth)
+	value = compactRailValue(value, max(1, width-labelWidth-1))
+	if label == "" {
+		return fitLine("  "+m.render.Palette.Subtle().Render(value), width)
+	}
+	return fitLine(m.render.Palette.Subtle().Render(label)+" "+m.render.Palette.Emphasis().Render(value), width)
 }
 
 func compactRailValue(value string, width int) string {
@@ -164,37 +175,32 @@ func compactRailValue(value string, width int) string {
 	return truncate(value, width-1) + "~"
 }
 
-func (m Model) railMixRows() []string {
-	provider := strings.ToUpper(m.request.Provider.String())
+func (m Model) railMixRows(width int) []string {
 	return []string{
-		m.render.Palette.Subtle().Render("provider") + " " + m.render.Palette.Emphasis().Render(provider),
-		m.render.Palette.Subtle().Render("range") + " " + m.render.Palette.Emphasis().Render(strings.ToUpper(m.request.Range.String())),
-		m.render.Palette.Subtle().Render("status") + " " + m.render.Palette.Subtle().Render(syncStatusText(m.syncing, m.syncFresh)),
+		ShareBar(m.render, railShareLabel("Codex", m.snapshot.Rail.Mix.Codex), m.snapshot.Rail.Mix.Codex, 1, width),
+		ShareBar(m.render, railShareLabel("Claude", m.snapshot.Rail.Mix.Claude), m.snapshot.Rail.Mix.Claude, 1, width),
 	}
 }
 
-func (m Model) railProjectRows() []string {
-	projects := m.snapshot.Sessions.Projects
+func railShareLabel(label string, share float64) string {
+	return fmt.Sprintf("%s %d%%", label, int(math.Round(maxFloat(0, minFloat(1, share))*100)))
+}
+
+func (m Model) railProjectRows(width int) []string {
+	projects := m.snapshot.Rail.Projects
 	if len(projects) == 0 {
-		return []string{m.render.Palette.Subtle().Render("all projects")}
+		return []string{m.render.Palette.Subtle().Render("no project data")}
 	}
-	rows := make([]string, 0, min(4, len(projects))+1)
+	rows := make([]string, 0, min(6, len(projects)))
 	for index, project := range projects {
 		if index >= 4 {
 			break
 		}
 		label := project.Label
 		if label == "" {
-			label = tuipages.ProjectLabel(project.Key, projects)
+			label = "unknown"
 		}
-		style := m.render.Palette.Subtle()
-		if m.request.SessionProjectActive && project.Key == m.request.SessionProject {
-			style = m.render.Palette.Emphasis().Bold(true)
-		}
-		rows = append(rows, style.Render("  "+label))
-	}
-	if len(projects) > 4 {
-		rows = append(rows, m.render.Palette.Subtle().Render(fmt.Sprintf("  +%d more", len(projects)-4)))
+		rows = append(rows, ShareBar(m.render, truncate(label, max(1, width/2))+" "+fmt.Sprintf("%d%%", int(math.Round(maxFloat(0, minFloat(1, project.Share))*100))), project.Share, 1, width))
 	}
 	return rows
 }

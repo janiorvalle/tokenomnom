@@ -55,22 +55,28 @@ The rows are fixed before a page is rendered:
 ```text
 top bar       1
 summary       1
-size badge    1 at standard/wide; inline in the floor top bar
+top divider   1
 body          BH
+bottom divider 1
 status        1
-footer        3
+footer hints  1
+disclaimer    1 (badge right-aligned here)
 ```
 
-`BH = H - chrome.Total()`. The frame must have exactly `H` rows and exactly
-`W` cells on every row. The current page is passed `CW` and `BH` and is
-rendered inside one untitled compatibility band. Existing page content stays
-unchanged; later pages can add a visible band title and panes without changing
-the shell arithmetic.
+At standard and wide widths, `BH = H - 7`. At floor width the disclaimer is
+folded into the final footer row, so `BH = H - 6`. The frame must have exactly
+`H` rows and exactly `W` cells on every row. The current page is passed `CW` and
+`BH` and is rendered inside one untitled compatibility band. Existing page
+content stays unchanged; later pages can add a visible band title and panes
+without changing the shell arithmetic.
 
-The size badge names the horizontal tier and viewport, for example
-`STANDARD 120x40`. The status bar is one right-aligned segment. Optional status
-facts are removed from right to left when the segment is too wide; the sync
-state and the first warning remain.
+The size badge names the viewport and tiers, for example `120x40 · standard`,
+and is right-aligned on the disclaimer row. Floor keeps the page-navigation
+hint in the top bar and combines its footer hints with the badge. The status
+bar is one right-aligned segment. Its optional metadata is
+`last sync <t> · <n> sources · <m> models`; optional facts are removed from
+right to left when the segment is too wide, while sync state and warnings
+remain.
 
 ### 3.1 Ambient rail
 
@@ -78,13 +84,15 @@ The rail is a stat column, not a second navigation page. It contains these
 blocks, in this order:
 
 1. Navigation groups and page numbers.
-2. `FILTERS`: provider and range.
-3. `SNAPSHOT`: total, tokens, and active days from the already loaded summary.
-4. `MIX`: current provider, range, and sync state.
-5. `PROJECTS`: current project options from the already loaded sessions page.
+2. `FILTERS`: provider, range, and project.
+3. `SNAPSHOT`: today, 7d, 30d, and peak plus date from the loaded daily data.
+4. `MIX · 30D`: two provider share bars.
+5. `PROJECTS 30D`: top projects with session share and a micro bar.
 
-At standard width `RW = min(22, max(18, IW/5))`; at wide width
-`RW = min(30, max(24, IW/6))`. `CW = IW - RW - 2` when the rail is present.
+At standard and wide widths `RW = 20`, including the divider. The page content
+uses the fixed contract width `CW = W - 21` before the shell's outer frame
+padding is applied. The implementation reduces `CW` by the shell gap so the
+rail and page always exact-fill the padded inner frame.
 The rail keeps the navigation and `FILTERS` blocks first. Optional blocks are
 added from top to bottom and dropped from the bottom as soon as the available
 height is reached. This prevents a lower block from jumping above a block that
@@ -140,7 +148,7 @@ library crop the tail without saying so.
 
 ## 5. Page migration contract
 
-Quest 145 only supplies the shell. Existing pages remain their current
+Quest 145 supplies the shell and its bounded ambient facts. Existing pages remain their current
 content inside one band; their keys, zoom behavior, async loaders, and request
 fields remain unchanged. The current `Snapshot.Views` strings are still the
 source for the Daily, Models, and Heatmap pages, while Ledger, Sessions, Vault,
@@ -157,7 +165,8 @@ Later quests may use the same shell to add:
 - Overlays: grouped wide help and palette treatments.
 
 Those pages may add DATA fields only where their quest lists an existing-table
-query. Quest 145 adds no store query and no new persistence.
+query. Quest 145 adds one bounded history-index project-population query for
+the rail and no new persistence.
 
 ## 6. Evidence and test contract
 

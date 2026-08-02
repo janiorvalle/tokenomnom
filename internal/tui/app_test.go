@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1212,6 +1213,15 @@ func TestFooterKeepsHintsUnderLongWarning(t *testing.T) {
 	}
 }
 
+func TestFloorFooterKeepsDisclaimerAndQuitHint(t *testing.T) {
+	model := realisticEvidenceModel()
+	model.request.Width, model.request.Height = 80, 24
+	view := model.View()
+	if !strings.Contains(view, "API list-price equivalents, not actual bills") || !strings.Contains(view, "q quit") {
+		t.Fatalf("floor footer omitted required copy:\n%s", view)
+	}
+}
+
 func TestSkillOfferAcceptInstallsRecordsAndShowsResults(t *testing.T) {
 	var choices []SkillOfferChoice
 	model := offerTestModel(func() ([]string, error) {
@@ -1446,6 +1456,12 @@ func realisticEvidenceModel() Model {
 		{Value: "$1,516.68", Kind: MetricMoney},
 		{Value: "$2,209.23", Kind: MetricMoney},
 	}}
+	model.snapshot.Rail = RailData{
+		Snapshot: RailSnapshot{Today: "$2,209.23", SevenDays: "$3,033.35", ThirtyDays: "$3,033.35", Peak: "$2,209.23", PeakDate: "Jul 14"},
+		Mix:      RailMix{Codex: 0.72, Claude: 0.28},
+		Projects: []RailProject{{Label: "alpha", Share: 0.5}, {Label: "beta", Share: 0.3}, {Label: "other", Share: 0.2}},
+	}
+	model.snapshot.StatusBar = StatusBar{LastSyncUnix: time.Now().Unix(), Sources: 2, Models: 2}
 	model.snapshot.Views = [4]string{
 		realisticDailyEvidenceView(),
 		"",

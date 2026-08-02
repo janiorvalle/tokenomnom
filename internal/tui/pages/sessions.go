@@ -16,15 +16,24 @@ import (
 // Raw transcript locations deliberately stay in the history store layer; the
 // page only needs stable metadata and the first-prompt preview.
 type SessionPageData struct {
-	Sessions   []historystore.CatalogSession
-	Projects   []ProjectOption
-	HasMore    bool
-	NextCursor string
+	Sessions     []historystore.CatalogSession
+	Projects     []ProjectOption
+	ProjectStats []ProjectStat
+	HasMore      bool
+	NextCursor   string
 	// Pending distinguishes an in-flight catalog load from an absent index.
 	Pending        bool
 	IndexAvailable bool
 	Warning        string
 	Location       *time.Location
+}
+
+// ProjectStat is the bounded 30-day project population used by the ambient
+// rail. Shares are normalized by the dashboard loader before rendering.
+type ProjectStat struct {
+	Label    string
+	Sessions int
+	Share    float64
 }
 
 // ProjectOption keeps the exact catalog key separate from the label shown in
