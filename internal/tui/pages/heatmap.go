@@ -351,7 +351,8 @@ func renderWeekdayProfile(data HeatmapData, days []HeatmapDay, height int) strin
 		}
 	}
 	lines = append(lines, "", "RECENT DAILY ACTIVITY")
-	return heatmapPaneContent(lines, recentHeatmapLines(days, data.UsesTokens, max(0, height)), height)
+	return heatmapPaneContent(lines, recentHeatmapLines(days, data.UsesTokens, max(0, height)), height,
+		[]string{"  no additional indexed activity", "  recent daily rows are listed above"})
 }
 
 func renderStreaksAndRecords(data HeatmapData, days []HeatmapDay, stats heatmapStats, height int, includeCompactMonthTable bool) string {
@@ -381,9 +382,11 @@ func renderStreaksAndRecords(data HeatmapData, days []HeatmapDay, stats heatmapS
 		for _, month := range months[start:] {
 			lines = append(lines, fmt.Sprintf("%-10s %-16s %3d", month.Date.Format("Jan 2006"), heatmapAggregateValue(month.heatmapAggregate, data.UsesTokens), month.ActiveDays))
 		}
-		return heatmapPaneContent(lines, nil, height)
+		return heatmapPaneContent(lines, nil, height,
+			[]string{"  no additional streaks in this window", "  records above cover the selected range"})
 	}
-	return heatmapPaneContent(lines, streakLines, height)
+	return heatmapPaneContent(lines, streakLines, height,
+		[]string{"  no additional streaks in this window", "  records above cover the selected range"})
 }
 
 func renderMonthTable(data HeatmapData, days []HeatmapDay, height int) string {
@@ -416,17 +419,23 @@ func renderMonthTable(data HeatmapData, days []HeatmapDay, height int) string {
 	if len(months) > 0 {
 		lines = append(lines, "", fmt.Sprintf("WINDOW         %d months · %s - %s", len(months), months[0].Date.Format("Jan 2006"), months[len(months)-1].Date.Format("Jan 2006")))
 	}
-	return heatmapPaneContent(lines, nil, height)
+	return heatmapPaneContent(lines, nil, height,
+		[]string{"  all indexed months are shown above", "  month share and peaks use the active metric"})
 }
 
-func heatmapPaneContent(lines, supplemental []string, height int) string {
+func heatmapPaneContent(lines, supplemental []string, height int, fillLines []string) string {
 	contentHeight := max(1, height-1)
 	lines = appendLatestHeatmapLines(lines, supplemental, contentHeight)
 	if len(lines) > contentHeight {
 		lines = lines[:contentHeight]
 	}
+	if len(fillLines) == 0 {
+		fillLines = []string{"  no additional indexed activity"}
+	}
+	fillIndex := 0
 	for len(lines) < contentHeight {
-		lines = append(lines, "  —")
+		lines = append(lines, fillLines[fillIndex%len(fillLines)])
+		fillIndex++
 	}
 	return strings.Join(lines, "\n")
 }

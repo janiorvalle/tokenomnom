@@ -254,8 +254,9 @@ it fits beside the left segments (left segments win). DATA: all three facts alre
 3. Band arithmetic: `Σ band heights + rules == BH` asserted per tier.
 4. Fill-derived list sizes: session/list row count changes when H changes (test two heights).
 5. Existing behavior tests keep passing untouched (keys, zoom, loaders).
-6. Evidence: committed frame snapshots per tier from a seeded snapshot test (repo convention:
-   Source:/Command: headers) + a live capture at 192×66 in the PR.
+6. Evidence: attach full-window frame snapshots per tier from a seeded snapshot test to the Quest
+   via `turnin --evidence` (not committed to the repo; Quest 152 policy amendment). Use
+   Source:/Command: headers and include a live capture at 192×66 in the PR when requested.
 
 ## 8. Out of scope (explicitly)
 

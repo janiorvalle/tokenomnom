@@ -47,7 +47,7 @@ func TestRenderHeatmapWideUsesProfilesAndHasNoVoids(t *testing.T) {
 	}
 	blankRun := 0
 	for index, line := range strings.Split(view, "\n") {
-		if strings.TrimSpace(line) == "" {
+		if isDenseVoidLine(line) {
 			blankRun++
 			if blankRun > 3 {
 				t.Fatalf("wide heatmap has a blank run ending at line %d:\n%s", index+1, view)

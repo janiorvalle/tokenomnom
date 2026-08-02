@@ -10,8 +10,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const paletteVisibleRows = 8
-
 type paletteState struct {
 	active    bool
 	input     textinput.Model
@@ -68,7 +66,7 @@ func paletteInputWidth(windowWidth int) int {
 }
 
 func paletteWidth(windowWidth int) int {
-	return min(76, max(46, windowWidth-8))
+	return max(1, min(90, windowWidth-8))
 }
 
 func (p *paletteState) refreshMatches() {
@@ -192,12 +190,11 @@ func commandOutputLines(output string, width int) []string {
 
 func (m Model) paletteModal(layout cockpitLayout) string {
 	width := paletteWidth(layout.width)
-	rows := min(paletteVisibleRows, len(m.palette.matches))
+	maxRows := max(1, layout.bodyHeight-8)
+	rows := min(maxRows, len(m.palette.matches))
 	if rows == 0 {
 		rows = 1
 	}
-	maxRows := max(1, layout.height-9)
-	rows = min(rows, maxRows)
 
 	start := 0
 	if m.palette.selection >= rows {

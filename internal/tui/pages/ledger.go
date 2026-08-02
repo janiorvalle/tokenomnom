@@ -567,7 +567,7 @@ func renderLedgerDayRollups(render theme.Context, data Data, width, height int) 
 
 	modelLines := []string{
 		fitLine(render.Palette.Header().Render("MODELS ON THIS DAY"), leftWidth),
-		fitLine(render.Palette.Subtle().Render("MODEL                 COST  SHARE  TOKENS"), leftWidth),
+		fitLine(render.Palette.Subtle().Render(ledgerDayModelHeader(leftWidth)), leftWidth),
 	}
 	totalModelCost, totalModelTokens := data.DayModelTotalCost, data.DayModelTotalTokens
 	if totalModelCost == 0 && totalModelTokens == 0 {
@@ -597,7 +597,7 @@ func renderLedgerDayRollups(render theme.Context, data Data, width, height int) 
 
 	projectLines := []string{
 		fitLine(render.Palette.Header().Render("PROJECTS ON THIS DAY"), rightWidth),
-		fitLine(render.Palette.Subtle().Render("PROJECT                  SESSIONS  SHARE"), rightWidth),
+		fitLine(render.Palette.Subtle().Render(ledgerDayProjectHeader(rightWidth)), rightWidth),
 	}
 	for _, project := range projects {
 		projectLines = append(projectLines, renderLedgerDayProject(render, project, rightWidth))
@@ -646,20 +646,38 @@ func renderLedgerDayRollups(render theme.Context, data Data, width, height int) 
 	return fitLedgerBlock(strings.Join(lines, "\n"), width, height)
 }
 
+func ledgerDayModelLabelWidth(width int) int {
+	return max(8, width-28)
+}
+
+func ledgerDayModelHeader(width int) string {
+	labelWidth := ledgerDayModelLabelWidth(width)
+	return padRight("MODEL", labelWidth) + " " + padLeft("COST", 9) + " " + padLeft("SHARE", 5) + " " + padLeft("TOKENS", 9)
+}
+
 func renderLedgerDayModel(render theme.Context, model LedgerModel, width int, totalCost pricing.Money, totalTokens int64) string {
 	label := cleanInline(model.Model)
 	if model.Provider != "" {
 		label = cleanInline(model.Provider + "/" + label)
 	}
-	labelWidth := max(8, width-28)
+	labelWidth := ledgerDayModelLabelWidth(width)
 	cost := fitMoney(formatMoney(model.Cost, model.PricedTokens, false, model.UnpricedTokens > 0), 9)
 	share := ledgerDayShare(model.Cost, totalCost, model.Tokens, totalTokens)
 	line := padRight(truncate(label, labelWidth), labelWidth) + " " + padLeft(cost, 9) + " " + padLeft(share, 5) + " " + padLeft(fitText(compactTokens(model.Tokens), 9), 9)
 	return fitLine(render.Palette.Subtle().Render(line), width)
 }
 
+func ledgerDayProjectLabelWidth(width int) int {
+	return max(8, width-18)
+}
+
+func ledgerDayProjectHeader(width int) string {
+	labelWidth := ledgerDayProjectLabelWidth(width)
+	return padRight("PROJECT", labelWidth) + " " + padLeft("SESSIONS", 8) + " " + padLeft("SHARE", 6)
+}
+
 func renderLedgerDayProject(render theme.Context, project LedgerProject, width int) string {
-	labelWidth := max(8, width-18)
+	labelWidth := ledgerDayProjectLabelWidth(width)
 	line := padRight(truncate(cleanInline(project.Label), labelWidth), labelWidth) + " " + padLeft(formatCount(project.Sessions), 8) + " " + padLeft(fmt.Sprintf("%3.0f%%", project.Share*100), 6)
 	return fitLine(render.Palette.Subtle().Render(line), width)
 }
