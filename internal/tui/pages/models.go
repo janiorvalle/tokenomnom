@@ -136,7 +136,9 @@ func RenderModels(render theme.Context, data ModelPageData, viewport ModelsViewp
 }
 
 func renderModelsWideTall(render theme.Context, data ModelPageData, viewport ModelsViewport, width, height int) string {
-	b1Height := min(13, max(5, min(10, len(data.Rows))+3))
+	// Keep the master table tall enough to show a populated fixture before
+	// paging, while leaving the lower bands room to render their own data.
+	b1Height := min(16, max(5, min(13, len(data.Rows))+3))
 	remaining := max(1, height-b1Height-2)
 	b2Height := min(24, max(8, remaining-4))
 	b3Height := max(1, height-b1Height-b2Height-2)
@@ -174,7 +176,10 @@ func renderModelMaster(render theme.Context, data ModelPageData, viewport Models
 	header := modelMasterHeader(render, width, sparkline, wide, floor)
 	lines := []string{title, header}
 
-	capacity := min(10, max(1, height-3))
+	capacity := max(1, height-3)
+	if !wide {
+		capacity = min(10, capacity)
+	}
 	if len(data.Rows) > capacity {
 		start := min(max(0, viewport.Offset), max(0, len(data.Rows)-capacity))
 		if start+capacity < len(data.Rows) {
@@ -422,7 +427,7 @@ func renderModelAnalysis(render theme.Context, data ModelPageData, width, height
 		panes := []string{
 			renderModelPane(render, "TOKENS ↔ COST", modelTokenCostLines(render, data, modelPaneWidth(width, 3, 0)), modelPaneWidth(width, 3, 0), height),
 			renderModelPane(render, "PROVIDER ROLLUP", modelProviderLines(render, data), modelPaneWidth(width, 3, 1), height),
-			renderModelPane(render, "COST PER 1M", modelRatesLines(render, data), modelPaneWidth(width, 3, 2), height),
+			renderModelPane(render, "COST PER 1M", modelRatesLines(render, data, max(0, height-1)), modelPaneWidth(width, 3, 2), height),
 		}
 		return modelJoinPanes(panes, width, height)
 	}
@@ -550,26 +555,68 @@ func modelProviderLines(render theme.Context, data ModelPageData) []string {
 	return lines
 }
 
-func modelRatesLines(render theme.Context, data ModelPageData) []string {
-	lines := []string{}
+func modelRatesLines(render theme.Context, data ModelPageData, contentHeight int) []string {
+	rateLines := make([]string, 0, min(12, len(data.Rates)))
 	if len(data.Rates) > 0 {
-		for _, row := range data.Rates[:min(7, len(data.Rates))] {
-			lines = append(lines, fmt.Sprintf("%-22s %6s %s", truncate(row.Model, 22), modelRateFor(row), modelShareBar(render, rateShare(row, data.Rates), 12)))
+		for _, row := range data.Rates[:min(12, len(data.Rates))] {
+			rateLines = append(rateLines, fmt.Sprintf("%-22s %6s %s", truncate(row.Model, 22), modelRateFor(row), modelShareBar(render, rateShare(row, data.Rates), 12)))
 		}
 	} else {
-		lines = append(lines, render.Palette.Subtle().Render("No priced models."))
+		rateLines = append(rateLines, render.Palette.Subtle().Render("No priced models."))
 	}
-	lines = append(lines, render.Palette.Header().Render(fmt.Sprintf("UNPRICED MODELS · %d", len(data.Unpriced))))
+	unpricedLines := []string{render.Palette.Header().Render(fmt.Sprintf("UNPRICED MODELS · %d", len(data.Unpriced)))}
 	for _, row := range data.Unpriced[:min(4, len(data.Unpriced))] {
-		lines = append(lines, fmt.Sprintf("%-22s %10s  no rate", truncate(row.Model, 22), commaShort(row.Tokens)))
+		unpricedLines = append(unpricedLines, fmt.Sprintf("%-22s %10s  no rate", truncate(row.Model, 22), commaShort(row.Tokens)))
 	}
-	lines = append(lines, render.Palette.Header().Render("RECENCY · DAYS SINCE LAST USE"))
-	for _, row := range data.Recency[:min(7, len(data.Recency))] {
+	recencyLines := []string{render.Palette.Header().Render("RECENCY · DAYS SINCE LAST USE")}
+	for _, row := range data.Recency[:min(12, len(data.Recency))] {
 		label := "today"
 		if row.Days > 0 {
 			label = fmt.Sprintf("%dd ago", row.Days)
 		}
-		lines = append(lines, fmt.Sprintf("%-22s %-8s", truncate(row.Model, 22), label))
+		recencyLines = append(recencyLines, fmt.Sprintf("%-22s %-8s", truncate(row.Model, 22), label))
+	}
+	return allocateModelSections([][]string{rateLines, unpricedLines, recencyLines}, contentHeight)
+}
+
+func allocateModelSections(sections [][]string, capacity int) []string {
+	if capacity <= 0 {
+		return nil
+	}
+	limits := make([]int, len(sections))
+	for index, section := range sections {
+		if len(section) == 0 || capacity == 0 {
+			continue
+		}
+		limits[index] = 1
+		capacity--
+	}
+	for index := 1; index < len(sections) && capacity > 0; index++ {
+		if limits[index] < len(sections[index]) {
+			limits[index]++
+			capacity--
+		}
+	}
+	for capacity > 0 {
+		added := false
+		for index, section := range sections {
+			if limits[index] >= len(section) {
+				continue
+			}
+			limits[index]++
+			capacity--
+			added = true
+			if capacity == 0 {
+				break
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	lines := []string{}
+	for index, section := range sections {
+		lines = append(lines, section[:limits[index]]...)
 	}
 	return lines
 }

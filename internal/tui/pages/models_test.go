@@ -95,6 +95,22 @@ func TestModelsButterflyLabelsRankColumn(t *testing.T) {
 	}
 }
 
+func TestModelsRatesRespectAllocatedHeight(t *testing.T) {
+	data := modelsTestData()
+	for _, height := range []int{6, 13, 23} {
+		lines := modelRatesLines(testRender(), data, height)
+		if len(lines) > height {
+			t.Fatalf("rates pane returned %d lines for content height %d:\n%s", len(lines), height, strings.Join(lines, "\n"))
+		}
+	}
+	view := strings.Join(modelRatesLines(testRender(), data, 13), "\n")
+	for _, section := range []string{"UNPRICED MODELS", "RECENCY"} {
+		if !strings.Contains(view, section) {
+			t.Fatalf("rates pane dropped the %s section despite reserved height:\n%s", section, view)
+		}
+	}
+}
+
 func TestModelsMasterColumnsKeepTotalsInsideTheirColumns(t *testing.T) {
 	data := modelsTestData()
 	data.Total.TokenShare = 1.2

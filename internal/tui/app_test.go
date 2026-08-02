@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1566,8 +1568,53 @@ func TestQuest148ModelsFullWindowFrames(t *testing.T) {
 				t.Fatalf("%dx%d full window missing %q:\n%s", size.width, size.height, fragment, view)
 			}
 		}
+		if size.width >= 160 {
+			assertNoBlankBandRuns(t, model.snapshot.Views[ModelsTab], 3)
+			if strings.Contains(model.snapshot.Views[ModelsTab], "↓ more models") {
+				t.Fatalf("wide master table still pages a populated fixture:\n%s", model.snapshot.Views[ModelsTab])
+			}
+		}
+		if evidenceDir := os.Getenv("QUEST_EVIDENCE_DIR"); evidenceDir != "" {
+			if err := writeQuest148FrameEvidence(evidenceDir, size.width, size.height, view); err != nil {
+				t.Fatalf("write %dx%d frame evidence: %v", size.width, size.height, err)
+			}
+		}
 		t.Logf("FRAME: Models full window %dx%d\nSource: internal/tui/app_test.go::TestQuest148ModelsFullWindowFrames\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest148ModelsFullWindowFrames -count=1 -v\n\n%s", size.width, size.height, view)
 	}
+}
+
+func assertNoBlankBandRuns(t *testing.T, body string, maximum int) {
+	t.Helper()
+	band := 1
+	blankRun := 0
+	check := func() {
+		if blankRun > maximum {
+			t.Fatalf("Models band %d has %d consecutive blank rows, maximum %d:\n%s", band, blankRun, maximum, body)
+		}
+		blankRun = 0
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) != "" && strings.Trim(line, "─ ") == "" {
+			check()
+			band++
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+		} else {
+			check()
+		}
+	}
+	check()
+}
+
+func writeQuest148FrameEvidence(directory string, width, height int, view string) error {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	filename := fmt.Sprintf("frame-a-models-rendered-%dx%d.txt", width, height)
+	content := fmt.Sprintf("Source: internal/tui/app_test.go::TestQuest148ModelsFullWindowFrames\nCommand: QUEST_EVIDENCE_DIR=%s go test ./internal/tui -run TestQuest148ModelsFullWindowFrames -count=1 -v\n\n%s\n", directory, view)
+	return os.WriteFile(filepath.Join(directory, filename), []byte(content), 0o644)
 }
 
 func assertFullWindowFrame(t *testing.T, view string, width, height int, state string) {
