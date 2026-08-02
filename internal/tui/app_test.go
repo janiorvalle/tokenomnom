@@ -1483,6 +1483,183 @@ func TestQuest146DailyFullWindowFrames(t *testing.T) {
 	}
 }
 
+func TestQuest147LedgerFullWindowFrames(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
+		model := realisticEvidenceModel()
+		model.router.Select(LedgerPageID)
+		model.request.Width, model.request.Height = size.width, size.height
+		model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomMonth, Year: 2026, Cursor: -1}
+		model.render.Width = size.width
+		model.snapshot.StatusBar.LastSyncUnix = 0
+		model.snapshot.Ledger = quest147LedgerPeriodsFrameData()
+
+		view := model.View()
+		assertFullWindowFrame(t, view, size.width, size.height, "Ledger periods")
+		fragments := []string{"tokenomnom", "LEDGER"}
+		if size.width >= 96 {
+			fragments = append(fragments, "PERIODS", "SPEND BY MONTH")
+		} else {
+			fragments = append(fragments, "PERIOD", "TOTAL")
+		}
+		if size.width >= 160 {
+			fragments = append(fragments, "PERIOD DETAIL", "PROJECT × MONTH", "WEEKDAY PROFILE", "HOUR OF DAY")
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(view, fragment) {
+				t.Fatalf("%dx%d full window missing %q:\n%s", size.width, size.height, fragment, view)
+			}
+		}
+		t.Logf("FRAME: Ledger periods full window %dx%d\nSource: internal/tui/app_test.go::TestQuest147LedgerFullWindowFrames\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest147LedgerFullWindowFrames -count=1 -v\n\n%s", size.width, size.height, view)
+	}
+}
+
+func TestQuest147LedgerDayFullWindowFrame(t *testing.T) {
+	const width, height = 192, 66
+	model := realisticEvidenceModel()
+	model.router.Select(LedgerPageID)
+	model.request.Width, model.request.Height = width, height
+	model.request.Ledger = tuipages.State{Zoom: tuipages.ZoomDay, Month: "2026-07", ExpandedDay: "2026-07-14"}
+	model.render.Width = width
+	model.snapshot.StatusBar.LastSyncUnix = 0
+	model.snapshot.Ledger = quest147LedgerDayFrameData()
+
+	view := model.View()
+	assertFullWindowFrame(t, view, width, height, "Ledger day")
+	for _, fragment := range []string{"tokenomnom", "LEDGER", "TIME", "PROVIDER", "SESSION", "FIRST PROMPT", "OVERVIEW", "COST & TOKENS", "Investigate the production latency regression"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("day full window missing %q:\n%s", fragment, view)
+		}
+	}
+	t.Logf("FRAME: Ledger day full window %dx%d\nSource: internal/tui/app_test.go::TestQuest147LedgerDayFullWindowFrame\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest147LedgerDayFullWindowFrame -count=1 -v\n\n%s", width, height, view)
+}
+
+func assertFullWindowFrame(t *testing.T, view string, width, height int, state string) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) != height {
+		t.Fatalf("%s %dx%d rendered %d rows, want %d:\n%s", state, width, height, len(lines), height, view)
+	}
+	for index, line := range lines {
+		if renderedWidth := lipgloss.Width(line); renderedWidth != width {
+			t.Fatalf("%s %dx%d row %d width=%d, want %d:\n%s", state, width, height, index+1, renderedWidth, width, view)
+		}
+	}
+}
+
+func quest147LedgerPeriodsFrameData() tuipages.Data {
+	months := make([]tuipages.LedgerMonth, 0, 12)
+	rows := make([]tuipages.Row, 0, 12)
+	for month := 1; month <= 12; month++ {
+		key := fmt.Sprintf("2026-%02d", month)
+		codex := tuipages.ProviderTotals{
+			Cost: pricing.Money(int64(month+2) * 7_000_000_000), Tokens: int64(month+2) * 1_400_000, PricedTokens: int64(month+2) * 1_400_000,
+		}
+		claude := tuipages.ProviderTotals{
+			Cost: pricing.Money(int64(month%4+1) * 3_000_000_000), Tokens: int64(month%4+1) * 900_000, PricedTokens: int64(month%4+1) * 900_000,
+		}
+		value := tuipages.LedgerMonth{
+			Key: key, Label: time.Date(2026, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Format("Jan 2006"),
+			Sessions: month + 4, Codex: codex, Claude: claude, ActiveDays: month + 2,
+			PeakCost: codex.Cost, PeakDay: fmt.Sprintf("2026-%02d-%02d", month, min(28, month+8)),
+		}
+		value.AverageCost = value.Total().Cost / pricing.Money(value.ActiveDays)
+		months = append(months, value)
+		rows = append(rows, tuipages.Row{Key: key, Label: value.Label, Sessions: value.Sessions, Codex: codex, Claude: claude})
+	}
+	for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+		rows[left], rows[right] = rows[right], rows[left]
+	}
+	total := tuipages.Row{Key: "total", Label: "TOTAL"}
+	for _, row := range rows {
+		total = total.Add(row)
+	}
+	analytics := tuipages.LedgerAnalytics{
+		Months: months,
+		Models: []tuipages.LedgerModel{
+			{Provider: "codex", Model: "gpt-5.2", Tokens: 48_000_000, Cost: pricing.Money(240_000_000_000), PricedTokens: 48_000_000, CostPerMillion: pricing.Rate(5_000), HasRate: true},
+			{Provider: "claude", Model: "claude-sonnet", Tokens: 22_000_000, Cost: pricing.Money(110_000_000_000), PricedTokens: 22_000_000, CostPerMillion: pricing.Rate(5_000), HasRate: true},
+			{Provider: "codex", Model: "gpt-mini", Tokens: 8_000_000, Cost: pricing.Money(16_000_000_000), PricedTokens: 8_000_000, CostPerMillion: pricing.Rate(2_000), HasRate: true},
+		},
+		Weekdays: []tuipages.LedgerProfile{
+			{Label: "Mon", Value: 8}, {Label: "Tue", Value: 12}, {Label: "Wed", Value: 6}, {Label: "Thu", Value: 10},
+			{Label: "Fri", Value: 7}, {Label: "Sat", Value: 3}, {Label: "Sun", Value: 2},
+		},
+		Projects: []tuipages.LedgerProject{
+			{Label: "tokenomnom", Sessions: 20, Share: 0.50}, {Label: "billing-api", Sessions: 12, Share: 0.30}, {Label: "release-tools", Sessions: 8, Share: 0.20},
+		},
+		Provenance: tuipages.LedgerProvenance{
+			PublishedModels: 2, PublishedCost: pricing.Money(350_000_000_000), PublishedTokens: 70_000_000,
+			ProxyModels: 1, ProxyCost: pricing.Money(16_000_000_000), ProxyTokens: 8_000_000,
+		},
+		ActiveDays: 42, AverageCost: pricing.Money(9_000_000_000), PeakCost: pricing.Money(45_000_000_000), PeakDay: "2026-07-14",
+	}
+	for hour := 0; hour < 24; hour++ {
+		value := 0
+		if hour == 9 {
+			value = 12
+		} else if hour == 15 {
+			value = 10
+		} else if hour%5 == 0 {
+			value = 2
+		}
+		analytics.Hours = append(analytics.Hours, tuipages.LedgerProfile{Label: fmt.Sprintf("%02d", hour), Value: value})
+	}
+	for _, project := range analytics.Projects {
+		for month := 1; month <= 12; month++ {
+			count := (month + len(project.Label)) % 4
+			if count > 0 {
+				analytics.ProjectMonths = append(analytics.ProjectMonths, tuipages.LedgerProjectMonth{Project: project.Label, Month: fmt.Sprintf("2026-%02d", month), Sessions: count})
+			}
+		}
+	}
+	for _, month := range months {
+		analytics.ProviderMonths = append(analytics.ProviderMonths,
+			tuipages.LedgerProviderMonth{Provider: "codex", Month: month.Key, Cost: month.Codex.Cost, Tokens: month.Codex.Tokens},
+			tuipages.LedgerProviderMonth{Provider: "claude", Month: month.Key, Cost: month.Claude.Cost, Tokens: month.Claude.Tokens},
+		)
+	}
+	return tuipages.Data{Available: true, Zoom: tuipages.ZoomMonth, Year: 2026, Rows: rows, Total: total, Analytics: analytics}
+}
+
+func quest147LedgerDayFrameData() tuipages.Data {
+	day := tuipages.Row{
+		Key: "2026-07-14", Label: "Jul 14",
+	}
+	previous := tuipages.Row{Key: "2026-07-13", Label: "Jul 13", Sessions: 8, Codex: tuipages.ProviderTotals{Cost: pricing.Money(60_000_000_000), Tokens: 6_000_000, PricedTokens: 6_000_000}}
+	data := quest147LedgerPeriodsFrameData()
+	data.Available, data.Zoom, data.Month = true, tuipages.ZoomDay, "2026-07"
+	data.SessionDay, data.SessionIndexAvailable, data.Location = day.Key, true, time.UTC
+	for index := 0; index < 20; index++ {
+		provider := history.ProviderCodex
+		project := "tokenomnom"
+		if index%2 == 1 {
+			provider, project = history.ProviderClaude, "billing-api"
+		}
+		stamp := fmt.Sprintf("2026-07-14T%02d:%02d:00Z", 9+index%10, (index*7)%60)
+		data.Sessions = append(data.Sessions, tuipages.LedgerSession{
+			CatalogSession: historystore.CatalogSession{
+				SessionID: fmt.Sprintf("ses_ledger_%02d", index+1), Provider: provider, Project: project,
+				ProjectSource: history.ProjectSourceGit, FirstTimestamp: &stamp, LastTimestamp: &stamp,
+				Preview:            []string{"Investigate the production latency regression", "Prepare the migration rollout plan", "Review the query budget before release"}[index%3],
+				LogicalPromptCount: index + 2, OccurrenceCount: index + 3,
+			},
+			Tokens: int64(900_000 + index*10_000), Cost: pricing.Money(int64(5_000_000_000 + index*250_000_000)), PricedTokens: int64(900_000 + index*10_000),
+			ActivityTimestamp: stamp, AttributionStatus: "complete",
+		})
+	}
+	for _, session := range data.Sessions {
+		value := tuipages.ProviderTotals{Cost: session.Cost, Tokens: session.Tokens, PricedTokens: session.PricedTokens}
+		if session.Provider == history.ProviderClaude {
+			day.Claude = day.Claude.Add(value)
+		} else {
+			day.Codex = day.Codex.Add(value)
+		}
+	}
+	day.Sessions = len(data.Sessions)
+	data.Rows, data.Total = []tuipages.Row{day, previous}, day.Add(previous)
+	return data
+}
+
 func quest146DailyFrameData() tuipages.DailyPageData {
 	rows := make([]tuipages.DailyPoint, 0, 30)
 	for index := 0; index < 30; index++ {
