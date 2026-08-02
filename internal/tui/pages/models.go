@@ -231,7 +231,7 @@ func modelMasterHeader(render theme.Context, width int, sparkline, wide, floor b
 	if !wide {
 		return fitLine("  "+modelColumnsLine(render, []modelColumn{
 			{text: "PROVIDER", width: 8}, {text: "MODEL", width: 25}, {text: "TOKENS", width: 14, right: true},
-			{text: "COST", width: 11, right: true}, {text: "PRICING", width: 8}, {text: "DAYS", width: 4, right: true},
+			{text: "COST", width: 11, right: true}, {text: "PRICING", width: 9}, {text: "DAYS", width: 4, right: true},
 			{text: "LAST", width: 10},
 		}, width, true), width)
 	}
@@ -239,13 +239,13 @@ func modelMasterHeader(render theme.Context, width int, sparkline, wide, floor b
 		{text: "PROV", width: 6}, {text: "MODEL", width: 24}, {text: "TOKENS", width: 14, right: true},
 		{text: "TOK%", width: 5, right: true}, {text: "SHARE", width: 10}, {text: "COST", width: 10, right: true},
 		{text: "COST%", width: 6, right: true}, {text: "SHARE", width: 10}, {text: "$/1M", width: 6, right: true},
-		{text: "PRICING", width: 8}, {text: "SESSIONS", width: 8, right: true}, {text: "DAYS", width: 4, right: true},
+		{text: "PRICING", width: 9}, {text: "SESSIONS", width: 8, right: true}, {text: "DAYS", width: 4, right: true},
 		{text: "FIRST", width: 10}, {text: "LAST", width: 10},
 	}
 	if sparkline {
 		columns = append(columns, modelColumn{text: "COST 30D", width: 10})
 	}
-	return modelColumnsLine(render, columns, width, true)
+	return fitLine("  "+modelColumnsLine(render, columns, width-2, true), width)
 }
 
 type modelColumn struct {
@@ -292,7 +292,7 @@ func renderModelMasterRow(render theme.Context, row ModelPageRow, data ModelPage
 	if !wide {
 		return fitLine(marker+strings.Join([]string{
 			aligned(providerText, 8, false), aligned(modelText, 25, false), aligned(commaInteger(row.Tokens), 14, true),
-			aligned(modelMoney(row), 11, true), aligned(modelPricingText(render, row), 8, false),
+			aligned(modelMoney(row), 11, true), aligned(modelPricingText(render, row), 9, false),
 			aligned(modelCount(row.Days), 4, true), aligned(row.LastDate, 10, false),
 		}, " "), width)
 	}
@@ -301,7 +301,7 @@ func renderModelMasterRow(render theme.Context, row ModelPageRow, data ModelPage
 		aligned(providerText, 6, false), aligned(modelText, 24, false), aligned(commaInteger(row.Tokens), 14, true),
 		aligned(modelPercent(row.TokenShare, 1), 5, true), modelShareBar(render, row.TokenShare, 10),
 		aligned(modelMoney(row), 10, true), aligned(modelPercent(row.CostShare, 2), 6, true), modelShareBar(render, row.CostShare, 10),
-		aligned(modelRate(row), 6, true), aligned(modelPricingText(render, row), 8, false),
+		aligned(modelRate(row), 6, true), aligned(modelPricingText(render, row), 9, false),
 		aligned(modelSessions(row), 8, true), aligned(modelCount(row.Days), 4, true), aligned(row.FirstDate, 10, false), aligned(row.LastDate, 10, false),
 	}
 	if sparkline {
@@ -336,9 +336,6 @@ func modelPricingText(render theme.Context, row ModelPageRow) string {
 	value := row.Pricing
 	if value == "" {
 		value = "unpriced"
-	}
-	if row.Provider == "TOTAL" && strings.HasSuffix(value, " priced") {
-		value = strings.TrimSuffix(value, " priced") + " rate"
 	}
 	if value == "proxy" || value == "estimated" {
 		return render.Palette.Badge(value).Render(value)
@@ -383,6 +380,7 @@ func modelPercent(value float64, decimals int) string {
 	if value <= 0 {
 		return "0"
 	}
+	value = minFloat(1, value)
 	return fmt.Sprintf("%."+strconv.Itoa(decimals)+"f", value*100)
 }
 
@@ -459,9 +457,6 @@ func modelPaneWidth(width, count, index int) int {
 func renderModelPane(render theme.Context, title string, content []string, width, height int) string {
 	lines := []string{modelRuleTitle(render, title, width)}
 	lines = append(lines, content...)
-	for len(lines) < height {
-		lines = append(lines, render.Palette.Subtle().Render(strings.Repeat("·", max(1, width))))
-	}
 	return modelFitBlock(strings.Join(lines, "\n"), width, height)
 }
 
@@ -502,10 +497,10 @@ func modelRule(render theme.Context, width int) string {
 }
 
 func modelTokenCostLines(render theme.Context, data ModelPageData, width int) []string {
-	lines := []string{render.Palette.Header().Render("TOKENS ↔ MODEL ↔ COST")}
+	lines := []string{render.Palette.Header().Render("TOKENS ↔ MODEL ↔ COST · RANK")}
 	rows := append([]ModelPageRow(nil), data.Rows...)
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Tokens > rows[j].Tokens })
-	barWidth := max(8, min(24, (width-25)/2))
+	barWidth := max(8, min(24, (width-29)/2))
 	maximumTokens, maximumCost := int64(0), pricing.Money(0)
 	for _, row := range rows[:min(6, len(rows))] {
 		if row.Tokens > maximumTokens {
@@ -633,7 +628,7 @@ func dataRowsByCost(rows []ModelPageRow) []ModelPageRow {
 }
 
 func modelRank(index int) string {
-	return fmt.Sprintf("%-2d", index+1)
+	return fmt.Sprintf("#%-2d", index+1)
 }
 
 func modelRateFor(row ModelRateRow) string {
@@ -709,9 +704,6 @@ func renderModelMatrix(render theme.Context, data ModelPageData, width, height i
 		lines = append(lines, render.Palette.Subtle().Render(fmt.Sprintf("↓ %d more models", len(data.Matrix.Rows)-rowCapacity)))
 	}
 	lines = append(lines, render.Palette.Subtle().Render("less ·░▒▓█ more  ·  each cell is one model on one day"))
-	for len(lines) < height {
-		lines = append(lines, render.Palette.Subtle().Render(strings.Repeat("·", max(1, width))))
-	}
 	return modelFitBlock(strings.Join(lines, "\n"), width, height)
 }
 

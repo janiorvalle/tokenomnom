@@ -11,7 +11,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
 )
 
-func TestRenderModelsFillsDenseDeskTiers(t *testing.T) {
+func TestRenderModelsKeepsDenseDeskTiersAligned(t *testing.T) {
 	data := modelsTestData()
 	cases := []struct {
 		name   string
@@ -55,15 +55,9 @@ func TestRenderModelsFillsDenseDeskTiers(t *testing.T) {
 				}
 			}
 			if test.view.Wide && test.view.Tall {
-				blankRun := 0
-				for _, line := range lines {
-					if strings.TrimSpace(line) == "" {
-						blankRun++
-						if blankRun > 3 {
-							t.Fatalf("wide+tall view has a blank run longer than three rows:\n%s", view)
-						}
-					} else {
-						blankRun = 0
+				for index, line := range lines {
+					if strings.Trim(line, "·") == "" {
+						t.Fatalf("wide+tall view has a stamped filler row at line %d:\n%s", index+1, view)
 					}
 				}
 			}
@@ -91,6 +85,43 @@ func TestRenderModelsUsesSessionDenominatorWhenProvided(t *testing.T) {
 	view := RenderModels(testRender(), data, ModelsViewport{Width: 168, Height: 59, Wide: true, Tall: true})
 	if !strings.Contains(view, "TOKENS PER SESSION") || !strings.Contains(view, "25.0M") {
 		t.Fatalf("session analysis did not use the supplied denominator:\n%s", view)
+	}
+}
+
+func TestModelsButterflyLabelsRankColumn(t *testing.T) {
+	view := strings.Join(modelTokenCostLines(testRender(), modelsTestData(), 69), "\n")
+	if !strings.Contains(view, "RANK") || !strings.Contains(view, "#1") {
+		t.Fatalf("butterfly rank column is not labeled:\n%s", view)
+	}
+}
+
+func TestModelsMasterColumnsKeepTotalsInsideTheirColumns(t *testing.T) {
+	data := modelsTestData()
+	data.Total.TokenShare = 1.2
+	data.Total.CostShare = 1.2
+	view := RenderModels(testRender(), data, ModelsViewport{Width: 168, Height: 59, Wide: true, Tall: true})
+	var header, row, total string
+	for _, line := range strings.Split(view, "\n") {
+		switch {
+		case header == "" && strings.Contains(line, "PROV   MODEL"):
+			header = line
+		case row == "" && strings.Contains(line, "Codex") && strings.Contains(line, "model-00"):
+			row = line
+		case total == "" && strings.Contains(line, "TOTAL") && strings.Contains(line, "models"):
+			total = line
+		}
+	}
+	if header == "" || row == "" || total == "" {
+		t.Fatalf("could not find master table header, row, and total:\n%s", view)
+	}
+	if got, want := strings.Index(header, "PROV"), strings.Index(row, "Codex"); got != want {
+		t.Fatalf("master header starts at %d, row starts at %d:\nheader=%s\nrow=%s", got, want, header, row)
+	}
+	if !strings.Contains(total, "10 priced") || strings.Contains(total, "10 rate") {
+		t.Fatalf("total pricing label is wrong:\n%s", total)
+	}
+	if strings.Contains(total, "120.0") || strings.Contains(total, "120.00") || !strings.Contains(total, "100.0") {
+		t.Fatalf("total share overflowed its columns:\n%s", total)
 	}
 }
 
@@ -162,7 +193,20 @@ func modelsTestData() ModelPageData {
 			Days: 30 - index, FirstDate: "2026-07-03", LastDate: "2026-08-01",
 		}
 		for spark := 0; spark < 10; spark++ {
-			row.Sparkline = append(row.Sparkline, float64((index+1)*(spark+1)))
+			value := float64((index + 1) * (spark + 1))
+			switch index {
+			case 0:
+				if spark == 5 {
+					value *= 4
+				}
+			case 1:
+				value = float64((index + 1) * (10 - spark))
+			case 2:
+				if spark == 4 || spark == 5 {
+					value = 0
+				}
+			}
+			row.Sparkline = append(row.Sparkline, value)
 		}
 		data.Rows = append(data.Rows, row)
 	}
@@ -181,7 +225,20 @@ func modelsTestData() ModelPageData {
 		data.Recency = append(data.Recency, ModelRecencyRow{Model: row.Model, Days: index})
 		matrix := ModelMatrixRow{Model: row.Model, Cost: row.Cost}
 		for day := 0; day < 30; day++ {
-			matrix.Values = append(matrix.Values, float64((index+1)*(day+1)))
+			value := float64((index + 1) * (day + 1))
+			switch index {
+			case 0:
+				if day == 10 {
+					value *= 8
+				}
+			case 1:
+				value = float64((index + 1) * (30 - day))
+			case 2:
+				if day >= 10 && day <= 14 {
+					value = 0
+				}
+			}
+			matrix.Values = append(matrix.Values, value)
 		}
 		data.Matrix.Rows = append(data.Matrix.Rows, matrix)
 	}
