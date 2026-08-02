@@ -131,7 +131,7 @@ func TestRailUsesContractBlocksAndChromeJunctions(t *testing.T) {
 	model.request.Width, model.request.Height = 192, 66
 	layout := newCockpitLayout(model.request.Width, model.request.Height)
 	view := model.View()
-	for _, fragment := range []string{"today $2,209.23", "MIX · 30D", "Codex 72%", "PROJECTS 30D", "alpha 50%"} {
+	for _, fragment := range []string{"today $2,209.23", "MIX · 30D", "Codex   72%", "PROJECTS 30D", "alpha     50%"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("rail missing %q:\n%s", fragment, view)
 		}

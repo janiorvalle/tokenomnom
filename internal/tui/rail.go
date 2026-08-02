@@ -70,6 +70,10 @@ func (m Model) railNavigationRows() []string {
 			if page.ID() == active {
 				label = "> " + label
 				style = m.render.Palette.Emphasis().Bold(true)
+			} else {
+				// Two-space prefix keeps page numbers in one column whether or
+				// not the active marker is present.
+				label = "  " + label
 			}
 			rows = append(rows, style.Render(label))
 		}
@@ -177,13 +181,14 @@ func compactRailValue(value string, width int) string {
 
 func (m Model) railMixRows(width int) []string {
 	return []string{
-		ShareBar(m.render, railShareLabel("Codex", m.snapshot.Rail.Mix.Codex), m.snapshot.Rail.Mix.Codex, 1, width),
-		ShareBar(m.render, railShareLabel("Claude", m.snapshot.Rail.Mix.Claude), m.snapshot.Rail.Mix.Claude, 1, width),
+		ShareBarAligned(m.render, railShareLabel("Codex", m.snapshot.Rail.Mix.Codex), m.snapshot.Rail.Mix.Codex, 1, width),
+		ShareBarAligned(m.render, railShareLabel("Claude", m.snapshot.Rail.Mix.Claude), m.snapshot.Rail.Mix.Claude, 1, width),
 	}
 }
 
 func railShareLabel(label string, share float64) string {
-	return fmt.Sprintf("%s %d%%", label, int(math.Round(maxFloat(0, minFloat(1, share))*100)))
+	// Fixed name and percent columns so every bar starts at the same cell.
+	return fmt.Sprintf("%-6s %3d%%", label, int(math.Round(maxFloat(0, minFloat(1, share))*100)))
 }
 
 func (m Model) railProjectRows(width int) []string {
@@ -200,7 +205,13 @@ func (m Model) railProjectRows(width int) []string {
 		if label == "" {
 			label = "unknown"
 		}
-		rows = append(rows, ShareBar(m.render, truncate(label, max(1, width/2))+" "+fmt.Sprintf("%d%%", int(math.Round(maxFloat(0, minFloat(1, project.Share))*100))), project.Share, 1, width))
+		nameWidth := max(4, width-11)
+		name := truncate(label, nameWidth)
+		// Pad by terminal-cell width, not rune count: wide glyphs in project
+		// names must not shift the percent and bar columns.
+		pad := strings.Repeat(" ", max(0, nameWidth-lipgloss.Width(name)))
+		aligned := fmt.Sprintf("%s%s %3d%%", name, pad, int(math.Round(maxFloat(0, minFloat(1, project.Share))*100)))
+		rows = append(rows, ShareBarAligned(m.render, aligned, project.Share, 1, width))
 	}
 	return rows
 }

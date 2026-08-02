@@ -150,7 +150,7 @@ func TestRenderDailyUsesExplicitTokenFallbackLabels(t *testing.T) {
 	if !strings.Contains(joined, "cost") || !strings.Contains(joined, "—") || !strings.Contains(joined, "tokens") {
 		t.Fatalf("token fallback comparison labels are inconsistent:\n%s", joined)
 	}
-	trends := strings.Join(dailyProjectsAndTrends(data, 48), "\n")
+	trends := strings.Join(dailyProjectsAndTrends(testRender(), data, 48), "\n")
 	if !strings.Contains(trends, "cost/day · unavailable") || !strings.Contains(trends, "claude share") {
 		t.Fatalf("token fallback trends are inconsistent:\n%s", trends)
 	}
@@ -168,7 +168,7 @@ func TestRenderDailyFallsBackToTokensForIncompleteAttribution(t *testing.T) {
 	if !strings.Contains(view, "—") {
 		t.Fatalf("incomplete session attribution still displayed a dollar amount:\n%s", view)
 	}
-	trends := strings.Join(dailyProjectsAndTrends(data, 48), "\n")
+	trends := strings.Join(dailyProjectsAndTrends(testRender(), data, 48), "\n")
 	if !strings.Contains(trends, "tokens/day") || !strings.Contains(trends, "project-a") {
 		t.Fatalf("project summary did not fall back to tokens:\n%s", trends)
 	}
@@ -181,7 +181,7 @@ func TestRenderDailyKeepsCompleteCostRankingsWithPartialRows(t *testing.T) {
 	if !strings.Contains(view, "top 3 by cost of 20") || !strings.Contains(view, "—") {
 		t.Fatalf("partial attribution changed the complete cost ranking:\n%s", view)
 	}
-	trends := strings.Join(dailyProjectsAndTrends(data, 48), "\n")
+	trends := strings.Join(dailyProjectsAndTrends(testRender(), data, 48), "\n")
 	if strings.Contains(trends, formatDailyMoney(data.Sessions.Rows[0].Cost)) {
 		t.Fatalf("project summary included the partial cost:\n%s", trends)
 	}

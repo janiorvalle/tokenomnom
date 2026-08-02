@@ -533,9 +533,21 @@ func renderExpandedDayList(render theme.Context, data Data, state State, width, 
 	if selectedWarning != "" {
 		controlLines++
 	}
+	// The rollup band engages whenever the pane can hold a useful session
+	// window plus a band, not only at a fixed terminal height. Busy days keep
+	// the band and page their sessions into the remaining capacity.
+	const (
+		rollupMinHeight = 10
+		minSessionRows  = 8
+	)
 	rollupHeight := 0
-	if width >= 72 && height >= ledgerTallHeight {
-		rollupHeight = min(35, max(0, height-len(lines)-controlLines))
+	if width >= 72 {
+		available := max(0, height-len(lines)-controlLines)
+		if available >= rollupMinHeight+minSessionRows*rowHeight {
+			leftover := available - len(data.Sessions)*rowHeight
+			rollupHeight = min(35, max(rollupMinHeight, leftover))
+			rollupHeight = min(rollupHeight, available-minSessionRows*rowHeight)
+		}
 	}
 	capacity := max(1, (height-len(lines)-controlLines-rollupHeight)/rowHeight)
 	start, end := visibleWindow(len(data.Sessions), selected, capacity)
@@ -543,7 +555,7 @@ func renderExpandedDayList(render theme.Context, data Data, state State, width, 
 		rows := expandedSessionRow(render, data.Sessions[index], index == selected, width, data.Location)
 		lines = append(lines, rows...)
 	}
-	if width >= 72 && height >= ledgerTallHeight {
+	if rollupHeight > 0 {
 		rollupHeight = max(0, height-len(lines)-controlLines)
 	}
 	if data.SessionsHaveMore {

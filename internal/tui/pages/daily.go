@@ -285,7 +285,10 @@ func renderDailyChart(render theme.Context, data DailyPageData, width, height in
 		avgRow = int(math.Round((maxValue - average) / maxValue * float64(plotHeight-1)))
 		avgRow = min(max(0, avgRow), plotHeight-1)
 	}
-	lines := []string{fitDailyLine(render.Palette.Header().Render(title), width)}
+	legend := render.Palette.Provider("codex", 0).Render("■ Codex") + " " + render.Palette.Provider("claude", 0).Render("■ Claude")
+	lines := []string{fitDailyLine(render.Palette.Header().Render(title)+"  "+legend, width)}
+	codexStyle := render.Palette.Provider("codex", 0)
+	claudeStyle := render.Palette.Provider("claude", 0)
 	for row := 0; row < plotHeight; row++ {
 		label := dailyAxisLabel(maxValue, plotHeight, row, data.UsesTokens)
 		axis := strings.Repeat(" ", max(0, axisWidth-lipgloss.Width(label)-1)) + label
@@ -299,11 +302,15 @@ func renderDailyChart(render theme.Context, data DailyPageData, width, height in
 			cellHeight := int(math.Ceil(amount / maxValue * float64(plotHeight)))
 			cell := strings.Repeat(" ", columnWidth)
 			if amount > 0 && row >= plotHeight-cellHeight {
-				char := "█"
-				if point.ClaudeValue(data.UsesTokens) > point.CodexValue(data.UsesTokens) {
-					char = "▓"
+				// Providers stack: Codex fills from the baseline, Claude sits
+				// on top. The glyph difference keeps the split readable when
+				// color is stripped (NO_COLOR, copied text, committed frames).
+				claudeRows := int(math.Round(point.ClaudeValue(data.UsesTokens) / amount * float64(cellHeight)))
+				char, style := "█", codexStyle
+				if row < plotHeight-cellHeight+claudeRows {
+					char, style = "▓", claudeStyle
 				}
-				cell = strings.Repeat(char, columnWidth)
+				cell = style.Render(strings.Repeat(char, columnWidth))
 			} else if row == avgRow {
 				cell = strings.Repeat("┈", columnWidth)
 			}
@@ -339,8 +346,8 @@ func renderDailyWideAnalysis(render theme.Context, data DailyPageData, width, he
 	return joinDailyPanes(
 		[]string{
 			renderDailyPane(render, dailyDetailTitle(data), strings.Join(dailyDetailLines(data, left, false), "\n"), left, height),
-			renderDailyPane(render, dailyProjectsTitle(data), strings.Join(dailyProjectsAndTrends(data, middle), "\n"), middle, height),
-			renderDailyPane(render, "LAST 10 DAYS · RESCALED", strings.Join(dailyMiniChartLines(data, right), "\n"), right, height),
+			renderDailyPane(render, dailyProjectsTitle(data), strings.Join(dailyProjectsAndTrends(render, data, middle), "\n"), middle, height),
+			renderDailyPane(render, "LAST 10 DAYS · RESCALED", strings.Join(dailyMiniChartLines(render, data, right), "\n"), right, height),
 		},
 		[]int{left, middle, right}, dailyGap, height,
 	)
@@ -353,7 +360,7 @@ func renderDailyStandardAnalysis(render theme.Context, data DailyPageData, width
 	if detailOffset > 0 {
 		leftLines = dailyWindow(leftLines, detailOffset, max(1, height-1))
 	}
-	rightLines := dailyProjectsAndTrends(data, right)
+	rightLines := dailyProjectsAndTrends(render, data, right)
 	return joinDailyPanes(
 		[]string{
 			renderDailyPane(render, dailyDetailTitle(data), strings.Join(leftLines, "\n"), left, height),
@@ -461,7 +468,27 @@ func dailyDetailLines(data DailyPageData, width int, compact bool) []string {
 	if usesTokens {
 		modelTitle = "TOP MODELS BY TOKENS"
 	}
-	lines = append(lines, modelTitle+" · "+formatDailyNumber(int64(len(detail.Models))))
+	unpricedModels, partialModels := 0, 0
+	for _, model := range detail.Models {
+		if usesTokens || model.Value.Tokens == 0 {
+			continue
+		}
+		if model.Value.PricedTokens == 0 {
+			unpricedModels++
+		} else if model.Value.PricedTokens < model.Value.Tokens {
+			partialModels++
+		}
+	}
+	countLabel := formatDailyNumber(int64(len(detail.Models)))
+	switch {
+	case unpricedModels > 0 && partialModels > 0:
+		countLabel += fmt.Sprintf(" · %d not fully priced", unpricedModels+partialModels)
+	case unpricedModels > 0:
+		countLabel += fmt.Sprintf(" · %d unpriced", unpricedModels)
+	case partialModels > 0:
+		countLabel += fmt.Sprintf(" · %d partially priced", partialModels)
+	}
+	lines = append(lines, modelTitle+" · "+countLabel)
 	models := append([]DailyModel(nil), detail.Models...)
 	sort.SliceStable(models, func(i, j int) bool {
 		left, right := dailyValueAmount(models[i].Value, usesTokens), dailyValueAmount(models[j].Value, usesTokens)
@@ -481,6 +508,9 @@ func dailyDetailLines(data DailyPageData, width int, compact bool) []string {
 		nameWidth := max(8, width-lipgloss.Width(value)-8)
 		name := truncateDaily(cleanDaily(model.Model), nameWidth)
 		lines = append(lines, padDailyRight(name, nameWidth)+" "+value+" "+formatDailyShare(model.Value, detail.Value, usesTokens))
+	}
+	if hidden := len(models) - limit; hidden > 0 {
+		lines = append(lines, fmt.Sprintf("+%d more models", hidden))
 	}
 	if len(models) == 0 {
 		lines = append(lines, "No models recorded.")
@@ -567,7 +597,7 @@ func dailyAverageRangeLabel(data DailyPageData) string {
 	return "DAY vs " + trendLabel + " AVERAGE"
 }
 
-func dailyProjectsAndTrends(data DailyPageData, width int) []string {
+func dailyProjectsAndTrends(render theme.Context, data DailyPageData, width int) []string {
 	lines := []string{"PROJECTS"}
 	if data.Sessions.HasMore {
 		lines = append(lines, "Project ranking unavailable; session page is bounded.")
@@ -619,12 +649,21 @@ func dailyProjectsAndTrends(data DailyPageData, width int) []string {
 	}
 	for _, trend := range trends {
 		lineWidth := max(1, width-lipgloss.Width(trend.label)-9)
-		lines = append(lines, padDailyRight(trend.label, lipgloss.Width(trend.label))+" "+dailySparkline(trend.values, lineWidth)+" "+dailyDelta(trend.values))
+		spark := dailySparkline(trend.values, lineWidth)
+		switch {
+		case strings.HasPrefix(trend.label, "cost"):
+			spark = render.Palette.Money().Render(spark)
+		case strings.HasPrefix(trend.label, "claude"):
+			spark = render.Palette.Provider("claude", 0).Render(spark)
+		default:
+			spark = render.Palette.Emphasis().Render(spark)
+		}
+		lines = append(lines, padDailyRight(trend.label, lipgloss.Width(trend.label))+" "+spark+" "+dailyDelta(trend.values))
 	}
 	return lines
 }
 
-func dailyMiniChartLines(data DailyPageData, width int) []string {
+func dailyMiniChartLines(render theme.Context, data DailyPageData, width int) []string {
 	rows := data.TrendRows
 	if len(rows) == 0 {
 		rows = data.Rows
@@ -641,7 +680,13 @@ func dailyMiniChartLines(data DailyPageData, width int) []string {
 		maximum = maxFloat(maximum, value)
 	}
 	lines := []string{fmt.Sprintf("ymax %s", formatDailyAxis(maximum, data.UsesTokens))}
-	lines = append(lines, dailyMiniChart(values, max(1, width), 8)...)
+	miniStyle := render.Palette.Money()
+	if data.UsesTokens {
+		miniStyle = render.Palette.Emphasis()
+	}
+	for _, chartLine := range dailyMiniChart(values, max(1, width), 8) {
+		lines = append(lines, miniStyle.Render(chartLine))
+	}
 	lines = append(lines, "", "last 10 days", "avg "+formatDailyValue(dailyAverageValue(rows, data.UsesTokens), data.UsesTokens))
 	if data.PeakDate != "" {
 		lines = append(lines, "peak "+shortDailyDate(data.PeakDate)+" "+formatDailyValue(data.Peak, data.UsesTokens))

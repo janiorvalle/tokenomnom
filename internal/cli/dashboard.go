@@ -717,7 +717,13 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		data.DayProjectCount = len(projectCounts)
 	}
 	sessionQuery := dayQuery
+	// Page size follows the viewport so tall windows are not paged at 20 rows
+	// above blank space; the store maximum still bounds transcript reads.
 	sessionQuery.Limit = historystore.DefaultSessionCostPageSize
+	if request.Height > 0 {
+		sessionQuery.Limit = min(historystore.MaxSessionCostPageSize,
+			max(historystore.DefaultSessionCostPageSize, request.Height-20))
+	}
 	sessionQuery.Cursor = request.Ledger.SessionPageCursor
 	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: sessionQuery})
 	if err != nil {
