@@ -248,7 +248,17 @@ func SelectedIndex(data Data, state State) int {
 			}
 		}
 	}
+	for index, row := range data.Rows {
+		if ledgerRowHasActivity(row) {
+			return index
+		}
+	}
 	return 0
+}
+
+func ledgerRowHasActivity(row Row) bool {
+	total := row.Total()
+	return row.Sessions > 0 || total.Tokens > 0 || total.Cost != 0
 }
 
 // Update applies ledger navigation. Rows are newest first, so j moves toward
@@ -837,6 +847,9 @@ func renderWidePeriodBand(render theme.Context, data Data, state State, width, h
 
 func renderPeriodTableBand(render theme.Context, data Data, state State, width, height int, wide bool) string {
 	rows := ledgerDisplayRows(data, state)
+	if len(rows) == 0 {
+		return renderEmptyPeriodTable(render, data, state, width, height)
+	}
 	if !wide {
 		lines := []string{fitLine(render.Palette.Subtle().Render(breadcrumb(state)+"  ·  l zoom in · h zoom out · enter open"), width)}
 		lines = append(lines, render.Palette.Header().Render(fitText("PERIODS", width)))
@@ -855,6 +868,15 @@ func renderPeriodTableBand(render theme.Context, data Data, state State, width, 
 	}
 	for _, item := range rows {
 		lines = append(lines, renderLedgerPeriodRow(render, item, columns, maxTokens))
+	}
+	return fitLedgerBlock(strings.Join(lines, "\n"), width, height)
+}
+
+func renderEmptyPeriodTable(render theme.Context, data Data, state State, width, height int) string {
+	lines := []string{
+		fitLine(render.Palette.Subtle().Render(breadcrumb(state)+"  ·  l zoom in · h zoom out · enter open"), width),
+		ledgerRule(render, periodTitle(data, state), width),
+		centeredLedgerMessage(render, ledgerEmptyPeriodMessage, width),
 	}
 	return fitLedgerBlock(strings.Join(lines, "\n"), width, height)
 }
@@ -1130,6 +1152,9 @@ func ledgerRateSummary(render theme.Context, models []LedgerModel, width int) st
 
 func selectedLedgerMetrics(data Data, state State, selected Row) (int, pricing.Money, pricing.Money, string, bool, bool) {
 	if state.Zoom == ZoomDay {
+		if !ledgerRowHasActivity(selected) {
+			return 0, 0, 0, "", false, false
+		}
 		total := selected.Total()
 		partial := total.UnpricedTokens > 0
 		return 1, total.Cost, total.Cost, selected.Key, partial, partial
@@ -1175,6 +1200,17 @@ func selectedLedgerRow(data Data, state State) Row {
 	if index := SelectedIndex(data, state); index >= 0 && index < len(data.Rows) {
 		return data.Rows[index]
 	}
+	if state.Zoom == ZoomDay {
+		monthKey := state.Month
+		if monthKey == "" {
+			monthKey = data.Month
+		}
+		for _, month := range data.Analytics.Months {
+			if month.Key == monthKey {
+				return Row{Key: month.Key, Label: month.Label, Sessions: month.Sessions, Codex: month.Codex, Claude: month.Claude}
+			}
+		}
+	}
 	if len(data.Analytics.Months) > 0 {
 		month := data.Analytics.Months[len(data.Analytics.Months)-1]
 		return Row{Key: month.Key, Label: month.Label, Sessions: month.Sessions, Codex: month.Codex, Claude: month.Claude}
@@ -1219,11 +1255,19 @@ func selectedLedgerProviderMonths(data Data, state State, selected Row) []Ledger
 		if len(selected.Key) == 4 {
 			prefix = selected.Key + "-"
 		}
-	case ZoomMonth, ZoomDay:
+	case ZoomMonth:
 		if len(selected.Key) >= 7 {
 			prefix = selected.Key[:7]
-		} else if len(state.Month) >= 7 {
-			prefix = state.Month[:7]
+		}
+	case ZoomDay:
+		month := state.Month
+		if month == "" {
+			month = data.Month
+		}
+		if len(month) >= 7 {
+			prefix = month[:7]
+		} else if len(selected.Key) >= 7 {
+			prefix = selected.Key[:7]
 		}
 	}
 	values := []LedgerProviderMonth{}
@@ -1249,6 +1293,9 @@ func renderSpendByMonth(render theme.Context, data Data, state State, width, hei
 	}
 	if len(months) == 0 {
 		return fitLedgerBlock(ledgerRule(render, "SPEND BY MONTH", width)+"\n"+render.Palette.Subtle().Render("no monthly usage"), width, height)
+	}
+	if !ledgerMonthsHaveActivity(months) {
+		return fitLedgerBlock(ledgerRule(render, "SPEND BY MONTH  ·  "+chartYear(months, state), width)+"\n"+centeredLedgerMessage(render, ledgerEmptyPeriodMessage, width), width, height)
 	}
 	maxCost := pricing.Money(0)
 	var totalCost pricing.Money
@@ -1388,13 +1435,13 @@ func chartYear(months []LedgerMonth, state State) string {
 func monthlyCaption(months []LedgerMonth, width int) string {
 	active := []string{}
 	for _, month := range months {
-		if month.Total().Tokens == 0 {
+		if !ledgerMonthHasActivity(month) {
 			continue
 		}
 		active = append(active, fmt.Sprintf("%s %s", month.Label, formatMoney(month.Total().Cost, month.Total().PricedTokens, false, month.Total().UnpricedTokens > 0)))
 	}
 	if len(active) == 0 {
-		return "no indexed activity in this period"
+		return ledgerEmptyPeriodMessage
 	}
 	const separator = "  ·  "
 	selected := []string{}
@@ -1418,6 +1465,28 @@ func monthlyCaption(months []LedgerMonth, width int) string {
 		return "activity details exceed this width"
 	}
 	return strings.Join(selected, separator)
+}
+
+const ledgerEmptyPeriodMessage = "no indexed activity in this period"
+
+func ledgerMonthsHaveActivity(months []LedgerMonth) bool {
+	for _, month := range months {
+		if ledgerMonthHasActivity(month) {
+			return true
+		}
+	}
+	return false
+}
+
+func ledgerMonthHasActivity(month LedgerMonth) bool {
+	total := month.Total()
+	return month.Sessions > 0 || total.Tokens > 0 || total.Cost != 0
+}
+
+func centeredLedgerMessage(render theme.Context, message string, width int) string {
+	message = truncate(message, max(1, width))
+	padding := max(0, (width-lipgloss.Width(message))/2)
+	return fitLine(strings.Repeat(" ", padding)+render.Palette.Subtle().Render(message), width)
 }
 
 func renderLedgerProfiles(render theme.Context, data Data, state State, width, height int) string {
