@@ -1,62 +1,69 @@
-Source: internal/tui/pages/daily_test.go::TestQuest146DailyFrames
-Command: go test ./internal/tui/pages -run TestQuest146DailyFrames -count=1 -v
+Source: internal/tui/app_test.go::TestQuest146DailyFullWindowFrames
+Command: go test ./internal/tui -run TestQuest146DailyFullWindowFrames -count=1 -v
 
-COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day                                                                                          
- $300                                                                                                                                       ████ ████ ████              
-                                                                                                                                  ████ ████ ████ ████ ████              
-                                                                                                                        ████ ████ ████ ████ ████ ████ ████              
-                                                                                                              ████ ████ ████ ████ ████ ████ ████ ████ ████              
-                                                                                                    ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-                                                                                          ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-                                                                                ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
- $150                                                            ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-                                                       ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-     ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████  avg $100.00 
-                                   ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-                         ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-               ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
- $0.0████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████              
-      01             04             07             10             13             16             19             22             25             28        ^                
-avg $100.00 · peak 09                                                                                                                                                   
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-DAY DETAIL · 2026-07-30 · $200.00 ──────────────────────────────────  PROJECTS · 2026-07-30 · 20 sessions ─────────────  LAST 10 DAYS · RESCALED ───────────────────────
-TOTAL $200.00                                                         PROJECTS                                           ymax $300                                      
-PROVIDER SPLIT · COST                                                 project-a          $18.10 20 ███████████████████           ███ ███ ███ ███ ███ ███ ███ ███        
-codex      $120.00  60% ███████████░░░░░░░ 12,000,000                 ···                                                ███ ███ ███ ███ ███ ███ ███ ███ ███ ███        
-claude     $80.00  40% ███████░░░░░░░░░░░ 8,000,000                   30-DAY TRENDS · 7d Δ                               ███ ███ ███ ███ ███ ███ ███ ███ ███ ███        
-TOP MODELS BY COST · 1                                                cost/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███·· +35.0%   ███ ███ ███ ███ ███ ███ ███ ███ ███ ███        
-gpt-test                                              $120.00 60%     tokens/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███ +35.0%   ···                                            
-DAY vs 30-DAY AVERAGE                                                 sessions/day ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ —        last 10 days                                   
-cost        $200.00 vs    $100.00 +100.0%                             claude share ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ +0.0%    avg $255.00                                    
-tokens        20.0M vs      10.0M +100.0%                             ···                                                ···                                            
-sessions         20 vs         10 +100.0%                             ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-···                                                                   ···                                                ···                                            
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-SESSIONS · 2026-07-30 · all 20                                                                                                                                          
-TIME  PROV   PROJECT       SESSION       MODEL              TOKENS       COST  PR  FIRST PROMPT                                                                         
-12:00 codex  project-a      ses_demo     gpt-test            10,000,000     $1.00   1  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,900,000     $0.99   2  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,800,000     $0.98   3  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,700,000     $0.97   4  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,600,000     $0.96   5  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,500,000     $0.95   6  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,400,000     $0.94   7  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,300,000     $0.93   8  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,200,000     $0.92   9  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,100,000     $0.91  10  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             9,000,000     $0.90  11  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,900,000     $0.89  12  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,800,000     $0.88  13  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,700,000     $0.87  14  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,600,000     $0.86  15  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,500,000     $0.85  16  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,400,000     $0.84  17  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,300,000     $0.83  18  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,200,000     $0.82  19  Synthetic prompt fixture                                                         
-12:00 codex  project-a      ses_demo     gpt-test             8,100,000     $0.81  20  Synthetic prompt fixture                                                         
-~ Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index.                                                                        
+ tokenomnom  /  DAILY                                                                                                                                                     LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                                                                                              
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day                                                                                           
+ > 1  Daily         │  $300┤                                                                                                                                            ████ ████               
+ 2  Ledger          │      ┤                                                                                                                                  ████ ████ ████ ████               
+ 3  Models          │      ┤                                                                                                                        ████ ████ ████ ████ ████ ████               
+ 4  Heatmap         │  $225┤                                                                                                              ████ ████ ████ ████ ████ ████ ████ ████               
+                    │      ┤                                                                                                    ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ HISTORY            │      ┤                                                                                          ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ 5  Sessions        │      ┤                                                                                ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+                    │  $150┤                                                                      ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ FILTERS            │      ┤                                                            ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ provider           │      ┤┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ┈┈┈┈ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████  avg $100.00  
+   all              │   $75┤                                        ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ range              │      ┤                              ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+   30d              │      ┤                    ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+ project            │      ┤          ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+   all              │  $0.0└████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████ ████               
+                    │        01             04             07             10             13             16             19             22             25             28        ^                 
+ SNAPSHOT           │  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ today $2,209.23    │  DAY DETAIL · 2026-07-30 · $200.00 ──────────────────────────────────  PROJECTS · 2026-07-30 · 20 sessions ─────────────  LAST 10 DAYS · RESCALED ─────────────────────── 
+ 7d $3,033.35       │  TOTAL $200.00                                                         PROJECTS                                           ymax $300                                       
+ 30d $3,033.35      │  PROVIDER SPLIT · COST                                                 project-a          $5.92 8 ████████░░░░░░░░░░░                             ███ ███ ███ ███         
+ peak $2,209.23     │  codex      $120.00  60% ███████████░░░░░░░ 12,000,000                 project-b          $5.78 8 ███████░░░░░░░░░░░░             ███ ███ ███ ███ ███ ███ ███ ███         
+   Jul 14           │  claude     $80.00  40% ███████░░░░░░░░░░░ 8,000,000                   project-c          $3.24 4 ████░░░░░░░░░░░░░░░     ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+                    │  TOP MODELS BY COST · 3                                                                                                   ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+ MIX · 30D          │  gpt-test                                              $120.00 60%     30-DAY TRENDS · 7d Δ                               ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+ Codex 72% ██████···│  gpt-mini                                               $45.00 23%     cost/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███·· +35.0%   ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+ Claude 28% ██······│  claude-sonnet                                          $35.00 18%     tokens/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███ +35.0%   ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+                    │  DAY vs 30-DAY AVERAGE                                                 sessions/day ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ —        ███ ███ ███ ███ ███ ███ ███ ███ ███ ███         
+ PROJECTS 30D       │  cost        $200.00 vs    $100.00 +100.0%                             claude share ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ +0.0%                                                    
+ alpha 50% █████····│  tokens        20.0M vs      10.0M +100.0%                                                                                last 10 days                                    
+ beta 30% ███·······│  sessions         20 vs         10 +100.0%                                                                                avg $255.00                                     
+ other 20% ██·······│                                                                                                                           peak 09 $300.00                                 
+                    │                                                                                                                           cursor 30                                       
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                    │  SESSIONS · 2026-07-30 · all 20                                                                                                                                           
+                    │  TIME  PROV   PROJECT       SESSION       MODEL              TOKENS       COST  PR  FIRST PROMPT                                                                          
+                    │  09:15 codex  project-a      ses_demo01   gpt-test            10,000,000     $1.00   1  Investigate latency regression                                                    
+                    │  10:40 claude project-b      ses_demo02   claude-sonnet        9,850,000     $0.98   2  Prepare rollout plan                                                              
+                    │  12:00 codex  project-c      ses_demo03   gpt-mini             9,700,000     $0.96   3  Review query budget                                                               
+                    │  14:45 claude project-a      ses_demo04   gpt-test             9,550,000     $0.94   4  Compare provider mix                                                              
+                    │  16:20 codex  project-b      ses_demo05   claude-sonnet        9,400,000     $0.92   5  Summarize release notes                                                           
+                    │  09:15 codex  project-a      ses_demo06   gpt-test             9,250,000     $0.90   6  Investigate latency regression                                                    
+                    │  10:40 claude project-b      ses_demo07   claude-sonnet        9,100,000     $0.88   7  Prepare rollout plan                                                              
+                    │  12:00 codex  project-c      ses_demo08   gpt-mini             8,950,000     $0.86   8  Review query budget                                                               
+                    │  14:45 claude project-a      ses_demo09   gpt-test             8,800,000     $0.84   9  Compare provider mix                                                              
+                    │  16:20 codex  project-b      ses_demo10   claude-sonnet        8,650,000     $0.82  10  Summarize release notes                                                           
+                    │  09:15 codex  project-a      ses_demo11   gpt-test             8,500,000     $0.80  11  Investigate latency regression                                                    
+                    │  10:40 claude project-b      ses_demo12   claude-sonnet        8,350,000     $0.78  12  Prepare rollout plan                                                              
+                    │  12:00 codex  project-c      ses_demo13   gpt-mini             8,200,000     $0.76  13  Review query budget                                                               
+                    │  14:45 claude project-a      ses_demo14   gpt-test             8,050,000     $0.74  14  Compare provider mix                                                              
+                    │  16:20 codex  project-b      ses_demo15   claude-sonnet        7,900,000     $0.72  15  Summarize release notes                                                           
+                    │  09:15 codex  project-a      ses_demo16   gpt-test             7,750,000     $0.70  16  Investigate latency regression                                                    
+                    │  10:40 claude project-b      ses_demo17   claude-sonnet        7,600,000     $0.68  17  Prepare rollout plan                                                              
+                    │  12:00 codex  project-c      ses_demo18   gpt-mini             7,450,000     $0.66  18  Review query budget                                                               
+                    │  14:45 claude project-a      ses_demo19   gpt-test             7,300,000         —  19  Compare provider mix                                                              
+                    │  16:20 codex  project-b      ses_demo20   claude-sonnet        7,150,000         —  20  Summarize release notes                                                           
+                    │  ~ Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index.                                                                         
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                                                                                                              ● idle  ·  2 sources  ·  2 models 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                                                                                                 
+ API list-price equivalents, not actual bills                                                                                                                              192x66 · wide + tall 

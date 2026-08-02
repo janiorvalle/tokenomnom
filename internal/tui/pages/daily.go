@@ -144,7 +144,7 @@ func RenderDaily(render theme.Context, data DailyPageData, terminalWidth, termin
 	default:
 		view = renderDailyFloor(render, data, width, bodyHeight, detailOffset)
 	}
-	return fitDailyBlock(view, width, bodyHeight, tier == dailyWideTall, render)
+	return fitDailyBlock(view, width, bodyHeight)
 }
 
 // DailyDetailMaxOffset returns the scroll range used by Daily's existing up /
@@ -222,7 +222,7 @@ func dailyCompactHeightsForBody(bodyHeight int) (int, int) {
 func renderDailyChart(render theme.Context, data DailyPageData, width, height int) string {
 	height = max(1, height)
 	if len(data.Rows) == 0 {
-		return fitDailyBlock("COST / DAY · "+dailyRangeCountLabel(data)+"\nNo active days in this range.", width, height, false, render)
+		return fitDailyBlock("COST / DAY · "+dailyRangeCountLabel(data)+"\nNo active days in this range.", width, height)
 	}
 
 	maxValue := 0.0
@@ -265,7 +265,7 @@ func renderDailyChart(render theme.Context, data DailyPageData, width, height in
 	// heading follows the reference frame's spaced typography.
 	title += " · " + unit
 
-	plotHeight := max(1, height-3)
+	plotHeight := max(1, height-2)
 	axisWidth := max(5, lipgloss.Width(formatDailyAxis(maxValue, data.UsesTokens))+1)
 	plotWidth := max(1, width-axisWidth)
 	pointNotice := ""
@@ -287,16 +287,13 @@ func renderDailyChart(render theme.Context, data DailyPageData, width, height in
 	}
 	lines := []string{fitDailyLine(render.Palette.Header().Render(title), width)}
 	for row := 0; row < plotHeight; row++ {
-		label := ""
-		switch row {
-		case 0:
-			label = formatDailyAxis(maxValue, data.UsesTokens)
-		case plotHeight / 2:
-			label = formatDailyAxis(maxValue/2, data.UsesTokens)
-		case plotHeight - 1:
-			label = formatDailyAxis(0, data.UsesTokens)
+		label := dailyAxisLabel(maxValue, plotHeight, row, data.UsesTokens)
+		axis := strings.Repeat(" ", max(0, axisWidth-lipgloss.Width(label)-1)) + label
+		axisGlyph := "┤"
+		if row == plotHeight-1 {
+			axisGlyph = "└"
 		}
-		line := strings.Repeat(" ", max(0, axisWidth-lipgloss.Width(label))) + label
+		line := axis + axisGlyph
 		for index, point := range data.Rows {
 			amount := dailyPointAmount(point, data.UsesTokens)
 			cellHeight := int(math.Ceil(amount / maxValue * float64(plotHeight)))
@@ -334,11 +331,6 @@ func renderDailyChart(render theme.Context, data DailyPageData, width, height in
 		ticks = append(ticks, strings.Repeat(" ", left)+label+strings.Repeat(" ", right))
 	}
 	lines = append(lines, fitDailyLine(strings.Repeat(" ", axisWidth)+strings.Join(ticks, " "), width))
-	caption := fmt.Sprintf("avg %s", formatDailyValue(data.Average, data.UsesTokens))
-	if data.PeakDate != "" {
-		caption += " · peak " + shortDailyDate(data.PeakDate)
-	}
-	lines = append(lines, fitDailyLine(render.Palette.Subtle().Render(caption), width))
 	return strings.Join(lines, "\n")
 }
 
@@ -346,9 +338,9 @@ func renderDailyWideAnalysis(render theme.Context, data DailyPageData, width, he
 	left, middle, right := dailyWidePaneWidths(width)
 	return joinDailyPanes(
 		[]string{
-			renderDailyPane(render, dailyDetailTitle(data), strings.Join(dailyDetailLines(data, left, false), "\n"), left, height, true),
-			renderDailyPane(render, dailyProjectsTitle(data), strings.Join(dailyProjectsAndTrends(data, middle), "\n"), middle, height, true),
-			renderDailyPane(render, "LAST 10 DAYS · RESCALED", strings.Join(dailyMiniChartLines(data, right), "\n"), right, height, true),
+			renderDailyPane(render, dailyDetailTitle(data), strings.Join(dailyDetailLines(data, left, false), "\n"), left, height),
+			renderDailyPane(render, dailyProjectsTitle(data), strings.Join(dailyProjectsAndTrends(data, middle), "\n"), middle, height),
+			renderDailyPane(render, "LAST 10 DAYS · RESCALED", strings.Join(dailyMiniChartLines(data, right), "\n"), right, height),
 		},
 		[]int{left, middle, right}, dailyGap, height,
 	)
@@ -364,8 +356,8 @@ func renderDailyStandardAnalysis(render theme.Context, data DailyPageData, width
 	rightLines := dailyProjectsAndTrends(data, right)
 	return joinDailyPanes(
 		[]string{
-			renderDailyPane(render, dailyDetailTitle(data), strings.Join(leftLines, "\n"), left, height, false),
-			renderDailyPane(render, "PROJECTS · "+dailyTrendRangeLabel(data), strings.Join(rightLines, "\n"), right, height, false),
+			renderDailyPane(render, dailyDetailTitle(data), strings.Join(leftLines, "\n"), left, height),
+			renderDailyPane(render, "PROJECTS · "+dailyTrendRangeLabel(data), strings.Join(rightLines, "\n"), right, height),
 		},
 		[]int{left, right}, dailyGap, height,
 	)
@@ -399,7 +391,7 @@ func renderDailyFloorDetail(render theme.Context, data DailyPageData, width, hei
 	if detailOffset > 0 {
 		lines = dailyWindow(fullLines, detailOffset, max(1, height))
 	}
-	return fitDailyBlock(strings.Join(lines, "\n"), width, height, false, render)
+	return fitDailyBlock(strings.Join(lines, "\n"), width, height)
 }
 
 func compactDailyWarning(warning string, width int) string {
@@ -649,8 +641,14 @@ func dailyMiniChartLines(data DailyPageData, width int) []string {
 		maximum = maxFloat(maximum, value)
 	}
 	lines := []string{fmt.Sprintf("ymax %s", formatDailyAxis(maximum, data.UsesTokens))}
-	lines = append(lines, dailyMiniChart(values, max(1, width), 4)...)
+	lines = append(lines, dailyMiniChart(values, max(1, width), 8)...)
 	lines = append(lines, "", "last 10 days", "avg "+formatDailyValue(dailyAverageValue(rows, data.UsesTokens), data.UsesTokens))
+	if data.PeakDate != "" {
+		lines = append(lines, "peak "+shortDailyDate(data.PeakDate)+" "+formatDailyValue(data.Peak, data.UsesTokens))
+	}
+	if data.SelectedDate != "" {
+		lines = append(lines, "cursor "+shortDailyDate(data.SelectedDate))
+	}
 	return lines
 }
 
@@ -746,7 +744,7 @@ func renderDailySessions(render theme.Context, data DailyPageData, width, height
 	if len(rows) == 0 && warning == "" {
 		lines = append(lines, "No indexed sessions for this day.")
 	}
-	return fitDailyBlock(strings.Join(lines, "\n"), width, height, wide, render)
+	return fitDailyBlock(strings.Join(lines, "\n"), width, height)
 }
 
 func dailySessionTotalLabel(data DailySessionData) string {
@@ -797,17 +795,17 @@ func joinDailyPanes(panes []string, widths []int, gap, height int) string {
 	parts := make([]string, 0, len(panes)*2-1)
 	for index, value := range panes {
 		if index > 0 {
-			parts = append(parts, fitDailyBlock("", gap, height, false, theme.Context{}))
+			parts = append(parts, fitDailyBlock("", gap, height))
 		}
-		parts = append(parts, fitDailyBlock(value, widths[index], height, false, theme.Context{}))
+		parts = append(parts, fitDailyBlock(value, widths[index], height))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
-func renderDailyPane(render theme.Context, title, content string, width, height int, fill bool) string {
+func renderDailyPane(render theme.Context, title, content string, width, height int) string {
 	lines := []string{dailyHeading(render, title, width)}
 	lines = append(lines, strings.Split(strings.TrimSuffix(content, "\n"), "\n")...)
-	return fitDailyBlock(strings.Join(lines, "\n"), width, height, fill, render)
+	return fitDailyBlock(strings.Join(lines, "\n"), width, height)
 }
 
 func dailyHeading(render theme.Context, title string, width int) string {
@@ -824,23 +822,16 @@ func dailyRule(render theme.Context, width int) string {
 	return fitDailyLine(render.Palette.Border().Render(strings.Repeat("─", max(1, width))), width)
 }
 
-func fitDailyBlock(value string, width, height int, nonVoid bool, render theme.Context) string {
+func fitDailyBlock(value string, width, height int) string {
 	width, height = max(1, width), max(1, height)
 	lines := strings.Split(strings.TrimSuffix(value, "\n"), "\n")
 	if len(lines) > height {
 		lines = lines[:height]
 	}
 	for len(lines) < height {
-		filler := ""
-		if nonVoid {
-			filler = render.Palette.Border().Render(strings.Repeat("·", min(width, 3)))
-		}
-		lines = append(lines, filler)
+		lines = append(lines, "")
 	}
 	for index, line := range lines {
-		if nonVoid && lipgloss.Width(strings.TrimSpace(line)) == 0 {
-			line = render.Palette.Border().Render(strings.Repeat("·", min(width, 3)))
-		}
 		lines[index] = fitDailyLine(line, width)
 	}
 	return strings.Join(lines, "\n")
@@ -901,6 +892,20 @@ func dailyFullRangeChartWidth(pointCount, columnWidth int) int {
 		return 0
 	}
 	return pointCount*max(1, columnWidth) + max(0, pointCount-1)
+}
+
+func dailyAxisLabel(maximum float64, plotHeight, row int, tokens bool) string {
+	if plotHeight <= 1 {
+		return formatDailyAxis(0, tokens)
+	}
+	for tick := 0; tick < 5; tick++ {
+		position := tick * (plotHeight - 1) / 4
+		if row == position {
+			value := maximum * float64(4-tick) / 4
+			return formatDailyAxis(value, tokens)
+		}
+	}
+	return ""
 }
 
 func formatDailyAxis(value float64, tokens bool) string {

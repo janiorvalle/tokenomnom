@@ -1,21 +1,27 @@
-Source: internal/tui/pages/daily_test.go::TestQuest146DailyFrames
-Command: go test ./internal/tui/pages -run TestQuest146DailyFrames -count=1 -v
+Source: internal/tui/app_test.go::TestQuest146DailyFullWindowFrames
+Command: go test ./internal/tui -run TestQuest146DailyFullWindowFrames -count=1 -v
 
-COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day
- $300                                                    █ █ █ █              
-                                                   █ █ █ █ █ █ █              
-                                             █ █ █ █ █ █ █ █ █ █              
-                                     █ █ █ █ █ █ █ █ █ █ █ █ █ █              
- $150                          █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
-     ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █  avg $100.00 
-                 █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
-           █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
- $0.0█ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
-     01     04     07     10     13     16     19     22     25     28   ^    
-avg $100.00 · peak 09                                                         
-──────────────────────────────────────────────────────────────────────────────
-DAY DETAIL · 2026-07-30 · $200.00 · PROVIDER SPLIT · COST                     
-codex    $120.00  60%                                                         
-claude   $80.00  40%                                                          
-TOP MODELS BY COST · gpt-test $120.00                                         
-~ Cost attribution unavailable · restore source · rerun history index         
+ tokenomnom  /  DAILY                                 FLOOR 80x24  ·  1-8 pages 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68 
+ ────────────────────────────────────────────────────────────────────────────── 
+ COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day 
+ $300┤                                                      █ █ █               
+     ┤                                                █ █ █ █ █ █               
+ $225┤                                          █ █ █ █ █ █ █ █ █               
+     ┤                                    █ █ █ █ █ █ █ █ █ █ █ █               
+ $150┤                              █ █ █ █ █ █ █ █ █ █ █ █ █ █ █               
+     ┤                        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █               
+  $75┤┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █  avg $100.00  
+     ┤            █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █               
+     ┤      █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █               
+ $0.0└█ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █               
+      01     04     07     10     13     16     19     22     25     28   ^     
+ ────────────────────────────────────────────────────────────────────────────── 
+ DAY DETAIL · 2026-07-30 · $200.00 · PROVIDER SPLIT · COST                      
+ codex    $120.00  60%                                                          
+ claude   $80.00  40%                                                           
+ TOP MODELS BY COST · gpt-test $120.00                                          
+ ~ Cost attribution unavailable · restore source · rerun history index          
+ ────────────────────────────────────────────────────────────────────────────── 
+                                              ● idle  ·  2 sources  ·  2 models 
+ API list-price equivalents, not actual bills · ? help · q quit   80x24 · floor 
