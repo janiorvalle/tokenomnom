@@ -1104,6 +1104,23 @@ func TestForcedColorDoesNotLaunchDashboardWithoutTerminal(t *testing.T) {
 	}
 }
 
+func TestModelPricingLabelUsesStableTieBreak(t *testing.T) {
+	stats := dashboardModelPricingStats{
+		PricedTokens: 20,
+		Statuses:     map[string]int64{"proxy": 10, "live": 10},
+	}
+	if got, want := modelPricingLabel(stats), "live"; got != want {
+		t.Fatalf("pricing label = %q, want %q", got, want)
+	}
+}
+
+func TestModelCalendarDatesUsesReportDate(t *testing.T) {
+	dates := modelCalendarDates([]string{"2026-01-01"}, "2026-02-01")
+	if len(dates) != 30 || dates[0] != "2026-01-03" || dates[len(dates)-1] != "2026-02-01" {
+		t.Fatalf("calendar dates = %v", dates)
+	}
+}
+
 func syncSummaryForTest() syncer.Summary {
 	return syncer.Summary{}
 }

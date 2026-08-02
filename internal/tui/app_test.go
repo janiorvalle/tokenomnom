@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1533,6 +1535,88 @@ func TestQuest147LedgerDayFullWindowFrame(t *testing.T) {
 	t.Logf("FRAME: Ledger day full window %dx%d\nSource: internal/tui/app_test.go::TestQuest147LedgerDayFullWindowFrame\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest147LedgerDayFullWindowFrame -count=1 -v\n\n%s", width, height, view)
 }
 
+func TestQuest148ModelsFullWindowFrames(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
+		model := realisticEvidenceModel()
+		model.router.Select(ModelsPageID)
+		model.request.Width, model.request.Height = size.width, size.height
+		model.render.Width = size.width
+		model.snapshot.StatusBar.LastSyncUnix = 0
+		layout := newCockpitLayout(size.width, size.height)
+		render := model.render
+		render.Width = layout.paneWidth
+		model.snapshot.Views[ModelsTab] = tuipages.RenderModels(render, quest148ModelsFrameData(), tuipages.ModelsViewport{
+			Width:    layout.paneWidth,
+			Height:   layout.bodyHeight,
+			Wide:     layout.tiers.Width == WidthWide,
+			Tall:     layout.tiers.Height == HeightTall,
+			Standard: layout.tiers.Width == WidthStandard,
+		})
+
+		view := model.View()
+		assertFullWindowFrame(t, view, size.width, size.height, "Models")
+		fragments := []string{"tokenomnom", "MODELS", "TOKENS", "COST"}
+		if size.width >= 160 {
+			fragments = append(fragments, "MODEL × DAY", "RANK", "30-DAY COST")
+		} else if size.width >= 96 {
+			fragments = append(fragments, "ANALYSIS", "COST PER 1M TOKENS")
+		} else {
+			fragments = append(fragments, "PROVIDER", "MODEL")
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(view, fragment) {
+				t.Fatalf("%dx%d full window missing %q:\n%s", size.width, size.height, fragment, view)
+			}
+		}
+		if size.width >= 160 {
+			assertNoBlankBandRuns(t, model.snapshot.Views[ModelsTab], 3)
+			if strings.Contains(model.snapshot.Views[ModelsTab], "↓ more models") {
+				t.Fatalf("wide master table still pages a populated fixture:\n%s", model.snapshot.Views[ModelsTab])
+			}
+		}
+		if evidenceDir := os.Getenv("QUEST_EVIDENCE_DIR"); evidenceDir != "" {
+			if err := writeQuest148FrameEvidence(evidenceDir, size.width, size.height, view); err != nil {
+				t.Fatalf("write %dx%d frame evidence: %v", size.width, size.height, err)
+			}
+		}
+		t.Logf("FRAME: Models full window %dx%d\nSource: internal/tui/app_test.go::TestQuest148ModelsFullWindowFrames\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest148ModelsFullWindowFrames -count=1 -v\n\n%s", size.width, size.height, view)
+	}
+}
+
+func assertNoBlankBandRuns(t *testing.T, body string, maximum int) {
+	t.Helper()
+	band := 1
+	blankRun := 0
+	check := func() {
+		if blankRun > maximum {
+			t.Fatalf("Models band %d has %d consecutive blank rows, maximum %d:\n%s", band, blankRun, maximum, body)
+		}
+		blankRun = 0
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) != "" && strings.Trim(line, "─ ") == "" {
+			check()
+			band++
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+		} else {
+			check()
+		}
+	}
+	check()
+}
+
+func writeQuest148FrameEvidence(directory string, width, height int, view string) error {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	filename := fmt.Sprintf("frame-a-models-rendered-%dx%d.txt", width, height)
+	content := fmt.Sprintf("Source: internal/tui/app_test.go::TestQuest148ModelsFullWindowFrames\nCommand: QUEST_EVIDENCE_DIR=%s go test ./internal/tui -run TestQuest148ModelsFullWindowFrames -count=1 -v\n\n%s\n", directory, view)
+	return os.WriteFile(filepath.Join(directory, filename), []byte(content), 0o644)
+}
+
 func assertFullWindowFrame(t *testing.T, view string, width, height int, state string) {
 	t.Helper()
 	lines := strings.Split(view, "\n")
@@ -1544,6 +1628,86 @@ func assertFullWindowFrame(t *testing.T, view string, width, height int, state s
 			t.Fatalf("%s %dx%d row %d width=%d, want %d:\n%s", state, width, height, index+1, renderedWidth, width, view)
 		}
 	}
+}
+
+func quest148ModelsFrameData() tuipages.ModelPageData {
+	data := tuipages.ModelPageData{ScopeLabel: "ALL TIME"}
+	var totalTokens int64
+	var totalCost pricing.Money
+	for index := 0; index < 12; index++ {
+		provider := "codex"
+		if index%2 == 1 {
+			provider = "claude"
+		}
+		tokens := int64(120-index*6) * 1_000_000
+		cost := pricing.Money(int64(index+2) * 1_500_000_000)
+		row := tuipages.ModelPageRow{
+			Provider: provider, Model: fmt.Sprintf("model-%02d", index), Tokens: tokens,
+			Cost: cost, PricedTokens: tokens, TokenShare: float64(tokens) / 1_044_000_000,
+			CostShare: float64(index+2) / 90, Pricing: "live", Sessions: index + 2,
+			Days: 30 - index, FirstDate: "2026-07-03", LastDate: "2026-08-01",
+		}
+		for spark := 0; spark < 10; spark++ {
+			value := float64((index + 1) * (spark + 1))
+			switch index {
+			case 0:
+				if spark == 5 {
+					value *= 4
+				}
+			case 1:
+				value = float64((index + 1) * (10 - spark))
+			case 2:
+				if spark == 4 || spark == 5 {
+					value = 0
+				}
+			}
+			row.Sparkline = append(row.Sparkline, value)
+		}
+		data.Rows = append(data.Rows, row)
+		totalTokens += tokens
+		totalCost += cost
+	}
+	data.Total = tuipages.ModelPageRow{
+		Provider: "TOTAL", Model: "12 models", Tokens: totalTokens, Cost: totalCost,
+		PricedTokens: totalTokens, TokenShare: 1, CostShare: 1, Pricing: "12 priced",
+		Sessions: 90, Days: 30, FirstDate: "2026-07-03", LastDate: "2026-08-01",
+	}
+	data.Providers = []tuipages.ModelProviderRow{
+		{Provider: "codex", Models: 6, Tokens: 540_000_000, Cost: pricing.Money(63_000_000_000), PricedTokens: 540_000_000, TokenShare: .52, CostShare: .47},
+		{Provider: "claude", Models: 6, Tokens: 504_000_000, Cost: pricing.Money(72_000_000_000), PricedTokens: 504_000_000, TokenShare: .48, CostShare: .53},
+	}
+	data.Pricing = []tuipages.ModelPricingRow{
+		{Label: "live rates", Models: 10, Tokens: totalTokens - 90_000_000, Cost: totalCost, PricedTokens: totalTokens - 90_000_000},
+		{Label: "unpriced", Models: 2, Tokens: 90_000_000, UnpricedTokens: 90_000_000},
+	}
+	for index, row := range data.Rows {
+		data.Rates = append(data.Rates, tuipages.ModelRateRow{Model: row.Model, Cost: row.Cost, PricedTokens: row.PricedTokens})
+		data.PerSession = append(data.PerSession, tuipages.ModelPerSessionRow{Model: row.Model, Tokens: row.Tokens, Sessions: row.Sessions, TokensPerSession: row.Tokens / int64(row.Sessions)})
+		data.Recency = append(data.Recency, tuipages.ModelRecencyRow{Model: row.Model, Days: index})
+		matrix := tuipages.ModelMatrixRow{Model: row.Model, Cost: row.Cost}
+		for day := 0; day < 30; day++ {
+			value := float64((index + 1) * (day + 1))
+			switch index {
+			case 0:
+				if day == 10 {
+					value *= 8
+				}
+			case 1:
+				value = float64((index + 1) * (30 - day))
+			case 2:
+				if day >= 10 && day <= 14 {
+					value = 0
+				}
+			}
+			matrix.Values = append(matrix.Values, value)
+		}
+		data.Matrix.Rows = append(data.Matrix.Rows, matrix)
+	}
+	for day := 0; day < 30; day++ {
+		data.Matrix.Dates = append(data.Matrix.Dates, time.Date(2026, time.July, 3+day, 0, 0, 0, 0, time.UTC).Format("2006-01-02"))
+	}
+	data.Unpriced = []tuipages.ModelUnpricedRow{{Model: "model-10", Tokens: 50_000_000}, {Model: "model-11", Tokens: 40_000_000}}
+	return data
 }
 
 func quest147LedgerPeriodsFrameData() tuipages.Data {
