@@ -52,6 +52,20 @@ func TestRenderSessionsListBoundsRowsAndProjectOptions(t *testing.T) {
 	}
 }
 
+func TestRenderSessionsSurfacesPromptLoadingWarning(t *testing.T) {
+	data := SessionPageData{
+		IndexAvailable: true,
+		Sessions:       []historystore.CatalogSession{{SessionID: "ses_warning", Provider: history.ProviderCodex, Project: "tokenomnom", Preview: "first prompt"}},
+		PromptPages: map[string]SessionPromptPage{
+			"ses_warning": {Warning: "Session prompts are unavailable; the indexed session overview is still available."},
+		},
+	}
+	view := RenderSessions(testRender(), data, SessionViewState{DetailID: "ses_warning", ViewportWidth: 120, ViewportHeight: 40}, 70, 40)
+	if !strings.Contains(view, "Session prompts are unavailable") || strings.Contains(view, "No indexed prompts in this session.") {
+		t.Fatalf("prompt warning was lost or treated as empty data:\n%s", view)
+	}
+}
+
 func TestProjectOptionsPreserveQueryKeysWhileCleaningLabels(t *testing.T) {
 	options := ProjectOptionsFromKeys([]string{"  spaced  ", ""})
 	if len(options) != 2 || options[0].Key != "  spaced  " || options[0].Label != "spaced" || options[1].Key != "" || options[1].Label != "unknown" {

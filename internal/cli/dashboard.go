@@ -406,7 +406,9 @@ func loadDashboardHistoryWithCost(cmd *cobra.Command, path string, request tui.R
 			Role: "user", Source: historystore.CatalogSourceAny,
 		})
 		if promptErr != nil {
-			warnings = append(warnings, "Session prompts are unavailable; the indexed session overview is still available.")
+			promptWarning := "Session prompts are unavailable; the indexed session overview is still available."
+			warnings = append(warnings, promptWarning)
+			promptPages = map[string]tuipages.SessionPromptPage{request.SessionDetailID: {Warning: promptWarning}}
 		} else {
 			presentHistoryPromptPage(&prompts, location)
 			promptPage := tuipages.SessionPromptPage{

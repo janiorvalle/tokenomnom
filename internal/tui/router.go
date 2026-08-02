@@ -356,7 +356,7 @@ func updateSessionsRequestWithContext(context PageContext, key string) (Request,
 				return request, false
 			}
 			prompts := data.PromptPages[session.SessionID]
-			maxOffset := tuipages.SessionDetailMaxOffsetForViewportWithPrompts(context.Render, session, data.Costs[session.SessionID], prompts.Prompts, prompts.HasMore, context.Width, context.Height, data.Location, context.Request.Width, context.Request.Height)
+			maxOffset := tuipages.SessionDetailMaxOffsetForViewportWithPromptPage(context.Render, session, data.Costs[session.SessionID], prompts, context.Width, context.Height, data.Location, context.Request.Width, context.Request.Height)
 			nextOffset := request.SessionDetailOffset
 			switch key {
 			case "up":

@@ -32,6 +32,7 @@ type SessionPrompt struct {
 type SessionPromptPage struct {
 	Prompts []SessionPrompt
 	HasMore bool
+	Warning string
 }
 
 // SessionModel is one model/provider split from history cost attribution.

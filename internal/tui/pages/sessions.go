@@ -86,7 +86,7 @@ func RenderSessions(render theme.Context, data SessionPageData, state SessionVie
 					promptPages = state.PromptPages
 				}
 				prompts := promptPages[session.SessionID]
-				return RenderSessionDetailForViewportWithPrompts(render, session, costs[session.SessionID], prompts.Prompts, prompts.HasMore, width, height, data.Location, state.DetailOffset, state.ViewportWidth, state.ViewportHeight)
+				return renderSessionDetailForViewportWithPromptPage(render, session, costs[session.SessionID], prompts, width, height, data.Location, state.DetailOffset, state.ViewportWidth, state.ViewportHeight)
 			}
 		}
 	}

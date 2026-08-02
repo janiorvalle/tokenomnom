@@ -17,6 +17,7 @@ type sessionDetailRenderOptions struct {
 	showPrompts     bool
 	prompts         []SessionPrompt
 	promptsHaveMore bool
+	promptWarning   string
 	footer          string
 	notices         []string
 	cost            SessionCost
@@ -40,8 +41,12 @@ func RenderSessionDetailForViewport(render theme.Context, session historystore.C
 // RenderSessionDetailForViewportWithPrompts adds the indexed prompt list to a
 // session detail without making the renderer read from the history store.
 func RenderSessionDetailForViewportWithPrompts(render theme.Context, session historystore.CatalogSession, cost SessionCost, prompts []SessionPrompt, promptsHaveMore bool, width, height int, location *time.Location, offset, viewportWidth, viewportHeight int) string {
+	return renderSessionDetailForViewportWithPromptPage(render, session, cost, SessionPromptPage{Prompts: prompts, HasMore: promptsHaveMore}, width, height, location, offset, viewportWidth, viewportHeight)
+}
+
+func renderSessionDetailForViewportWithPromptPage(render theme.Context, session historystore.CatalogSession, cost SessionCost, promptPage SessionPromptPage, width, height int, location *time.Location, offset, viewportWidth, viewportHeight int) string {
 	return renderSessionDetail(render, session, width, height, location, offset, sessionDetailRenderOptions{
-		footer: "esc back to sessions", cost: cost, showPrompts: true, prompts: prompts, promptsHaveMore: promptsHaveMore,
+		footer: "esc back to sessions", cost: cost, showPrompts: true, prompts: promptPage.Prompts, promptsHaveMore: promptPage.HasMore, promptWarning: promptPage.Warning,
 		wide: viewportWidth >= 160 && (viewportHeight >= 50 || viewportHeight == 0 && height >= 50),
 	})
 }
@@ -101,8 +106,14 @@ func SessionDetailMaxOffsetForViewport(render theme.Context, session historystor
 // SessionDetailMaxOffsetForViewportWithPrompts mirrors the prompt-aware
 // renderer used when Sessions opens a full detail page.
 func SessionDetailMaxOffsetForViewportWithPrompts(render theme.Context, session historystore.CatalogSession, cost SessionCost, prompts []SessionPrompt, promptsHaveMore bool, width, height int, location *time.Location, viewportWidth, viewportHeight int) int {
+	return SessionDetailMaxOffsetForViewportWithPromptPage(render, session, cost, SessionPromptPage{Prompts: prompts, HasMore: promptsHaveMore}, width, height, location, viewportWidth, viewportHeight)
+}
+
+// SessionDetailMaxOffsetForViewportWithPromptPage mirrors the prompt-aware
+// renderer while preserving prompt-loading failures in the scroll model.
+func SessionDetailMaxOffsetForViewportWithPromptPage(render theme.Context, session historystore.CatalogSession, cost SessionCost, promptPage SessionPromptPage, width, height int, location *time.Location, viewportWidth, viewportHeight int) int {
 	options := sessionDetailRenderOptions{footer: "esc back to sessions", cost: cost,
-		showPrompts: true, prompts: prompts, promptsHaveMore: promptsHaveMore,
+		showPrompts: true, prompts: promptPage.Prompts, promptsHaveMore: promptPage.HasMore, promptWarning: promptPage.Warning,
 		wide: viewportWidth >= 160 && (viewportHeight >= 50 || viewportHeight == 0 && height >= 50)}
 	if options.wide {
 		return max(0, wideSessionDetailLineCount(render, session, width, location, options)-height)
@@ -186,7 +197,9 @@ func sessionDetailLines(render theme.Context, session historystore.CatalogSessio
 	}
 	if options.showPrompts {
 		lines = append(lines, "", render.Palette.Header().Render("PROMPTS"))
-		if len(options.prompts) == 0 {
+		if options.promptWarning != "" {
+			lines = append(lines, render.Palette.Warning().Render(truncate(options.promptWarning, width)))
+		} else if len(options.prompts) == 0 {
 			lines = append(lines, render.Palette.Subtle().Render("No indexed prompts in this session."))
 		}
 		for _, prompt := range options.prompts {
@@ -242,7 +255,9 @@ func wideFirstPromptLines(render theme.Context, session historystore.CatalogSess
 	}
 	lines = append(lines, strings.Split(indentWrapped(preview, max(1, width-2)), "\n")...)
 	lines = append(lines, "", pageSectionTitle(render, "PROMPTS", width))
-	if len(options.prompts) == 0 {
+	if options.promptWarning != "" {
+		lines = append(lines, render.Palette.Warning().Render(truncate(options.promptWarning, width)))
+	} else if len(options.prompts) == 0 {
 		lines = append(lines, render.Palette.Subtle().Render("No indexed prompts in this session."))
 	}
 	for _, prompt := range options.prompts {
