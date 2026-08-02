@@ -325,6 +325,60 @@ func TestLedgerEmptyMonthDoesNotRenderAnalyticsRows(t *testing.T) {
 	}
 }
 
+func TestLedgerDefaultsToLatestActiveMonth(t *testing.T) {
+	data := Data{Available: true, Zoom: ZoomMonth, Year: 2026, Rows: []Row{
+		{Key: "2026-12", Label: "Dec 2026"},
+		{Key: "2026-07", Label: "Jul 2026", Sessions: 2, Codex: ProviderTotals{Tokens: 200}},
+		{Key: "2026-06", Label: "Jun 2026", Sessions: 1, Codex: ProviderTotals{Tokens: 100}},
+	}}
+	if selected := SelectedIndex(data, State{Zoom: ZoomMonth, Year: 2026, Cursor: -1}); selected != 1 {
+		t.Fatalf("default month selection = %d, want latest active row 1", selected)
+	}
+}
+
+func TestLedgerEmptyMonthShowsHonestPeriodAndChartStates(t *testing.T) {
+	months := make([]LedgerMonth, 0, 12)
+	for month := 1; month <= 12; month++ {
+		value := LedgerMonth{Key: fmt.Sprintf("2026-%02d", month), Label: time.Date(2026, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Format("Jan 2006")}
+		if month == 7 {
+			value.Codex = ProviderTotals{Cost: pricing.Money(2_000_000_000), Tokens: 2_000_000, PricedTokens: 2_000_000}
+		}
+		months = append(months, value)
+	}
+	data := Data{Available: true, Zoom: ZoomDay, Month: "2026-12", Analytics: LedgerAnalytics{Months: months}}
+	state := State{Zoom: ZoomDay, Month: "2026-12", Cursor: -1}
+
+	period := renderPeriodTableBand(ledgerTestRender(), data, state, 156, 17, true)
+	if !strings.Contains(period, "no indexed activity in this period") || strings.Contains(period, "PERIOD          SESSIONS") {
+		t.Fatalf("empty day period pane did not show its honest state:\n%s", period)
+	}
+	chart := renderSpendByMonth(ledgerTestRender(), data, state, 215, 16)
+	if !strings.Contains(chart, "no indexed activity in this period") || strings.Contains(chart, "avg $0.00") || strings.Contains(chart, "··") {
+		t.Fatalf("empty day chart was not suppressed:\n%s", chart)
+	}
+	selected := selectedLedgerRow(data, state)
+	if selected.Key != "2026-12" {
+		t.Fatalf("empty day selected row = %+v, want the requested month", selected)
+	}
+	activeDays, averageCost, peakCost, peakDay, _, _ := selectedLedgerMetrics(data, state, selected)
+	if activeDays != 0 || averageCost != 0 || peakCost != 0 || peakDay != "" {
+		t.Fatalf("empty day metrics = %d, %d, %d, %q, want zero values", activeDays, averageCost, peakCost, peakDay)
+	}
+}
+
+func TestLedgerChartKeepsCostOnlyAndSessionOnlyMonths(t *testing.T) {
+	for _, month := range []LedgerMonth{
+		{Key: "2026-07", Label: "Jul 2026", Sessions: 1},
+		{Key: "2026-07", Label: "Jul 2026", Codex: ProviderTotals{Cost: pricing.Money(1_000_000)}},
+	} {
+		data := Data{Available: true, Zoom: ZoomYear, Analytics: LedgerAnalytics{Months: []LedgerMonth{month}}}
+		chart := renderSpendByMonth(ledgerTestRender(), data, State{Zoom: ZoomYear, Cursor: -1}, 90, 12)
+		if strings.Contains(chart, ledgerEmptyPeriodMessage) {
+			t.Fatalf("month with activity was rendered empty: %+v\n%s", month, chart)
+		}
+	}
+}
+
 func TestLedgerChartUsesResolvedPeriodAnchors(t *testing.T) {
 	data := Data{
 		Year: 2026, Month: "2026-02",
