@@ -821,10 +821,7 @@ func TestDashboardVaultBundlesGroupsManifestAndReportsMissingArchives(t *testing
 func TestDashboardVaultBundlesReturnsArchiveStatErrors(t *testing.T) {
 	root := t.TempDir()
 	databasePath := filepath.Join(root, store.DatabaseName)
-	vaultPath := filepath.Join(root, "vault-file")
-	if err := os.WriteFile(vaultPath, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	vaultPath := "vault\x00"
 	database, err := store.Open(databasePath)
 	if err != nil {
 		t.Fatal(err)
