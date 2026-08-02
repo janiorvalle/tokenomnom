@@ -1,15 +1,28 @@
-FRAME: Heatmap floor · 80x24
-Source: internal/tui/pages/heatmap_test.go::TestQuest149HeatmapReferenceFrames
-Command: go test ./internal/tui/pages -run TestQuest149HeatmapReferenceFrames -count=1 -v
+FRAME: Heatmap full-window 80x24
+Source: internal/tui/layout_test.go::TestQuest149HeatmapReferenceFrames
+Command: go test ./internal/tui -run TestQuest149HeatmapReferenceFrames -count=1 -v
 
-    Jan  Feb Mar Apr May  Jun Jul Aug  Sep Oct  Nov Dec
-SUN  ·█▓▒▒·█▓▒·█▓▒▒·█▓█▓▒·██▓▒·▒·█▓▓▒·█▓▓▒·█·█▓▒▒·█▓▒▓▒·█
-MON  ▒·█▓▓▒·█▓▒·█▓▓▒·█·█▓▒▒·█▓▒▓▒·██▓▒·██▓▒·▒·█▓▓▒·█▓█▓▒·
-TUE  ▓▒·██▓▒·█▓▒·██▓▒·▒·█▓▓▒·█▓█▓▒··█▓▒▒·█▓▒▓▒·██▓▒·▒·█▓▒
-WED  █▓▒··█▓▒·█▓▒▒·█▓▒▓▒·██▓▒·▒·█▓▒▒·█▓▓▒·█▓█▓▒··█▓▒▓▒·█▓
-THU ▒·█▓▒▒·█▓▒·█▓▓▒·█▓█▓▒··█▓▒▓▒·█▓▓▒·██▓▒·▒·█▓▒▒·█▓█▓▒·█
-FRI ▓▒·█▓▓▒·█▓▒·██▓▒·▒·█▓▒▒·█▓█▓▒·██▓▒··█▓▒▓▒·█▓▓▒·█·█▓▒
-SAT █▓▒·██▓▒·█▓▒··█▓▒▓▒·█▓▓▒·█·█▓▒▒·█▓▒▒·█▓█▓▒·██▓▒·▒·█▓
-Less ·░▒▓█ More  ·  cost
-range Jan 2026 - Dec 2026
-281 active days · total $514.65 · busiest 2026-12-31  $3.65 · longest streak 6
+ tokenomnom  /  HEATMAP                               FLOOR 80x24  ·  1-8 pages
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+ ──────────────────────────────────────────────────────────────────────────────
+     Jan  Feb Mar Apr May  Jun Jul Aug  Sep Oct  Nov Dec
+ SUN  ·█▓▒▒·█▓▒·█▓▒▒·█▓█▓▒·██▓▒·▒·█▓▓▒·█▓▓▒·█·█▓▒▒·█▓▒▓▒·█
+ MON  ▒·█▓▓▒·█▓▒·█▓▓▒·█·█▓▒▒·█▓▒▓▒·██▓▒·██▓▒·▒·█▓▓▒·█▓█▓▒·
+ TUE  ▓▒·██▓▒·█▓▒·██▓▒·▒·█▓▓▒·█▓█▓▒··█▓▒▒·█▓▒▓▒·██▓▒·▒·█▓▒
+ WED  █▓▒··█▓▒·█▓▒▒·█▓▒▓▒·██▓▒·▒·█▓▒▒·█▓▓▒·█▓█▓▒··█▓▒▓▒·█▓
+ THU ▒·█▓▒▒·█▓▒·█▓▓▒·█▓█▓▒··█▓▒▓▒·█▓▓▒·██▓▒·▒·█▓▒▒·█▓█▓▒·█
+ FRI ▓▒·█▓▓▒·█▓▒·██▓▒·▒·█▓▒▒·█▓█▓▒·██▓▒··█▓▒▓▒·█▓▓▒·█·█▓▒
+ SAT █▓▒·██▓▒·█▓▒··█▓▒▓▒·█▓▓▒·█·█▓▒▒·█▓▒▒·█▓█▓▒·██▓▒·▒·█▓
+ Less ·░▒▓█ More  ·  cost
+ range Jan 2026 - Dec 2026
+ 281 active days · total $514.65 · busiest 2026-12-31  $3.65 · longest streak 6
+
+
+
+
+
+
+
+ ──────────────────────────────────────────────────────────────────────────────
+                            ● idle  ·  last sync now  ·  2 sources  ·  2 models
+ API list-price equivalents, not actual bills · ? help · q quit   80x24 · floor

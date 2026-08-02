@@ -58,10 +58,81 @@ func TestRenderHeatmapWideUsesProfilesAndHasNoVoids(t *testing.T) {
 	}
 }
 
+func TestRenderHeatmapWideKeepsFullYearAndCompleteSummary(t *testing.T) {
+	render := theme.Context{Mode: theme.Plain, Width: 192, Palette: theme.NewPalette(nil)}
+	view := RenderHeatmap(render, heatmapTestData(), 168, 59)
+	grid := strings.Join(strings.Split(view, "\n")[:12], "\n")
+	for _, fragment := range []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "range Jan 2026 - Dec 2026", "$84.00", "24 active", "Dec 2026", "6-day streak"} {
+		if !strings.Contains(grid, fragment) {
+			t.Errorf("wide year grid missing %q:\n%s", fragment, grid)
+		}
+	}
+	if strings.Contains(grid, "showing ") {
+		t.Fatalf("wide year grid should not clip a full-year fixture:\n%s", grid)
+	}
+	if strings.Count(grid, "MONTH Σ") != 1 {
+		t.Fatalf("wide year grid has a duplicated summary header:\n%s", grid)
+	}
+	for _, fragment := range []string{"24 activ ", "6 streak"} {
+		if strings.Contains(grid, fragment) {
+			t.Fatalf("wide year grid truncated summary label %q:\n%s", fragment, grid)
+		}
+	}
+}
+
+func TestRenderHeatmapPanesKeepRoleContentDistinct(t *testing.T) {
+	data := heatmapTestData()
+	_, days := materializeHeatmapDays(data)
+	stats := calculateHeatmapStats(days, data.UsesTokens)
+	panes := map[string]string{
+		"weekday profile":     renderWeekdayProfile(data, days, 46),
+		"streaks and records": renderStreaksAndRecords(data, days, stats, 46, false),
+		"month table":         renderMonthTable(data, days, 46),
+	}
+	if !strings.Contains(panes["streaks and records"], "RECENT STREAK HISTORY") {
+		t.Fatalf("streak pane does not label its clipped history:\n%s", panes["streaks and records"])
+	}
+	if strings.Contains(panes["month table"], "\n  —") {
+		t.Fatalf("month pane ends with an unlabeled placeholder row:\n%s", panes["month table"])
+	}
+	if got := len(strings.Split(renderMonthTable(data, days, 20), "\n")); got != 19 {
+		t.Fatalf("short month pane rendered %d content rows, want 19", got)
+	}
+	compact := renderStreaksAndRecords(data, days, stats, 20, true)
+	if strings.Index(compact, "RECENT STREAK HISTORY") > strings.Index(compact, "MONTH TABLE") || strings.Contains(compact, "\n  —") {
+		t.Fatalf("compact streak and month sections are not ordered and filled:\n%s", compact)
+	}
+	seen := map[string]string{}
+	for name, content := range panes {
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || line == "—" {
+				continue
+			}
+			if previous, ok := seen[line]; ok {
+				t.Fatalf("%s repeats %q from %s", name, line, previous)
+			}
+			seen[line] = name
+		}
+	}
+}
+
+func TestRenderHeatmapMonthTableLabelsActiveMetric(t *testing.T) {
+	data := heatmapTestData()
+	_, days := materializeHeatmapDays(data)
+	if view := renderMonthTable(data, days, 46); !strings.Contains(view, "MONTH       COST") || strings.Contains(view, "COST / TOKENS") {
+		t.Fatalf("cost month table header is not metric-specific:\n%s", view)
+	}
+	data.UsesTokens = true
+	if view := renderMonthTable(data, days, 46); !strings.Contains(view, "MONTH       TOKENS") || strings.Contains(view, "COST / TOKENS") {
+		t.Fatalf("token month table header is not metric-specific:\n%s", view)
+	}
+}
+
 func TestRenderHeatmapStandardKeepsLatestActivityAndMonth(t *testing.T) {
 	render := theme.Context{Mode: theme.Plain, Width: 120, Palette: theme.NewPalette(nil)}
 	view := RenderHeatmap(render, heatmapTestData(), 96, 33)
-	for _, fragment := range []string{"MONTH Σ", "Dec 2026", "Dec 31"} {
+	for _, fragment := range []string{"MONTH Σ", "Dec 2026", "RECENT DAILY ACTIVITY", "Dec 31"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("standard heatmap dropped latest %q:\n%s", fragment, view)
 		}

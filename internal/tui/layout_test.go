@@ -3,8 +3,12 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 func TestLayoutTiersUseContractBoundaries(t *testing.T) {
@@ -159,4 +163,50 @@ func TestQuest145FoundationFrames(t *testing.T) {
 		}
 		t.Logf("FRAME: foundation %dx%d\nSource: internal/tui/layout_test.go::TestQuest145FoundationFrames\nCommand: go test ./internal/tui -run TestQuest145FoundationFrames -count=1 -v\n\n%s", size.width, size.height, view)
 	}
+}
+
+func TestQuest149HeatmapReferenceFrames(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
+		model := realisticEvidenceModel()
+		model.request.Width, model.request.Height = size.width, size.height
+		model.render.Width = size.width
+		model.router.SelectIndex(int(HeatmapTab))
+		pageRender := model.render
+		pageRender.Width = size.width
+		model.snapshot.Views[HeatmapTab] = tuipages.RenderHeatmap(
+			pageRender,
+			heatmapEvidenceData(),
+			ContentWidth(size.width),
+			ContentHeightFor(size.width, size.height),
+		)
+
+		view := model.View()
+		lines := strings.Split(view, "\n")
+		if len(lines) != size.height {
+			t.Fatalf("%dx%d rendered %d rows", size.width, size.height, len(lines))
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("%dx%d row %d width=%d", size.width, size.height, index+1, width)
+			}
+		}
+		t.Logf("FRAME: Heatmap full-window %dx%d\nSource: internal/tui/layout_test.go::TestQuest149HeatmapReferenceFrames\nCommand: go test ./internal/tui -run TestQuest149HeatmapReferenceFrames -count=1 -v\n\n%s", size.width, size.height, view)
+	}
+}
+
+func heatmapEvidenceData() tuipages.HeatmapData {
+	from := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.December, 31, 0, 0, 0, 0, time.UTC)
+	days := make([]tuipages.HeatmapDay, 0, 365)
+	for date := from; !date.After(to); date = date.AddDate(0, 0, 1) {
+		day := tuipages.HeatmapDay{Date: date}
+		if date.Day()%4 != 0 {
+			day.TotalTokens = int64(date.YearDay() * 1_000)
+			day.Cost = pricing.Money(int64(date.YearDay()) * 10_000_000)
+			day.PricedTokens = day.TotalTokens
+			day.Level = date.Day()%4 + 1
+		}
+		days = append(days, day)
+	}
+	return tuipages.HeatmapData{Window: tuipages.HeatmapWindow{From: from, To: to}, Days: days}
 }

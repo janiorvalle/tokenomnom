@@ -72,6 +72,12 @@ type heatmapWeekday struct {
 	heatmapAggregate
 }
 
+type heatmapStreak struct {
+	Start time.Time
+	End   time.Time
+	Days  int
+}
+
 // RenderHeatmap renders the heatmap page into an exact width and height. The
 // render context keeps the terminal width so this package can distinguish the
 // shell's floor, standard, and wide+tall compositions without importing the
@@ -109,7 +115,7 @@ func RenderHeatmap(render theme.Context, data HeatmapData, width, height int) st
 
 	panes := []heatmapPane{
 		{Title: "WEEKDAY PROFILE", Content: renderWeekdayProfile(data, days, max(1, b2Height-1))},
-		{Title: "STREAKS & RECORDS", Content: renderStreaksAndRecords(data, days, stats, max(1, b2Height-1))},
+		{Title: "STREAKS & RECORDS", Content: renderStreaksAndRecords(data, days, stats, max(1, b2Height-1), !wideTall)},
 	}
 	if wideTall {
 		panes = append(panes, heatmapPane{Title: "MONTH TABLE", Content: renderMonthTable(data, days, max(1, b2Height-1))})
@@ -188,11 +194,15 @@ func renderHeatmapGrid(render theme.Context, data HeatmapData, window HeatmapWin
 	labelWidth := 3
 	summaryWidth := 0
 	if withSummaryColumn {
-		summaryWidth = 8
+		summaryWidth = heatmapSummaryWidth(data, days, stats)
 	}
-	gridWidth := max(cellWidth, width-labelWidth-1-summaryWidth-1)
 	weekStartDate := weekStart(window.From)
 	weekCount := daysBetween(weekStartDate, weekEnd(window.To))/7 + 1
+	gridWidth := max(cellWidth, width-labelWidth-1-summaryWidth-1)
+	if cellWidth > 2 && weekCount*cellWidth > gridWidth {
+		cellWidth = 2
+		gridWidth = max(cellWidth, width-labelWidth-1-summaryWidth-1)
+	}
 	visibleWeeks := max(1, gridWidth/cellWidth)
 	startWeek := max(0, weekCount-visibleWeeks)
 	visibleWeeks = min(weekCount, visibleWeeks)
@@ -280,14 +290,22 @@ func heatmapGridSummary(data HeatmapData, days []HeatmapDay, stats heatmapStats)
 	}
 	value := heatmapAggregateValue(month, data.UsesTokens)
 	return []string{
-		"MONTH Σ",
 		value,
 		fmt.Sprintf("%d active", monthActiveDays),
 		monthLabel,
-		fmt.Sprintf("%d streak", stats.Longest),
+		fmt.Sprintf("%d-day streak", stats.Longest),
+		"",
 		"",
 		"",
 	}
+}
+
+func heatmapSummaryWidth(data HeatmapData, days []HeatmapDay, stats heatmapStats) int {
+	width := lipgloss.Width("6-day streak")
+	for _, value := range append([]string{"MONTH Σ"}, heatmapGridSummary(data, days, stats)...) {
+		width = max(width, lipgloss.Width(value))
+	}
+	return max(13, width)
 }
 
 func heatmapCell(render theme.Context, day HeatmapDay, usesTokens bool, cellWidth int) string {
@@ -317,15 +335,26 @@ func renderWeekdayProfile(data HeatmapData, days []HeatmapDay, height int) strin
 			weekdays[index].ActiveDays++
 		}
 	}
+	var totalMetric int64
+	for _, day := range days {
+		totalMetric += heatmapMetricValue(day, data.UsesTokens)
+	}
 	lines := []string{"DAY  ACTIVE  " + heatmapMetricLabel(data.UsesTokens)}
 	for _, weekday := range weekdays {
 		lines = append(lines, fmt.Sprintf("%-3s %3d  %s", weekday.Name, weekday.ActiveDays, heatmapAggregateValue(weekday.heatmapAggregate, data.UsesTokens)))
 	}
+	if height >= 24 {
+		lines = append(lines, "", "WEEKDAY SHARE", "DAY  SHARE  "+heatmapMetricLabel(data.UsesTokens))
+		for _, weekday := range weekdays {
+			metric := heatmapAggregateMetricValue(weekday.heatmapAggregate, data.UsesTokens)
+			lines = append(lines, fmt.Sprintf("%-3s %6s  %s", weekday.Name, heatmapPercent(metric, totalMetric), heatmapAggregateValue(weekday.heatmapAggregate, data.UsesTokens)))
+		}
+	}
 	lines = append(lines, "", "RECENT DAILY ACTIVITY")
-	return heatmapPaneContent(lines, days, data.UsesTokens, height)
+	return heatmapPaneContent(lines, recentHeatmapLines(days, data.UsesTokens, max(0, height)), height)
 }
 
-func renderStreaksAndRecords(data HeatmapData, days []HeatmapDay, stats heatmapStats, height int) string {
+func renderStreaksAndRecords(data HeatmapData, days []HeatmapDay, stats heatmapStats, height int, includeCompactMonthTable bool) string {
 	lines := []string{
 		"BUSIEST DAY     " + heatmapBusiestText(stats, data.UsesTokens),
 		fmt.Sprintf("LONGEST STREAK  %s", pluralHeatmapCount(stats.Longest, "day", "days")),
@@ -333,40 +362,70 @@ func renderStreaksAndRecords(data HeatmapData, days []HeatmapDay, stats heatmapS
 		fmt.Sprintf("ACTIVE / TOTAL   %d / %d days", stats.ActiveDays, stats.TotalDays),
 		"METRIC           " + heatmapMetricLabel(data.UsesTokens),
 		"",
-		"MONTH TABLE",
-		"MONTH       VALUE             ACTIVE",
+		"RECENT STREAK HISTORY",
+		"START - END          LENGTH",
 	}
-	months := calculateHeatmapMonths(days)
-	monthLines := make([]string, 0, len(months))
-	for _, month := range months {
-		monthLines = append(monthLines, fmt.Sprintf("%-10s %-16s %3dd", month.Date.Format("Jan 2006"), heatmapAggregateValue(month.heatmapAggregate, data.UsesTokens), month.ActiveDays))
+	streakLines := make([]string, 0)
+	for _, streak := range calculateHeatmapStreaks(days) {
+		streakLines = append(streakLines, fmt.Sprintf("%s - %-8s  %s", streak.Start.Format("Jan 02"), streak.End.Format("Jan 02"), pluralHeatmapCount(streak.Days, "day", "days")))
 	}
-	lines = appendLatestHeatmapLines(lines, monthLines, max(1, height-1))
-	return heatmapPaneContent(lines, days, data.UsesTokens, height)
+	if includeCompactMonthTable {
+		contentHeight := max(1, height-1)
+		months := calculateHeatmapMonths(days)
+		monthRows := min(3, len(months))
+		monthBlockHeight := 3 + monthRows
+		historyHeight := max(len(lines), contentHeight-monthBlockHeight)
+		lines = appendLatestHeatmapLines(lines, streakLines, historyHeight)
+		lines = append(lines, "", "MONTH TABLE", fmt.Sprintf("MONTH       %-16s ACTIVE", heatmapMetricLabel(data.UsesTokens)))
+		start := max(0, len(months)-monthRows)
+		for _, month := range months[start:] {
+			lines = append(lines, fmt.Sprintf("%-10s %-16s %3d", month.Date.Format("Jan 2006"), heatmapAggregateValue(month.heatmapAggregate, data.UsesTokens), month.ActiveDays))
+		}
+		return heatmapPaneContent(lines, nil, height)
+	}
+	return heatmapPaneContent(lines, streakLines, height)
 }
 
 func renderMonthTable(data HeatmapData, days []HeatmapDay, height int) string {
 	lines := []string{
-		"MONTH       COST / TOKENS     ACTIVE DAYS",
+		fmt.Sprintf("MONTH       %-16s ACTIVE DAYS", heatmapMetricLabel(data.UsesTokens)),
 	}
-	for _, month := range calculateHeatmapMonths(days) {
+	months := calculateHeatmapMonths(days)
+	for _, month := range months {
 		value := heatmapAggregateValue(month.heatmapAggregate, data.UsesTokens)
 		lines = append(lines, fmt.Sprintf("%-10s %-16s %3d", month.Date.Format("Jan 2006"), value, month.ActiveDays))
 	}
-	lines = append(lines, "", "DAILY ACTIVITY")
-	return heatmapPaneContent(lines, days, data.UsesTokens, height)
+	lines = append(lines, "", "MONTH SHARE", "MONTH       SHARE   "+heatmapMetricLabel(data.UsesTokens))
+	var totalMetric int64
+	for _, month := range months {
+		totalMetric += heatmapAggregateMetricValue(month.heatmapAggregate, data.UsesTokens)
+	}
+	for _, month := range months {
+		metric := heatmapAggregateMetricValue(month.heatmapAggregate, data.UsesTokens)
+		lines = append(lines, fmt.Sprintf("%-10s %6s  %s", month.Date.Format("Jan 2006"), heatmapPercent(metric, totalMetric), heatmapAggregateValue(month.heatmapAggregate, data.UsesTokens)))
+	}
+	lines = append(lines, "", "MONTH PEAK", "MONTH       DAY        "+heatmapMetricLabel(data.UsesTokens))
+	for _, month := range months {
+		peak, ok := heatmapMonthPeak(days, month.Date, data.UsesTokens)
+		if !ok {
+			lines = append(lines, fmt.Sprintf("%-10s %-10s  —", month.Date.Format("Jan 2006"), "none"))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%-10s %-10s  %s", month.Date.Format("Jan 2006"), peak.Date.Format("Jan 02"), heatmapMetricValueText(peak, data.UsesTokens)))
+	}
+	if len(months) > 0 {
+		lines = append(lines, "", fmt.Sprintf("WINDOW         %d months · %s - %s", len(months), months[0].Date.Format("Jan 2006"), months[len(months)-1].Date.Format("Jan 2006")))
+	}
+	return heatmapPaneContent(lines, nil, height)
 }
 
-func heatmapPaneContent(lines []string, days []HeatmapDay, usesTokens bool, height int) string {
-	height = max(1, height-1)
-	activity := recentHeatmapLines(days, usesTokens, max(0, height-len(lines)))
-	for _, line := range activity {
-		if len(lines) >= height {
-			break
-		}
-		lines = append(lines, line)
+func heatmapPaneContent(lines, supplemental []string, height int) string {
+	contentHeight := max(1, height-1)
+	lines = appendLatestHeatmapLines(lines, supplemental, contentHeight)
+	if len(lines) > contentHeight {
+		lines = lines[:contentHeight]
 	}
-	for len(lines) < height {
+	for len(lines) < contentHeight {
 		lines = append(lines, "  —")
 	}
 	return strings.Join(lines, "\n")
@@ -425,6 +484,49 @@ func calculateHeatmapMonths(days []HeatmapDay) []heatmapMonth {
 	return result
 }
 
+func calculateHeatmapStreaks(days []HeatmapDay) []heatmapStreak {
+	streaks := make([]heatmapStreak, 0)
+	var current heatmapStreak
+	for _, day := range days {
+		if !heatmapActive(day) {
+			if current.Days > 0 {
+				streaks = append(streaks, current)
+				current = heatmapStreak{}
+			}
+			continue
+		}
+		if current.Days == 0 || !day.Date.Equal(current.End.AddDate(0, 0, 1)) {
+			if current.Days > 0 {
+				streaks = append(streaks, current)
+			}
+			current = heatmapStreak{Start: day.Date, End: day.Date, Days: 1}
+			continue
+		}
+		current.End = day.Date
+		current.Days++
+	}
+	if current.Days > 0 {
+		streaks = append(streaks, current)
+	}
+	return streaks
+}
+
+func heatmapMonthPeak(days []HeatmapDay, month time.Time, usesTokens bool) (HeatmapDay, bool) {
+	var peak HeatmapDay
+	found := false
+	for _, day := range days {
+		if day.Date.Year() != month.Year() || day.Date.Month() != month.Month() {
+			continue
+		}
+		value := heatmapMetricValue(day, usesTokens)
+		if value > 0 && (!found || value > heatmapMetricValue(peak, usesTokens)) {
+			peak = day
+			found = true
+		}
+	}
+	return peak, found
+}
+
 func pricedTokensFor(days []HeatmapDay) int64 {
 	var total int64
 	for _, day := range days {
@@ -441,6 +543,20 @@ func heatmapAggregateValue(value heatmapAggregate, usesTokens bool) string {
 		return "—"
 	}
 	return formatHeatmapUSD(value.Cost)
+}
+
+func heatmapAggregateMetricValue(value heatmapAggregate, usesTokens bool) int64 {
+	if usesTokens {
+		return value.Tokens
+	}
+	return int64(value.Cost)
+}
+
+func heatmapPercent(value, total int64) string {
+	if total <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%5.1f%%", float64(value)*100/float64(total))
 }
 
 func heatmapMetricValueText(day HeatmapDay, usesTokens bool) string {
