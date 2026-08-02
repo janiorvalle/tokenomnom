@@ -131,20 +131,8 @@ func TestScheduledSyncIsQuietAndSkipsHeldStore(t *testing.T) {
 	}
 }
 
-func TestScheduledHistoryIndexIsOptInDueAndReportSyncNeverRunsIt(t *testing.T) {
-	paths := setupMaintenanceTest(t, false, filepath.Join(t.TempDir(), "vault"))
-	configPath := filepath.Join(paths.configDir, "config.toml")
-	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.WriteString("[history]\nauto_index = true\nauto_interval = \"24h\"\nproviders = [\"codex\"]\n"); err != nil {
-		file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
+func TestScheduledHistoryIndexRunsWhenEnabledAndReportSyncNeverRunsIt(t *testing.T) {
+	paths := setupMaintenanceTestWithHistory(t, false, filepath.Join(t.TempDir(), "vault"), "auto_index = true\nproviders = [\"codex\"]\n")
 	writeTextFixture(t, filepath.Join(paths.codexDir, "sessions", "history.jsonl"), historyCodexFixture("scheduled-history", "scheduled history prompt"))
 	historyPath := filepath.Join(paths.stateDir, historystore.DatabaseName)
 	executeMaintenanceCommand(t, paths, "summary")
@@ -267,6 +255,10 @@ type maintenancePaths struct {
 }
 
 func setupMaintenanceTest(t *testing.T, auto bool, vaultDir string) maintenancePaths {
+	return setupMaintenanceTestWithHistory(t, auto, vaultDir, "auto_index = false\n")
+}
+
+func setupMaintenanceTestWithHistory(t *testing.T, auto bool, vaultDir, historyConfig string) maintenancePaths {
 	t.Helper()
 	root := t.TempDir()
 	paths := maintenancePaths{
@@ -280,6 +272,9 @@ func setupMaintenanceTest(t *testing.T, auto bool, vaultDir string) maintenanceP
 		t.Fatal(err)
 	}
 	config := "[backup]\nenabled = false\n[vault]\ndir = " + strconvQuote(vaultDir) + "\nmin_age = \"0s\"\nauto = " + map[bool]string{true: "true", false: "false"}[auto] + "\nauto_interval = \"24h\"\n"
+	if historyConfig != "" {
+		config += "[history]\n" + historyConfig
+	}
 	if err := os.WriteFile(filepath.Join(paths.configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

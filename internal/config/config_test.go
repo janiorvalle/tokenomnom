@@ -13,7 +13,7 @@ func TestDefaults(t *testing.T) {
 	if got.Reports.Color != "auto" || !got.Reports.Charts || got.Reports.DailyLast != 30 ||
 		got.Backup.Enabled != true || got.Backup.Interval != "24h" || got.Backup.Keep != 14 ||
 		got.Vault.MinAge != "168h" || !got.Vault.Auto || got.Vault.AutoInterval != "24h" ||
-		got.History.AutoIndex || got.History.IndexAssistant || got.History.AutoInterval != "24h" || strings.Join(got.History.Providers, ",") != "codex,claude" ||
+		!got.History.AutoIndex || got.History.IndexAssistant || got.History.AutoInterval != "1h" || strings.Join(got.History.Providers, ",") != "codex,claude" ||
 		got.Schedule.Interval != "24h" || strings.Join(got.Vault.Providers, ",") != "codex,claude" {
 		t.Fatalf("unexpected defaults: %#v", got)
 	}
@@ -97,6 +97,23 @@ interval = "6h"
 		strings.Join(loaded.Config.Vault.Providers, ",") != "claude" || loaded.Config.Vault.Auto ||
 		loaded.Config.Vault.AutoInterval != "3h" || loaded.Config.Schedule.Interval != "6h" {
 		t.Fatalf("vault config = %#v", loaded.Config.Vault)
+	}
+}
+
+func TestExistingConfigWithoutHistoryAutoIndexRemainsOptIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[reports]\ncharts = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(LoadOptions{Path: path, LookupEnv: func(string) (string, bool) { return "", false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Found || loaded.Config.History.AutoIndex || loaded.Config.History.AutoInterval != "1h" {
+		t.Fatalf("legacy history defaults = %#v", loaded.Config.History)
+	}
+	if loaded.Sources[KeyHistoryAutoIndex] != existingHistoryOptInSource {
+		t.Fatalf("legacy history source = %q", loaded.Sources[KeyHistoryAutoIndex])
 	}
 }
 

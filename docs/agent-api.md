@@ -669,17 +669,20 @@ The scheduler is per-user: launchd on macOS, a systemd user timer on Linux,
 and Windows Task Scheduler on Windows. It runs the installed absolute binary
 as `sync --scheduled`; no daemon remains resident. Scheduled maintenance runs
 usage sync, due backup, due vault archive, then due history indexing. History
-indexing runs only when `history.auto_index = true`, after the usage process
-lock is released. Its failure is one bounded warning and does not make an
-otherwise successful scheduled usage sync exit nonzero.
+indexing is enabled by default with a one-hour interval; set
+`history.auto_index = false` to opt out. Existing config files that omit the
+key remain disabled until it is added explicitly. When enabled, indexing runs
+after the usage process lock is released. Its failure is one bounded warning
+and does not make an otherwise successful scheduled usage sync exit nonzero.
 
 ## Config Show
 
 `tokenomnom config show --format json` uses command `config`. `data.config`
 contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`,
 `history`, and `schedule` sections. `data.sources` maps every supported dotted key to
-`default`, `config`, an environment source, or `flag`; `path` is the resolved
-config path and `found` says whether the file existed.
+`default`, `config`, an environment source, `flag`, or the legacy
+`existing config (opt-in required)` state for an omitted history auto-index key;
+`path` is the resolved config path and `found` says whether the file existed.
 
 ## Sync
 

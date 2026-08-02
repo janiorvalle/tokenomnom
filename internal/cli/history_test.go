@@ -42,7 +42,7 @@ func TestHistoryStatusAndDoctorAbsentDoNotCreateIndex(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "not_indexed" || status.AutoIndexEnabled || status.AutoInterval != "24h" || strings.Join(status.Providers, ",") != "codex,claude" || status.NextDue != nil || status.SourceDriftAsOf == "" {
+	if status.Status != "not_indexed" || !status.AutoIndexEnabled || status.AutoInterval != "1h" || strings.Join(status.Providers, ",") != "codex,claude" || status.NextDue == nil || status.SourceDriftAsOf == "" {
 		t.Fatalf("history status = %+v", status)
 	}
 	historyPath := filepath.Join(stateDir, historystore.DatabaseName)
