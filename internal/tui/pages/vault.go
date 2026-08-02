@@ -489,8 +489,8 @@ func denseFactLines(render theme.Context, label, value string, valueStyle lipglo
 	return lines
 }
 
-func denseFillLine(render theme.Context, width int) string {
-	return fitLine(render.Palette.Border().Render("·"), width)
+func denseFillLine(_ theme.Context, width int) string {
+	return strings.Repeat(" ", max(1, width))
 }
 
 func denseFitRows(render theme.Context, rows []string, width, height int) []string {

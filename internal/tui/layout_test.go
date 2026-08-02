@@ -213,18 +213,9 @@ func heatmapEvidenceData() tuipages.HeatmapData {
 }
 
 func TestQuest151PageFramesExactFill(t *testing.T) {
-	model := loadedTestModel()
+	model := realisticEvidenceModel()
 	model.router = newRouter(NewVaultPage(), NewSystemPage())
-	model.snapshot.Vault = tuipages.VaultPageData{
-		Directory: "/tmp/tokenomnom-vault", Initialized: true, Format: "v1, none", Files: 42,
-		RawBytes: 12 * 1024 * 1024, StoredBytes: 4 * 1024 * 1024, RawSize: "12.0 MiB", StoredSize: "4.0 MiB", Ratio: "3.00x",
-		Verified: "yes · 2026-08-12T04:00:00Z", VerificationState: tuipages.FindingOK, LastArchive: "2026-08-12T03:00:00Z",
-		LastVerification: "2026-08-12T04:00:00Z", Reclaimable: "8.0 MiB",
-		Bundles: []tuipages.VaultBundle{
-			{Date: "2026-08-12", Files: 12, RawSize: "12.0 MiB", StoredSize: "4.0 MiB", Status: "ready"},
-			{Date: "2026-08-11", Files: 8, RawSize: "8.0 MiB", StoredSize: "3.0 MiB", Status: "ready"},
-		},
-	}
+	model.snapshot.Vault = quest151RichVaultFrameData()
 	pricingRows := make([]tuipages.PricingRow, 0, 18)
 	for index := 0; index < 18; index++ {
 		pricingRows = append(pricingRows, tuipages.PricingRow{
@@ -232,13 +223,8 @@ func TestQuest151PageFramesExactFill(t *testing.T) {
 			Status: "published", Effective: "always", Source: "embedded",
 		})
 	}
-	model.snapshot.System = tuipages.SystemPageData{
-		Findings: []tuipages.SystemFinding{{Name: "Codex", Value: "ready · 42 files", State: tuipages.FindingOK}, {Name: "History", Value: "ready · 44 sessions", State: tuipages.FindingOK}},
-		Warnings: []string{"One provider source is stale; run tokenomnom sync to refresh it."}, Pricing: pricingRows,
-		PricingDisclaimer: "Dollar figures are API list-price equivalents, not actual bills.",
-		Schedule:          tuipages.SystemSchedule{Installed: true, DefinitionExists: true, BinaryExists: true, Mechanism: "launchd", ConfiguredInterval: "24h", InstalledInterval: "24h"},
-		Sources:           []tuipages.SystemSource{{Name: "Codex", Files: 42, Size: "12.0 MiB", Exists: true}, {Name: "Claude", Files: 18, Size: "4.0 MiB", Exists: true}},
-	}
+	model.snapshot.System = quest151RichSystemFrameData(pricingRows)
+	model.snapshot.StatusBar = StatusBar{Sources: 18, Models: 30}
 	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
 		model.request.Width, model.request.Height = size.width, size.height
 		model.render.Width = size.width
@@ -260,5 +246,66 @@ func TestQuest151PageFramesExactFill(t *testing.T) {
 				t.Logf("FRAME: %s %dx%d\nSource: internal/tui/layout_test.go::TestQuest151PageFramesExactFill\nCommand: go test ./internal/tui -run TestQuest151PageFramesExactFill -count=1 -v\n\n%s", pageID, size.width, size.height, view)
 			}
 		}
+	}
+}
+
+func quest151RichVaultFrameData() tuipages.VaultPageData {
+	bundles := make([]tuipages.VaultBundle, 0, 45)
+	baseDate := time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < 45; index++ {
+		bundles = append(bundles, tuipages.VaultBundle{
+			Date:       baseDate.AddDate(0, 0, -index).Format("2006-01-02"),
+			Files:      index + 1,
+			RawSize:    fmt.Sprintf("%d.0 MiB", index+1),
+			StoredSize: fmt.Sprintf("%d00 KiB", index+1),
+			Status:     "ready",
+		})
+	}
+	return tuipages.VaultPageData{
+		Directory: "/Users/janiorvalle/.local/share/tokenomnom/vault/provider/codex/archive/2026/08/transcripts/with/a/path/that/needs/wrapping", Initialized: true, Format: "v1, none", Files: 420,
+		RawBytes: 420 * 1024 * 1024, StoredBytes: 140 * 1024 * 1024, RawSize: "420.0 MiB", StoredSize: "140.0 MiB", Ratio: "3.00x",
+		Verified: "yes · 2026-08-12T04:00:00Z", VerificationState: tuipages.FindingOK, LastArchive: "2026-08-12T03:00:00Z",
+		LastVerification: "2026-08-12T04:00:00Z", Reclaimable: "280.0 MiB", Bundles: bundles,
+	}
+}
+
+func quest151RichSystemFrameData(pricingRows []tuipages.PricingRow) tuipages.SystemPageData {
+	names := []string{"Codex", "Claude", "Store", "History", "Vault", "Schedule"}
+	findings := make([]tuipages.SystemFinding, 0, len(names))
+	for index, name := range names {
+		state := tuipages.FindingOK
+		value := fmt.Sprintf("ready · %d records · %d files", 42+index*6, 12+index*2)
+		if name == "History" {
+			state, value = tuipages.FindingWarning, "stale · 44 sessions · 180 prompts"
+		}
+		if name == "Schedule" {
+			state, value = tuipages.FindingWarning, "installed · launchd · every 24h"
+		}
+		findings = append(findings, tuipages.SystemFinding{Name: name, Value: value, State: state})
+	}
+	sources := make([]tuipages.SystemSource, 0, 18)
+	for index := 0; index < 18; index++ {
+		name := fmt.Sprintf("Archive-%02d", index-5)
+		if index < len(names) {
+			name = names[index]
+		}
+		sources = append(sources, tuipages.SystemSource{Name: name, Files: 42 + index, Size: fmt.Sprintf("%d.0 MiB", index+1), Exists: true})
+	}
+	return tuipages.SystemPageData{
+		Findings: findings,
+		Warnings: []string{
+			"One provider source is stale; run tokenomnom sync to refresh it.",
+			"Schedule definition changed; reinstall the launchd job before the next sync.",
+			"History index is stale; rerun the history index before reviewing sessions.",
+			"Vault verification is older than the newest archive bundle.",
+			"Claude transcript root contains unreadable files.",
+			"One effective pricing override is active.",
+			"Store cache has expired entries waiting for refresh.",
+			"One archive bundle is pending compaction.",
+			"Project attribution is missing for recent sessions.",
+		},
+		Pricing: pricingRows, PricingDisclaimer: "Dollar figures are API list-price equivalents, not actual bills.",
+		Schedule: tuipages.SystemSchedule{Installed: true, DefinitionExists: true, BinaryExists: true, Mechanism: "launchd", ConfiguredInterval: "24h", InstalledInterval: "24h"},
+		Sources:  sources,
 	}
 }
