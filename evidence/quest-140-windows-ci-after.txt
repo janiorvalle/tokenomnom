@@ -1,0 +1,21 @@
+Windows lock metadata fix verification, captured after implementation.
+
+The owner record now starts at byte one while byte zero remains reserved for
+the Windows byte-range lock. Legacy records that start at byte zero remain
+readable when the lock is not held.
+
+```text
+=== RUN   TestSyncLockWaitsBoundedlyAndReleases
+--- PASS: TestSyncLockWaitsBoundedlyAndReleases (2.03s)
+=== RUN   TestInspectLockReportsDeadOwner
+--- PASS: TestInspectLockReportsDeadOwner (0.00s)
+=== RUN   TestInspectLockDoesNotCallHeldLockStaleWithIncompleteOwner
+--- PASS: TestInspectLockDoesNotCallHeldLockStaleWithIncompleteOwner (0.01s)
+=== RUN   TestStaleLockFileWithoutOSLockIsReclaimed
+--- PASS: TestStaleLockFileWithoutOSLockIsReclaimed (0.01s)
+PASS
+ok      github.com/janiorvalle/tokenomnom/internal/store  2.063s
+
+GOOS=windows GOARCH=amd64 go build -buildvcs=false ./... PASS
+GOOS=windows GOARCH=amd64 go test -c ./internal/store PASS
+```

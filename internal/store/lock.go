@@ -15,6 +15,8 @@ const (
 	usageLockWaitTimeout  = 2 * time.Second
 	usageLockPollInterval = 25 * time.Millisecond
 	maxLockOwnerBytes     = 4096
+	// Windows locks byte zero, so keep the owner record outside that byte.
+	lockOwnerOffset int64 = 1
 )
 
 // ErrStoreInUse reports that another tokenomnom process owns the sync lock.
@@ -165,11 +167,8 @@ func acquireUsageLock(lockPath string) (func(), error) {
 }
 
 func writeLockOwner(file *os.File, owner lockOwner) error {
-	if err := file.Truncate(0); err != nil {
-		return fmt.Errorf("clear previous owner record: %w", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind owner record: %w", err)
+	if err := prepareLockOwnerRecord(file); err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintf(file, "pid=%d started=%s state=active\n", owner.PID, owner.Started); err != nil {
 		return err
@@ -179,16 +178,29 @@ func writeLockOwner(file *os.File, owner lockOwner) error {
 
 func writeReleasedOwner(file *os.File, owner lockOwner) error {
 	owner.Released = true
-	if err := file.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := prepareLockOwnerRecord(file); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(file, "pid=%d started=%s state=released released=%s\n", owner.PID, owner.Started, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	return file.Sync()
+}
+
+func prepareLockOwnerRecord(file *os.File) error {
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("clear previous owner record: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind owner record: %w", err)
+	}
+	if _, err := file.Write([]byte{'\n'}); err != nil {
+		return fmt.Errorf("reserve lock byte: %w", err)
+	}
+	if _, err := file.Seek(lockOwnerOffset, io.SeekStart); err != nil {
+		return fmt.Errorf("position owner record: %w", err)
+	}
+	return nil
 }
 
 func readLockOwner(path string) (lockOwner, error) {
@@ -201,13 +213,29 @@ func readLockOwner(path string) (lockOwner, error) {
 }
 
 func readLockOwnerFile(file *os.File) (lockOwner, error) {
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return lockOwner{}, err
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxLockOwnerBytes))
+	data, err := readLockOwnerData(file, lockOwnerOffset)
 	if err != nil {
 		return lockOwner{}, err
 	}
+	owner, ownerErr := parseLockOwner(data)
+	if ownerErr == nil {
+		return owner, nil
+	}
+	data, err = readLockOwnerData(file, 0)
+	if err != nil {
+		return lockOwner{}, err
+	}
+	return parseLockOwner(data)
+}
+
+func readLockOwnerData(file *os.File, offset int64) ([]byte, error) {
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(io.LimitReader(file, maxLockOwnerBytes))
+}
+
+func parseLockOwner(data []byte) (lockOwner, error) {
 	var owner lockOwner
 	for _, field := range strings.Fields(string(data)) {
 		key, value, ok := strings.Cut(field, "=")
