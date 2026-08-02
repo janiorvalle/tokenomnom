@@ -59,21 +59,23 @@ type ModelPageRow struct {
 }
 
 type ModelProviderRow struct {
-	Provider     string
-	Models       int
-	Tokens       int64
-	Cost         pricing.Money
-	PricedTokens int64
-	TokenShare   float64
-	CostShare    float64
+	Provider       string
+	Models         int
+	Tokens         int64
+	Cost           pricing.Money
+	PricedTokens   int64
+	UnpricedTokens int64
+	TokenShare     float64
+	CostShare      float64
 }
 
 type ModelPricingRow struct {
-	Label        string
-	Models       int
-	Tokens       int64
-	Cost         pricing.Money
-	PricedTokens int64
+	Label          string
+	Models         int
+	Tokens         int64
+	Cost           pricing.Money
+	PricedTokens   int64
+	UnpricedTokens int64
 }
 
 type ModelRateRow struct {
@@ -536,11 +538,11 @@ func modelTokenCostLines(render theme.Context, data ModelPageData, width int) []
 func modelProviderLines(render theme.Context, data ModelPageData) []string {
 	lines := []string{render.Palette.Header().Render("PROVIDER  MODELS  TOKENS      COST   SHARE")}
 	for _, row := range data.Providers {
-		lines = append(lines, fmt.Sprintf("%-8s %6d %9s %10s %5s", truncate(modelProviderLabel(row.Provider), 8), row.Models, commaShort(row.Tokens), formatMoney(row.Cost, row.PricedTokens, false, false), modelPercent(row.CostShare, 1)))
+		lines = append(lines, fmt.Sprintf("%-8s %6d %9s %10s %5s", truncate(modelProviderLabel(row.Provider), 8), row.Models, commaShort(row.Tokens), formatMoney(row.Cost, row.PricedTokens, false, row.UnpricedTokens > 0), modelPercent(row.CostShare, 1)))
 	}
 	lines = append(lines, render.Palette.Header().Render("PRICING PROVENANCE"))
 	for _, row := range data.Pricing {
-		lines = append(lines, fmt.Sprintf("%-14s %2d %10s %s", truncate(row.Label, 14), row.Models, commaShort(row.Tokens), formatMoney(row.Cost, row.PricedTokens, false, false)))
+		lines = append(lines, fmt.Sprintf("%-14s %2d %10s %s", truncate(row.Label, 14), row.Models, commaShort(row.Tokens), formatMoney(row.Cost, row.PricedTokens, false, row.UnpricedTokens > 0)))
 	}
 	lines = append(lines, render.Palette.Header().Render("TOKENS PER SESSION"))
 	for _, row := range data.PerSession[:min(6, len(data.PerSession))] {

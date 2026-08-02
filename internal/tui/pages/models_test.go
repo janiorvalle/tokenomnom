@@ -102,6 +102,17 @@ func TestModelsAnalysisUsesCumulativeCostShare(t *testing.T) {
 	}
 }
 
+func TestModelsRollupsMarkPartialCosts(t *testing.T) {
+	data := ModelPageData{
+		Providers: []ModelProviderRow{{Provider: "codex", Models: 1, Tokens: 100, Cost: pricing.Money(1_000_000_000), PricedTokens: 60, UnpricedTokens: 40}},
+		Pricing:   []ModelPricingRow{{Label: "partial", Models: 1, Tokens: 100, Cost: pricing.Money(1_000_000_000), PricedTokens: 60, UnpricedTokens: 40}},
+	}
+	view := strings.Join(modelProviderLines(testRender(), data), "\n")
+	if strings.Count(view, "~$1.00") != 2 {
+		t.Fatalf("rollups did not mark partial costs:\n%s", view)
+	}
+}
+
 func TestModelsMasterListCapacityFollowsHeight(t *testing.T) {
 	data := modelsTestData()
 	for index := 10; index < 20; index++ {

@@ -1559,6 +1559,7 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 		return tui.Snapshot{}, err
 	}
 	modelFilter := filter
+	// Models is an explicitly all-time attribution view; the page labels that scope.
 	modelFilter.Since = ""
 	modelFilter.Until = ""
 	models, err := database.ByModel(modelFilter)
@@ -2765,6 +2766,7 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 		provider.Tokens += row.Tokens
 		provider.Cost += row.Cost
 		provider.PricedTokens += row.PricedTokens
+		provider.UnpricedTokens += row.UnpricedTokens
 		label := pricingProvenanceLabel(row.Pricing)
 		provenance := pricingTotals[label]
 		if provenance == nil {
@@ -2775,6 +2777,7 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 		provenance.Tokens += row.Tokens
 		provenance.Cost += row.Cost
 		provenance.PricedTokens += row.PricedTokens
+		provenance.UnpricedTokens += row.UnpricedTokens
 		if row.PricedTokens > 0 {
 			data.Rates = append(data.Rates, tuipages.ModelRateRow{Model: row.Model, Cost: row.Cost, PricedTokens: row.PricedTokens})
 		}
