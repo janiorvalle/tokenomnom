@@ -274,6 +274,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		snapshot, err := dashboardSnapshotWithDailySessions(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
 			return loadDashboardDailySessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, date, codexDir, claudeDir, &dailyCounts, &dailyPageSessions)
 		})
+		snapshot.Ledger = loadDashboardLedgerHistory(filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location)
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
 		})
@@ -289,6 +290,9 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}
 		if snapshot.Sessions.Warning != "" {
 			warnings = append(warnings, snapshot.Sessions.Warning)
+		}
+		if snapshot.Ledger.Analytics.Warning != "" {
+			warnings = append(warnings, snapshot.Ledger.Analytics.Warning)
 		}
 		snapshot.Warning = strings.Join(warnings, "; ")
 		if err != nil {
@@ -583,6 +587,13 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	data.SessionDay = day
 	data.SessionPageCursor = request.Ledger.SessionPageCursor
 	data.Location = location
+	if request.SessionProjectActive {
+		// The usage store has no project dimension, so discard its unscoped model
+		// rollup and let the filtered history query own this day view.
+		data.DayModels = nil
+		data.DayModelTotalCost, data.DayModelTotalTokens, data.DayModelCount = 0, 0, 0
+		data.DayProjects, data.DayHours, data.DayProjectCount, data.DaySessionCount = nil, nil, 0, 0
+	}
 	info, err := historystore.Inspect(path)
 	if err != nil {
 		data.SessionWarning = "History index unavailable; run tokenomnom history index to rebuild it."
@@ -611,10 +622,29 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		return data
 	}
 	end := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
-	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: historystore.CatalogQuery{
-		Provider: historyProvider(request.Provider), Since: &start, Until: &end,
-		Source: historystore.CatalogSourceAny, Limit: historystore.DefaultSessionCostPageSize, Cursor: request.Ledger.SessionPageCursor,
-	}})
+	dayQuery := historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider), Since: &start, Until: &end, Source: historystore.CatalogSourceAny,
+		Project: request.SessionProject, ProjectSet: request.SessionProjectActive,
+	}
+	dayProfile, profileErr := database.LedgerAnalytics(dayQuery, location)
+	if profileErr == nil {
+		data.DayHours = ledgerDayHours(dayProfile.Hours)
+		data.DaySessionCount = ledgerProfileSessionCount(dayProfile.Hours)
+		projectCounts := make(map[string]int)
+		for _, value := range dayProfile.ProjectMonths {
+			project := strings.TrimSpace(value.Project)
+			if project == "" {
+				project = "unknown"
+			}
+			projectCounts[project] += value.Sessions
+		}
+		data.DayProjects = dashboardLedgerDayProjects(projectCounts, ledgerProjectSessionCount(projectCounts))
+		data.DayProjectCount = len(projectCounts)
+	}
+	sessionQuery := dayQuery
+	sessionQuery.Limit = historystore.DefaultSessionCostPageSize
+	sessionQuery.Cursor = request.Ledger.SessionPageCursor
+	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: sessionQuery})
 	if err != nil {
 		data.SessionWarning = "Indexed sessions for this day could not be read; press R to retry or run tokenomnom history index."
 		data.SessionDataUnavailable = true
@@ -630,7 +660,10 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	data.SessionsHaveMore = page.Page.HasMore
 	data.SessionsNextCursor = page.Page.NextCursor
 	data.Sessions = make([]tuipages.LedgerSession, 0, len(page.Sessions))
+	modelTotals := make(map[ledgerDayModelKey]tuipages.LedgerModel)
+	projectCounts := make(map[string]int)
 	unavailable := 0
+	incomplete := 0
 	for _, session := range page.Sessions {
 		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
 		if priceErr != nil {
@@ -638,6 +671,25 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		}
 		if row.AttributionStatus == "unavailable" {
 			unavailable++
+		}
+		if row.AttributionStatus != "complete" {
+			incomplete++
+		}
+		project := strings.TrimSpace(row.Project)
+		if project == "" {
+			project = "unknown"
+		}
+		projectCounts[project]++
+		for _, model := range row.Models {
+			key := ledgerDayModelKey{provider: string(model.Provider), model: model.Model}
+			value := modelTotals[key]
+			value.Provider, value.Model = key.provider, key.model
+			value.Tokens += model.TotalTokens
+			value.Cost += model.cost
+			value.PricedTokens += model.PricedTokens
+			value.UnpricedTokens += model.UnpricedTokens
+			value.CostPerMillion = weightedRate(value.Cost, value.PricedTokens)
+			modelTotals[key] = value
 		}
 		data.Sessions = append(data.Sessions, tuipages.LedgerSession{
 			CatalogSession: row.CatalogSession,
@@ -647,12 +699,265 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 			Warning: strings.Join(uniqueStrings(row.Warnings), "; "),
 		})
 	}
+	pageModels := dashboardLedgerDayModels(modelTotals)
+	completeDayPage := request.Ledger.SessionPageCursor == "" && !page.Page.HasMore && len(data.Sessions) == len(page.Sessions) && incomplete == 0
+	// A partial catalog page is not a valid day-wide model denominator. When the
+	// usage aggregate is unavailable, leave the model band honest instead of
+	// presenting the first page as the whole selected day.
+	if len(data.DayModels) == 0 && completeDayPage {
+		data.DayModels = boundedLedgerModels(pageModels)
+		data.DayModelTotalCost, data.DayModelTotalTokens = dashboardLedgerModelTotals(pageModels)
+		data.DayModelCount = len(pageModels)
+	}
+	if len(data.DayProjects) == 0 && completeDayPage {
+		data.DayProjects = dashboardLedgerDayProjects(projectCounts, len(data.Sessions))
+		data.DayProjectCount = len(projectCounts)
+	}
+	if data.DaySessionCount == 0 && completeDayPage {
+		data.DaySessionCount = len(data.Sessions)
+	}
 	warnings := uniqueStrings(page.Warnings)
 	if unavailable > 0 {
 		warnings = append(warnings, fmt.Sprintf("Cost attribution is unavailable for %d of %d sessions.", unavailable, len(data.Sessions)))
 	}
 	data.SessionWarning = strings.Join(warnings, "; ")
 	return data
+}
+
+type ledgerDayModelKey struct {
+	provider string
+	model    string
+}
+
+func dashboardLedgerDayModels(values map[ledgerDayModelKey]tuipages.LedgerModel) []tuipages.LedgerModel {
+	models := make([]tuipages.LedgerModel, 0, len(values))
+	for _, value := range values {
+		models = append(models, value)
+	}
+	sort.SliceStable(models, func(left, right int) bool {
+		if models[left].Cost != models[right].Cost {
+			return models[left].Cost > models[right].Cost
+		}
+		if models[left].Tokens != models[right].Tokens {
+			return models[left].Tokens > models[right].Tokens
+		}
+		if models[left].Provider != models[right].Provider {
+			return models[left].Provider < models[right].Provider
+		}
+		return models[left].Model < models[right].Model
+	})
+	return models
+}
+
+func boundedLedgerModels(models []tuipages.LedgerModel) []tuipages.LedgerModel {
+	if len(models) <= 8 {
+		return models
+	}
+	return models[:8]
+}
+
+func dashboardLedgerModelTotals(models []tuipages.LedgerModel) (pricing.Money, int64) {
+	var cost pricing.Money
+	var tokens int64
+	for _, model := range models {
+		cost += model.Cost
+		tokens += model.Tokens
+	}
+	return cost, tokens
+}
+
+func ledgerDayHours(values []historystore.LedgerProfileStat) []tuipages.LedgerProfile {
+	profiles := make([]tuipages.LedgerProfile, 0, len(values))
+	for _, value := range values {
+		profiles = append(profiles, tuipages.LedgerProfile{Label: fmt.Sprintf("%02d", value.Bucket), Value: value.Sessions, Sessions: value.Sessions})
+	}
+	return profiles
+}
+
+func ledgerProfileSessionCount(values []historystore.LedgerProfileStat) int {
+	total := 0
+	for _, value := range values {
+		total += value.Sessions
+	}
+	return total
+}
+
+func ledgerProjectSessionCount(values map[string]int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+func dashboardLedgerDayProjects(counts map[string]int, total int) []tuipages.LedgerProject {
+	projects := make([]tuipages.LedgerProject, 0, len(counts))
+	for label, sessions := range counts {
+		share := 0.0
+		if total > 0 {
+			share = float64(sessions) / float64(total)
+		}
+		projects = append(projects, tuipages.LedgerProject{Label: label, Sessions: sessions, Share: share})
+	}
+	sort.SliceStable(projects, func(left, right int) bool {
+		if projects[left].Sessions != projects[right].Sessions {
+			return projects[left].Sessions > projects[right].Sessions
+		}
+		return projects[left].Label < projects[right].Label
+	})
+	if len(projects) > 8 {
+		projects = projects[:8]
+	}
+	return projects
+}
+
+func loadDashboardLedgerHistory(path string, data tuipages.Data, request tui.Request, location *time.Location) tuipages.Data {
+	info, err := historystore.Inspect(path)
+	if err != nil || !info.Exists {
+		return data
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		data.Analytics.Warning = "Ledger history profiles are unavailable; run tokenomnom history index to rebuild them."
+		return data
+	}
+	defer database.Close()
+	since, until := ledgerHistoryWindow(data, request.Ledger, location)
+	baseQuery := historystore.CatalogQuery{Provider: historyProvider(request.Provider), Source: historystore.CatalogSourceAny}
+	profileQuery := baseQuery
+	profileQuery.Since, profileQuery.Until = since, until
+	profile, counts, err := database.LedgerAnalyticsWithCounts(profileQuery, baseQuery, location)
+	if err != nil {
+		data.Analytics.Warning = "Ledger history profiles could not be read; press R to retry or run tokenomnom history index."
+		return data
+	}
+
+	monthSessions := make(map[string]int, len(counts.Months))
+	for _, month := range counts.Months {
+		monthSessions[month.Month] = month.Sessions
+	}
+	daySessions := make(map[string]int, len(counts.Days))
+	for _, day := range counts.Days {
+		daySessions[day.Day] = day.Sessions
+	}
+	for index := range data.Analytics.Months {
+		data.Analytics.Months[index].Sessions = monthSessions[data.Analytics.Months[index].Key]
+	}
+	for index := range data.Rows {
+		if len(data.Rows[index].Key) == 7 {
+			data.Rows[index].Sessions = monthSessions[data.Rows[index].Key]
+			continue
+		}
+		if len(data.Rows[index].Key) == 10 {
+			data.Rows[index].Sessions = daySessions[data.Rows[index].Key]
+			continue
+		}
+		if len(data.Rows[index].Key) == 4 {
+			for month, sessions := range monthSessions {
+				if strings.HasPrefix(month, data.Rows[index].Key+"-") {
+					data.Rows[index].Sessions += sessions
+				}
+			}
+		}
+	}
+	data.Total.Sessions = 0
+	for _, row := range data.Rows {
+		data.Total.Sessions += row.Sessions
+	}
+
+	weekdayLabels := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	weekdayCounts := make(map[int]int, len(profile.Weekdays))
+	for _, value := range profile.Weekdays {
+		weekdayCounts[value.Bucket] = value.Sessions
+	}
+	data.Analytics.Weekdays = make([]tuipages.LedgerProfile, 0, 7)
+	for bucket := 1; bucket <= 6; bucket++ {
+		data.Analytics.Weekdays = append(data.Analytics.Weekdays, tuipages.LedgerProfile{Label: weekdayLabels[bucket], Value: weekdayCounts[bucket], Sessions: weekdayCounts[bucket]})
+	}
+	data.Analytics.Weekdays = append(data.Analytics.Weekdays, tuipages.LedgerProfile{Label: weekdayLabels[0], Value: weekdayCounts[0], Sessions: weekdayCounts[0]})
+
+	hourCounts := make(map[int]int, len(profile.Hours))
+	for _, value := range profile.Hours {
+		hourCounts[value.Bucket] = value.Sessions
+	}
+	data.Analytics.Hours = make([]tuipages.LedgerProfile, 0, 24)
+	for hour := 0; hour < 24; hour++ {
+		data.Analytics.Hours = append(data.Analytics.Hours, tuipages.LedgerProfile{Label: fmt.Sprintf("%02d", hour), Value: hourCounts[hour], Sessions: hourCounts[hour]})
+	}
+
+	projectCounts := make(map[string]int)
+	projectMonths := make([]tuipages.LedgerProjectMonth, 0, len(profile.ProjectMonths))
+	for _, value := range profile.ProjectMonths {
+		projectCounts[value.Project] += value.Sessions
+		projectMonths = append(projectMonths, tuipages.LedgerProjectMonth{Project: value.Project, Month: value.Month, Sessions: value.Sessions})
+	}
+	projects := make([]tuipages.LedgerProject, 0, len(projectCounts))
+	totalProjects := 0
+	for _, count := range projectCounts {
+		totalProjects += count
+	}
+	for project, count := range projectCounts {
+		share := 0.0
+		if totalProjects > 0 {
+			share = float64(count) / float64(totalProjects)
+		}
+		projects = append(projects, tuipages.LedgerProject{Label: project, Sessions: count, Share: share})
+	}
+	sort.SliceStable(projects, func(left, right int) bool {
+		if projects[left].Sessions != projects[right].Sessions {
+			return projects[left].Sessions > projects[right].Sessions
+		}
+		return projects[left].Label < projects[right].Label
+	})
+	if len(projects) > 8 {
+		projects = projects[:8]
+	}
+	data.Analytics.Projects = projects
+	data.Analytics.ProjectMonths = projectMonths
+	return data
+}
+
+func ledgerHistoryWindow(data tuipages.Data, state tuipages.State, location *time.Location) (*time.Time, *time.Time) {
+	if location == nil {
+		location = time.Local
+	}
+	if state.Zoom == tuipages.ZoomYear {
+		index := tuipages.SelectedIndex(data, state)
+		if index >= 0 && index < len(data.Rows) && len(data.Rows[index].Key) == 4 {
+			if year, err := strconv.Atoi(data.Rows[index].Key); err == nil {
+				start := time.Date(year, time.January, 1, 0, 0, 0, 0, location)
+				return &start, ledgerWindowEnd(start.AddDate(1, 0, 0))
+			}
+		}
+	}
+	if state.Zoom == tuipages.ZoomMonth {
+		year := state.Year
+		if year == 0 {
+			year = data.Year
+		}
+		if year > 0 {
+			start := time.Date(year, time.January, 1, 0, 0, 0, 0, location)
+			return &start, ledgerWindowEnd(start.AddDate(1, 0, 0))
+		}
+	}
+	if state.Zoom == tuipages.ZoomDay {
+		month := state.Month
+		if month == "" {
+			month = data.Month
+		}
+		if len(month) >= len("2006-01") {
+			start, err := time.ParseInLocation("2006-01", month[:len("2006-01")], location)
+			if err == nil {
+				return &start, ledgerWindowEnd(start.AddDate(0, 1, 0))
+			}
+		}
+	}
+	return nil, nil
+}
+
+func ledgerWindowEnd(next time.Time) *time.Time {
+	end := next.Add(-time.Nanosecond)
+	return &end
 }
 
 func historyProvider(provider tui.Provider) history.Provider {
@@ -1904,6 +2209,10 @@ func dashboardLedgerData(database *store.Store, filter store.Filter, costs repor
 	if err != nil {
 		return tuipages.Data{}, err
 	}
+	pricingTable, err := loadPricingTable()
+	if err != nil {
+		return tuipages.Data{}, err
+	}
 
 	zoom := request.Ledger.Zoom
 	if zoom > tuipages.ZoomDay {
@@ -1948,7 +2257,245 @@ func dashboardLedgerData(database *store.Store, filter store.Filter, costs repor
 	for _, row := range rows {
 		total = total.Add(row)
 	}
-	return tuipages.Data{Available: true, Zoom: zoom, Year: effectiveYear, Month: effectiveMonth, Rows: rows, Total: total}, nil
+	analytics, err := dashboardLedgerAnalytics(database, filter, costs, pricingTable, daily, effectiveYear)
+	if err != nil {
+		return tuipages.Data{}, err
+	}
+	if zoom == tuipages.ZoomMonth {
+		if hasLedgerYearData(daily, effectiveYear) {
+			rows = ledgerMonthRowsForYear(analytics.Months, effectiveYear)
+		} else {
+			rows = nil
+		}
+		total = tuipages.Row{Key: "total", Label: "TOTAL"}
+		for _, row := range rows {
+			total = total.Add(row)
+		}
+	}
+	data := tuipages.Data{Available: true, Zoom: zoom, Year: effectiveYear, Month: effectiveMonth, Rows: rows, Total: total, Analytics: analytics}
+	if zoom == tuipages.ZoomDay && request.Ledger.ExpandedDay != "" {
+		dayFilter := filter
+		dayFilter.Since, dayFilter.Until = request.Ledger.ExpandedDay, request.Ledger.ExpandedDay
+		dayRows, err := database.FilteredUsageRows(dayFilter)
+		if err != nil {
+			return tuipages.Data{}, err
+		}
+		dayCosts := calculateReportCosts(pricingTable, dayRows)
+		dayModels, err := database.ByModel(dayFilter)
+		if err != nil {
+			return tuipages.Data{}, err
+		}
+		allDayModels := dashboardLedgerModels(dayModels, dayCosts, pricingTable)
+		data.DayModels = boundedLedgerModels(allDayModels)
+		data.DayModelTotalCost, data.DayModelTotalTokens = dashboardLedgerModelTotals(allDayModels)
+		data.DayModelCount = len(allDayModels)
+	}
+	return data, nil
+}
+
+func dashboardLedgerModels(models []store.ModelRow, costs reportCosts, pricingTable pricing.Table) []tuipages.LedgerModel {
+	result := make([]tuipages.LedgerModel, 0, len(models))
+	for _, model := range models {
+		value := costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
+		row := tuipages.LedgerModel{
+			Provider: string(model.Provider), Model: model.Model, Tokens: model.Total,
+			Cost: value.Total, PricedTokens: value.PricedTokens, UnpricedTokens: value.UnpricedTokens,
+			CostPerMillion: weightedRate(value.Total, value.PricedTokens),
+		}
+		entry, found := pricingTable.RateFor(model.Model, model.LastDate)
+		if found {
+			row.HasRate, row.Status, row.Source = true, entry.Status, entry.Source
+		}
+		result = append(result, row)
+	}
+	return result
+}
+
+func dashboardLedgerAnalytics(database *store.Store, filter store.Filter, costs reportCosts, pricingTable pricing.Table, daily []store.DailyRow, selectedYear int) (tuipages.LedgerAnalytics, error) {
+	if selectedYear == 0 {
+		selectedYear = time.Now().Year()
+	}
+	years := map[int]bool{selectedYear: true}
+	for key := range costs.ByMonthProvider {
+		if len(key) >= 4 {
+			if year, err := strconv.Atoi(key[:4]); err == nil {
+				years[year] = true
+			}
+		}
+	}
+	for _, row := range daily {
+		if len(row.Date) >= 4 {
+			if year, err := strconv.Atoi(row.Date[:4]); err == nil {
+				years[year] = true
+			}
+		}
+	}
+	orderedYears := make([]int, 0, len(years))
+	for year := range years {
+		orderedYears = append(orderedYears, year)
+	}
+	sort.Ints(orderedYears)
+	activeDaysByMonth := make(map[string]int)
+	for _, row := range daily {
+		if len(row.Date) >= 7 {
+			activeDaysByMonth[row.Date[:7]]++
+		}
+	}
+	months := make([]tuipages.LedgerMonth, 0, len(orderedYears)*12)
+	for _, year := range orderedYears {
+		for month := 1; month <= 12; month++ {
+			key := fmt.Sprintf("%04d-%02d", year, month)
+			value := tuipages.LedgerMonth{Key: key, Label: ledgerPeriodLabel(key, tuipages.ZoomMonth), ActiveDays: activeDaysByMonth[key]}
+			for provider, chart := range costs.ByMonthProvider[key] {
+				addLedgerProviderMonth(&value, provider, chart)
+			}
+			if value.ActiveDays > 0 {
+				value.AverageCost = value.Total().Cost / pricing.Money(value.ActiveDays)
+			}
+			for date, cost := range costs.ByDate {
+				if len(date) >= 7 && date[:7] == key && cost.Total > value.PeakCost {
+					value.PeakCost, value.PeakDay, value.PeakPartial = cost.Total, date, cost.UnpricedTokens > 0
+				}
+			}
+			months = append(months, value)
+		}
+	}
+	models, err := database.ByModel(filter)
+	if err != nil {
+		return tuipages.LedgerAnalytics{}, err
+	}
+	analytics := tuipages.LedgerAnalytics{Months: months, Models: dashboardLedgerModels(models, costs, pricingTable)}
+	analytics.Provenance, err = ledgerPricingProvenance(database, filter, pricingTable)
+	if err != nil {
+		return tuipages.LedgerAnalytics{}, err
+	}
+	// Store.Daily returns one aggregate row per active calendar date.
+	analytics.ActiveDays = len(daily)
+	if analytics.ActiveDays > 0 {
+		analytics.AverageCost = costs.Grand.Total / pricing.Money(analytics.ActiveDays)
+	}
+	for date, value := range costs.ByDate {
+		if value.Total > analytics.PeakCost {
+			analytics.PeakCost, analytics.PeakDay = value.Total, date
+		}
+	}
+	for _, month := range months {
+		for _, provider := range []discover.Provider{discover.ProviderCodex, discover.ProviderClaude} {
+			value := costs.ByMonthProvider[month.Key][provider]
+			analytics.ProviderMonths = append(analytics.ProviderMonths, tuipages.LedgerProviderMonth{
+				Provider: string(provider), Month: month.Key,
+				Cost: value.Cost.Total, Tokens: value.Tokens,
+			})
+		}
+	}
+	return analytics, nil
+}
+
+func ledgerMonthRowsForYear(months []tuipages.LedgerMonth, year int) []tuipages.Row {
+	rows := make([]tuipages.Row, 0, len(months))
+	for _, month := range months {
+		if year > 0 && (len(month.Key) < 4 || month.Key[:4] != fmt.Sprintf("%04d", year)) {
+			continue
+		}
+		rows = append(rows, tuipages.Row{Key: month.Key, Label: month.Label, Sessions: month.Sessions, Codex: month.Codex, Claude: month.Claude})
+	}
+	for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+		rows[left], rows[right] = rows[right], rows[left]
+	}
+	return rows
+}
+
+func addLedgerProviderMonth(month *tuipages.LedgerMonth, provider discover.Provider, chart providerChartValue) {
+	value := tuipages.ProviderTotals{Cost: chart.Cost.Total, Tokens: chart.Tokens, PricedTokens: chart.Cost.PricedTokens, UnpricedTokens: chart.Cost.UnpricedTokens}
+	switch provider {
+	case discover.ProviderCodex:
+		month.Codex = month.Codex.Add(value)
+	case discover.ProviderClaude:
+		month.Claude = month.Claude.Add(value)
+	}
+}
+
+func weightedRate(cost pricing.Money, pricedTokens int64) pricing.Rate {
+	if pricedTokens <= 0 {
+		return 0
+	}
+	return pricing.Rate(int64(cost) / pricedTokens)
+}
+
+func ledgerPricingProvenance(database *store.Store, filter store.Filter, table pricing.Table) (tuipages.LedgerProvenance, error) {
+	rows, err := database.FilteredUsageRows(filter)
+	if err != nil {
+		return tuipages.LedgerProvenance{}, err
+	}
+	type modelPricing struct {
+		unpriced bool
+		statuses map[string]bool
+		costs    map[string]pricing.Money
+		tokens   map[string]int64
+	}
+	type modelKey struct {
+		provider discover.Provider
+		model    string
+	}
+	byModel := make(map[modelKey]*modelPricing)
+	for _, row := range rows {
+		key := modelKey{provider: row.Provider, model: row.Model}
+		pricingInfo := byModel[key]
+		if pricingInfo == nil {
+			pricingInfo = &modelPricing{statuses: map[string]bool{}, costs: map[string]pricing.Money{}, tokens: map[string]int64{}}
+			byModel[key] = pricingInfo
+		}
+		breakdown := table.Cost(row)
+		if breakdown.UnpricedTokens > 0 {
+			pricingInfo.unpriced = true
+		}
+		if breakdown.PricedTokens == 0 {
+			continue
+		}
+		entry, found := table.RateFor(row.Model, row.Date)
+		if !found {
+			pricingInfo.unpriced = true
+			continue
+		}
+		pricingInfo.statuses[entry.Status] = true
+		pricingInfo.costs[entry.Status] += breakdown.Total
+		pricingInfo.tokens[entry.Status] += breakdown.PricedTokens
+	}
+	models := make([]modelKey, 0, len(byModel))
+	for model := range byModel {
+		models = append(models, model)
+	}
+	sort.Slice(models, func(left, right int) bool {
+		if models[left].model != models[right].model {
+			return models[left].model < models[right].model
+		}
+		return models[left].provider < models[right].provider
+	})
+	provenance := tuipages.LedgerProvenance{}
+	for _, model := range models {
+		pricingInfo := byModel[model]
+		if pricingInfo.unpriced {
+			provenance.UnpricedModels++
+			provenance.Unpriced = append(provenance.Unpriced, string(model.provider)+"/"+model.model)
+		}
+		for status := range pricingInfo.statuses {
+			switch status {
+			case "proxy":
+				provenance.ProxyModels++
+				provenance.ProxyCost += pricingInfo.costs[status]
+				provenance.ProxyTokens += pricingInfo.tokens[status]
+			case "estimated":
+				provenance.EstimatedModels++
+				provenance.EstimatedCost += pricingInfo.costs[status]
+				provenance.EstimatedTokens += pricingInfo.tokens[status]
+			case "published":
+				provenance.PublishedModels++
+				provenance.PublishedCost += pricingInfo.costs[status]
+				provenance.PublishedTokens += pricingInfo.tokens[status]
+			}
+		}
+	}
+	return provenance, nil
 }
 
 func ledgerPeriodKey(date string, zoom tuipages.Zoom, year int, month string) (string, bool) {
@@ -2002,6 +2549,19 @@ func latestLedgerMonth(rows []store.DailyRow) string {
 		return ""
 	}
 	return rows[len(rows)-1].Date[:7]
+}
+
+func hasLedgerYearData(rows []store.DailyRow, year int) bool {
+	if year == 0 {
+		return len(rows) > 0
+	}
+	want := fmt.Sprintf("%04d", year)
+	for _, row := range rows {
+		if len(row.Date) >= 4 && row.Date[:4] == want {
+			return true
+		}
+	}
+	return false
 }
 
 func addLedgerProvider(row *tuipages.Row, provider discover.Provider, value providerChartValue) {

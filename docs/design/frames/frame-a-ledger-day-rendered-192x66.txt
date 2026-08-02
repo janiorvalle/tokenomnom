@@ -1,0 +1,69 @@
+Source: internal/tui/app_test.go::TestQuest147LedgerDayFullWindowFrame
+Command: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest147LedgerDayFullWindowFrame -count=1 -v
+
+ tokenomnom  /  LEDGER                                                                                                                                                    LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                                                                                              
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  ALL YEARS  /  2026  /  2026-07  /  2026-07-14                                                                   SESSION ──────────────────────────────────────────────── 
+ 1  Daily           │  Jul 14  $147.50  19,900,000 tokens                                                                              ses_ledger_01                                            
+ > 2  Ledger        │  TIME     PROVIDER  PROJECT                     TOKENS       COST  FIRST PROMPT                                  FIRST PROMPT ─────────────────────────────────────────── 
+ 3  Models          │  › 09:00  codex     tokenomnom                 900,000      $5.00  Investigate the production latency regressi…    Investigate the production latency regression          
+ 4  Heatmap         │    10:07  claude    billing-api                910,000      $5.25  Prepare the migration rollout plan            OVERVIEW ─────────────────────────────────────────────── 
+                    │    11:14  codex     tokenomnom                 920,000      $5.50  Review the query budget before release        provider     codex                                       
+ HISTORY            │    12:21  claude    billing-api                930,000      $5.75  Investigate the production latency regressi…  project      tokenomnom (git)                            
+ 5  Sessions        │    13:28  codex     tokenomnom                 940,000      $6.00  Prepare the migration rollout plan            first        2026-07-14 09:00                            
+                    │    14:35  claude    billing-api                950,000      $6.25  Review the query budget before release        last         2026-07-14 09:00                            
+ FILTERS            │    15:42  codex     tokenomnom                 960,000      $6.50  Investigate the production latency regressi…  prompts      2 logical · 3 indexed                       
+ provider           │    16:49  claude    billing-api                970,000      $6.75  Prepare the migration rollout plan            COST & TOKENS ────────────────────────────────────────── 
+   all              │    17:56  codex     tokenomnom                 980,000      $7.00  Review the query budget before release        tokens       900,000                                     
+ range              │    18:03  claude    billing-api                990,000      $7.25  Investigate the production latency regressi…  cost         $5.00                                       
+   30d              │    09:10  codex     tokenomnom               1,000,000      $7.50  Prepare the migration rollout plan            attribution  complete                                    
+ project            │    10:17  claude    billing-api              1,010,000      $7.75  Review the query budget before release                                                                 
+   all              │    11:24  codex     tokenomnom               1,020,000      $8.00  Investigate the production latency regressi…                                                           
+                    │    12:31  claude    billing-api              1,030,000      $8.25  Prepare the migration rollout plan                                                                     
+ SNAPSHOT           │    13:38  codex     tokenomnom               1,040,000      $8.50  Review the query budget before release                                                                 
+ today $2,209.23    │    14:45  claude    billing-api              1,050,000      $8.75  Investigate the production latency regressi…                                                           
+ 7d $3,033.35       │    15:52  codex     tokenomnom               1,060,000      $9.00  Prepare the migration rollout plan                                                                     
+ 30d $3,033.35      │    16:59  claude    billing-api              1,070,000      $9.25  Review the query budget before release                                                                 
+ peak $2,209.23     │    17:06  codex     tokenomnom               1,080,000      $9.50  Investigate the production latency regressi…                                                           
+   Jul 14           │    18:13  claude    billing-api              1,090,000      $9.75  Prepare the migration rollout plan                                                                     
+                    │  MODELS ON THIS DAY                                      PROJECTS ON THIS DAY                                                                                             
+ MIX · 30D          │  MODEL                 COST  SHARE  TOKENS               PROJECT                  SESSIONS  SHARE                                                                         
+ Codex 72% ██████···│  codex/gpt-5.2                 $72.50   49%     9.90M    tokenomnom                                 10    50%                                                             
+ Claude 28% ██······│  claude/claude-sonnet          $75.00   51%    10.00M    billing-api                                10    50%                                                             
+                    │  SESSION STARTS BY HOUR  ·  LOCAL TIME ────────────────────────────────────────────────────────────────────────                                                           
+ PROJECTS 30D       │  00:00    0 sessions  ················································                                                                                                    
+ alpha 50% █████····│  01:00    0 sessions  ················································                                                                                                    
+ beta 30% ███·······│  02:00    0 sessions  ················································                                                                                                    
+ other 20% ██·······│  03:00    0 sessions  ················································                                                                                                    
+                    │  04:00    0 sessions  ················································                                                                                                    
+                    │  05:00    0 sessions  ················································                                                                                                    
+                    │  06:00    0 sessions  ················································                                                                                                    
+                    │  07:00    0 sessions  ················································                                                                                                    
+                    │  08:00    0 sessions  ················································                                                                                                    
+                    │  09:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  10:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  11:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  12:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  13:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  14:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  15:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  16:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  17:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  18:00    2 sessions  ████████████████████████████████████████████████                                                                                                    
+                    │  19:00    0 sessions  ················································                                                                                                    
+                    │  20:00    0 sessions  ················································                                                                                                    
+                    │  21:00    0 sessions  ················································                                                                                                    
+                    │  22:00    0 sessions  ················································                                                                                                    
+                    │  23:00    0 sessions  ················································                                                                                                    
+                    │  loaded page sessions 20                                                                                                                                                  
+                    │  models represented   2                                                                                                                                                   
+                    │  projects represented 2                                                                                                                                                   
+                    │  sessions on day      20                                                                                                                                                  
+                    │  hour profile         complete                                                                                                                                            
+                    │  session starts        local time                                                                                                                                         
+                    │  ↑/↓ select  ·  enter open  ·  esc collapse                                                                                                                               
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                                                                                                              ● idle  ·  2 sources  ·  2 models 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                                                                                                 
+ API list-price equivalents, not actual bills                                                                                                                              192x66 · wide + tall 

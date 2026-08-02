@@ -1,0 +1,27 @@
+Source: internal/tui/app_test.go::TestQuest147LedgerFullWindowFrames
+Command: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest147LedgerFullWindowFrames -count=1 -v
+
+ tokenomnom  /  LEDGER                                FLOOR 80x24  ·  1-8 pages 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68 
+ ────────────────────────────────────────────────────────────────────────────── 
+ ALL YEARS  /  2026                                                             
+ PERIOD          CODEX     CLAUDE      TOTAL      DELTA  ACTIVITY               
+ › Dec 2026     $98.00      $3.00    $101.00     -$2.00  ███████████████▓       
+   Nov 2026     $91.00     $12.00    $103.00    +$10.00  ███████████████▓▓▓     
+   Oct 2026     $84.00      $9.00     $93.00    +$10.00  █████████████▓▓▓       
+   Sep 2026     $77.00      $6.00     $83.00    +$10.00  ████████████▓▓         
+   Aug 2026     $70.00      $3.00     $73.00     -$2.00  ███████████▓           
+   Jul 2026     $63.00     $12.00     $75.00    +$10.00  ██████████▓▓▓          
+   Jun 2026     $56.00      $9.00     $65.00    +$10.00  ████████▓▓▓            
+   May 2026     $49.00      $6.00     $55.00    +$10.00  ███████▓▓              
+   Apr 2026     $42.00      $3.00     $45.00     -$2.00  ██████▓                
+   Mar 2026     $35.00     $12.00     $47.00    +$10.00  █████▓▓▓               
+   Feb 2026     $28.00      $9.00     $37.00    +$10.00  ████▓▓                 
+   Jan 2026     $21.00      $6.00     $27.00          —  ██▓▓                   
+ TOTAL         $714.00     $90.00    $804.00             ███████████████▓▓▓     
+                                                                                
+                                                                                
+                                                                                
+ ────────────────────────────────────────────────────────────────────────────── 
+                                              ● idle  ·  2 sources  ·  2 models 
+ API list-price equivalents, not actual bills · ? help · q quit   80x24 · floor 
