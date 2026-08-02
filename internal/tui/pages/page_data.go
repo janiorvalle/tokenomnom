@@ -6,6 +6,9 @@ type VaultPageData struct {
 	Initialized        bool
 	Format             string
 	Files              int
+	RawBytes           int64
+	StoredBytes        int64
+	ReclaimableBytes   int64
 	RawSize            string
 	StoredSize         string
 	Ratio              string
@@ -15,6 +18,16 @@ type VaultPageData struct {
 	LastVerification   string
 	KnownBrokenBundles int
 	Reclaimable        string
+	Bundles            []VaultBundle
+}
+
+// VaultBundle is one recent archive grouped from the vault manifest.
+type VaultBundle struct {
+	Date       string
+	Files      int
+	RawSize    string
+	StoredSize string
+	Status     string
 }
 
 // FindingState controls the visual treatment of one system finding.
@@ -47,10 +60,35 @@ type PricingRow struct {
 	Override  string
 }
 
+// SystemSchedule contains the scheduler facts needed by the wide System page.
+// It deliberately uses page-owned values instead of exposing the schedule
+// package's platform-specific status type to the renderer.
+type SystemSchedule struct {
+	Available          bool
+	Installed          bool
+	DefinitionExists   bool
+	BinaryExists       bool
+	IntervalDrift      bool
+	Mechanism          string
+	ConfiguredInterval string
+	InstalledInterval  string
+}
+
+// SystemSource is one provider root summary shown beside scheduler state.
+type SystemSource struct {
+	Name    string
+	Files   int
+	Size    string
+	Exists  bool
+	Warning bool
+}
+
 // SystemPageData contains the doctor findings and effective pricing table.
 type SystemPageData struct {
 	Findings          []SystemFinding
 	Warnings          []string
 	Pricing           []PricingRow
 	PricingDisclaimer string
+	Schedule          SystemSchedule
+	Sources           []SystemSource
 }

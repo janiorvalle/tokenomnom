@@ -762,10 +762,85 @@ func TestDashboardPageDataMapsVaultAndSystemHealth(t *testing.T) {
 		Store:     jsonDoctorStore{Exists: true, UsageRows: 3, DistinctModels: 2, SizeBytes: 4096},
 		History:   jsonHistoryHealth{Status: "ready", LogicalSessions: 5, LogicalPrompts: 7},
 		Vault:     jsonDoctorVault{Initialized: true, Files: 4, RawBytes: 12 * 1024, StoredBytes: 4 * 1024},
-		Schedule:  jsonScheduleData{Status: schedule.Status{Installed: true, DefinitionExists: true, BinaryExists: true}},
+		Schedule:  jsonScheduleData{Status: schedule.Status{Installed: true, DefinitionExists: true, BinaryExists: true, Mechanism: "launchd"}},
 	}, table, []string{"a warning"})
 	if len(systemData.Findings) != 5 || systemData.Findings[0].Value != "ready · 2 files · 2.0 KiB" || len(systemData.Pricing) == 0 || systemData.Warnings[0] != "a warning" {
 		t.Fatalf("system page data = %#v", systemData)
+	}
+	if len(systemData.Sources) != 1 || systemData.Sources[0].Name != "Codex" || systemData.Sources[0].Files != 2 || systemData.Schedule.Mechanism == "" {
+		t.Fatalf("system source/schedule data = %#v", systemData)
+	}
+}
+
+func TestDashboardVaultBundlesGroupsManifestAndReportsMissingArchives(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, store.DatabaseName)
+	vaultDir := filepath.Join(root, "vault")
+	if err := os.MkdirAll(filepath.Join(vaultDir, "codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vaultDir, "codex", "2026-08.tar.zst"), []byte("stored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveTime := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC).Unix()
+	if err := database.Transaction(func(tx *store.Tx) error {
+		for _, file := range []store.VaultFile{
+			{SourcePath: "/codex/one.jsonl", Provider: discover.ProviderCodex, RelPath: "one.jsonl", Archive: "codex/2026-08.tar.zst", Size: 100, VaultedAt: archiveTime, Version: 1},
+			{SourcePath: "/codex/two.jsonl", Provider: discover.ProviderCodex, RelPath: "two.jsonl", Archive: "codex/2026-08.tar.zst", Size: 200, VaultedAt: archiveTime, Version: 1},
+			{SourcePath: "/claude/old.jsonl", Provider: discover.ProviderClaude, RelPath: "old.jsonl", Archive: "claude/2026-07.tar.zst", Size: 400, VaultedAt: archiveTime - 24*60*60, Version: 1},
+		} {
+			if err := tx.PutVaultFile(file); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bundles, err := dashboardVaultBundles(databasePath, vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 2 || bundles[0].Date != "2026-08-02" || bundles[0].Files != 2 || bundles[0].RawSize != "300 B" || bundles[0].StoredSize != "6 B" || bundles[0].Status != "present" {
+		t.Fatalf("grouped bundles = %#v", bundles)
+	}
+	if bundles[1].Status != "missing" || bundles[1].Date != "2026-08-01" {
+		t.Fatalf("missing bundle = %#v", bundles[1])
+	}
+}
+
+func TestDashboardVaultBundlesReturnsArchiveStatErrors(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, store.DatabaseName)
+	vaultPath := "vault\x00"
+	database, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = database.Transaction(func(tx *store.Tx) error {
+		return tx.PutVaultFile(store.VaultFile{
+			SourcePath: "/codex/one.jsonl", Provider: discover.ProviderCodex, RelPath: "one.jsonl",
+			Archive: "codex/archive.tar.zst", Size: 100, VaultedAt: time.Now().Unix(), Version: 1,
+		})
+	})
+	if closeErr := database.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dashboardVaultBundles(databasePath, vaultPath)
+	if err == nil || !strings.Contains(err.Error(), "stat vault archive") {
+		t.Fatalf("archive stat error = %v", err)
 	}
 }
 
@@ -773,8 +848,11 @@ func TestDashboardPageDataDoesNotBlockOnDoctorFailure(t *testing.T) {
 	t.Setenv("TOKENOMNOM_CONFIG_DIR", t.TempDir())
 	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
 	vaultData, systemData := dashboardPageData(cmd, nil, t.TempDir(), "")
-	if vaultData.Directory != "" || len(systemData.Findings) == 0 || len(systemData.Warnings) == 0 || len(systemData.Pricing) == 0 {
+	if vaultData.Directory != "" || vaultData.Format != "" || vaultData.Ratio != "" || len(systemData.Findings) == 0 || len(systemData.Warnings) == 0 || len(systemData.Pricing) == 0 {
 		t.Fatalf("doctor failure page data = vault=%#v system=%#v", vaultData, systemData)
+	}
+	if systemData.Schedule.Available {
+		t.Fatalf("doctor failure reported schedule data as available: %#v", systemData.Schedule)
 	}
 }
 

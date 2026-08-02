@@ -1452,26 +1452,36 @@ func dashboardVaultVerificationStatus(result vault.VerifyResult, verifyErr error
 func dashboardPageData(cmd *cobra.Command, roots []discover.Root, databasePath, timezone string) (tuipages.VaultPageData, tuipages.SystemPageData) {
 	doctor, _, warnings, doctorErr := collectDoctorData(cmd, roots, databasePath, timezone)
 	table, pricingErr := loadPricingTable()
+	vaultPage := tuipages.VaultPageData{}
+	if doctorErr == nil || doctor.Vault.Dir != "" {
+		vaultPage = dashboardVaultPageData(doctor.Vault)
+		if vaultPage.Directory != "" {
+			bundles, bundleErr := dashboardVaultBundles(databasePath, vaultPage.Directory)
+			if bundleErr != nil {
+				warnings = append(warnings, "Vault bundle data could not be loaded; archive health remains available.")
+			} else {
+				vaultPage.Bundles = bundles
+			}
+		}
+	}
+	systemPage := dashboardSystemPageData(doctor, table, warnings)
 	if doctorErr != nil {
 		warnings = append(warnings, "System health data could not be loaded; spend pages remain available.")
 		if pricingErr != nil {
 			warnings = append(warnings, "Pricing data could not be loaded; other dashboard pages remain available.")
 		}
-		page := dashboardSystemPageData(doctor, table, warnings)
+		systemPage = dashboardSystemPageData(doctor, table, warnings)
 		if pricingErr != nil {
-			page.Pricing = nil
-			page.PricingDisclaimer = ""
+			systemPage.Pricing = nil
+			systemPage.PricingDisclaimer = ""
 		}
-		vaultPage := tuipages.VaultPageData{}
-		if doctor.Vault.Dir != "" {
-			vaultPage = dashboardVaultPageData(doctor.Vault)
-		}
-		return vaultPage, page
+		return vaultPage, systemPage
 	}
 	if pricingErr != nil {
 		warnings = append(warnings, "Pricing data could not be loaded; other dashboard pages remain available.")
+		systemPage = dashboardSystemPageData(doctor, table, warnings)
 	}
-	return dashboardVaultPageData(doctor.Vault), dashboardSystemPageData(doctor, table, warnings)
+	return vaultPage, systemPage
 }
 
 func dashboardVaultPageData(data jsonDoctorVault) tuipages.VaultPageData {
@@ -1502,6 +1512,9 @@ func dashboardVaultPageData(data jsonDoctorVault) tuipages.VaultPageData {
 		Initialized:        data.Initialized,
 		Format:             format,
 		Files:              data.Files,
+		RawBytes:           data.RawBytes,
+		StoredBytes:        data.StoredBytes,
+		ReclaimableBytes:   data.ReclaimableBytes,
 		RawSize:            humanBytes(data.RawBytes),
 		StoredSize:         humanBytes(data.StoredBytes),
 		Ratio:              ratio,
@@ -1512,6 +1525,75 @@ func dashboardVaultPageData(data jsonDoctorVault) tuipages.VaultPageData {
 		KnownBrokenBundles: data.KnownBrokenBundles,
 		Reclaimable:        humanBytes(data.ReclaimableBytes),
 	}
+}
+
+func dashboardVaultBundles(databasePath, vaultDir string) ([]tuipages.VaultBundle, error) {
+	database, err := store.OpenReadOnly(databasePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open vault manifest: %w", err)
+	}
+	defer database.Close()
+	files, err := database.VaultFiles()
+	if err != nil {
+		return nil, fmt.Errorf("read vault manifest: %w", err)
+	}
+	type bundleSummary struct {
+		archive  string
+		files    int
+		rawBytes int64
+		vaulted  int64
+	}
+	summaries := make(map[string]*bundleSummary)
+	for _, file := range files {
+		if file.Archive == "" {
+			continue
+		}
+		summary := summaries[file.Archive]
+		if summary == nil {
+			summary = &bundleSummary{archive: file.Archive}
+			summaries[file.Archive] = summary
+		}
+		summary.files++
+		summary.rawBytes += file.Size
+		summary.vaulted = max(summary.vaulted, file.VaultedAt)
+	}
+	values := make([]bundleSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		values = append(values, *summary)
+	}
+	sort.SliceStable(values, func(left, right int) bool {
+		if values[left].vaulted != values[right].vaulted {
+			return values[left].vaulted > values[right].vaulted
+		}
+		return values[left].archive < values[right].archive
+	})
+	result := make([]tuipages.VaultBundle, 0, len(values))
+	for _, summary := range values {
+		storedBytes := int64(0)
+		status := "present"
+		info, statErr := os.Stat(filepath.Join(vaultDir, filepath.FromSlash(summary.archive)))
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				status = "missing"
+			} else {
+				return nil, fmt.Errorf("stat vault archive %q: %w", summary.archive, statErr)
+			}
+		} else {
+			storedBytes = info.Size()
+		}
+		date := "unknown"
+		if summary.vaulted > 0 {
+			date = time.Unix(summary.vaulted, 0).UTC().Format("2006-01-02")
+		}
+		result = append(result, tuipages.VaultBundle{
+			Date: date, Files: summary.files, RawSize: humanBytes(summary.rawBytes),
+			StoredSize: humanBytes(storedBytes), Status: status,
+		})
+	}
+	return result, nil
 }
 
 func verificationIsOlderThanArchive(verification, archive string) bool {
@@ -1568,8 +1650,12 @@ func dashboardSystemPageData(data jsonDoctorData, table pricing.Table, warnings 
 	}
 	findings = append(findings, tuipages.SystemFinding{Name: "Vault", Value: vaultValue, State: vaultState})
 
+	scheduleAvailable := dashboardScheduleDataAvailable(data.Schedule)
 	scheduleState := tuipages.FindingMuted
-	scheduleValue := "not installed"
+	scheduleValue := "unavailable"
+	if scheduleAvailable {
+		scheduleValue = "not installed"
+	}
 	if data.Schedule.Installed {
 		scheduleState = tuipages.FindingOK
 		scheduleValue = "installed"
@@ -1580,7 +1666,30 @@ func dashboardSystemPageData(data jsonDoctorData, table pricing.Table, warnings 
 	}
 	findings = append(findings, tuipages.SystemFinding{Name: "Schedule", Value: scheduleValue, State: scheduleState})
 
-	return tuipages.SystemPageData{Findings: findings, Warnings: append([]string(nil), warnings...), Pricing: dashboardPricingRows(table), PricingDisclaimer: pricingDisclaimer}
+	sources := make([]tuipages.SystemSource, 0, len(data.Providers))
+	for _, provider := range data.Providers {
+		sources = append(sources, tuipages.SystemSource{
+			Name: providerName(discover.Provider(provider.Provider)), Files: provider.JSONLFiles,
+			Size: humanBytes(provider.TotalBytes), Exists: provider.Exists, Warning: len(provider.WalkErrors) > 0,
+		})
+	}
+	installedInterval := ""
+	if data.Schedule.InstalledIntervalText != nil {
+		installedInterval = *data.Schedule.InstalledIntervalText
+	}
+	return tuipages.SystemPageData{
+		Findings: findings, Warnings: append([]string(nil), warnings...), Pricing: dashboardPricingRows(table), PricingDisclaimer: pricingDisclaimer,
+		Schedule: tuipages.SystemSchedule{
+			Available: scheduleAvailable, Installed: data.Schedule.Installed, DefinitionExists: data.Schedule.DefinitionExists, BinaryExists: data.Schedule.BinaryExists,
+			IntervalDrift: data.Schedule.IntervalDrift, Mechanism: data.Schedule.Mechanism,
+			ConfiguredInterval: data.Schedule.ConfiguredInterval, InstalledInterval: installedInterval,
+		},
+		Sources: sources,
+	}
+}
+
+func dashboardScheduleDataAvailable(data jsonScheduleData) bool {
+	return data.Installed || data.DefinitionExists || data.BinaryExists || data.Mechanism != "" || data.ConfiguredInterval != "" || data.InstalledIntervalText != nil
 }
 
 func dashboardPricingRows(table pricing.Table) []tuipages.PricingRow {
