@@ -144,6 +144,14 @@ func materializeHeatmapDays(data HeatmapData) (HeatmapWindow, []HeatmapDay) {
 		window = HeatmapWindow{From: today.AddDate(-1, 0, 1), To: today}
 	}
 	window.From, window.To = dateOnly(window.From), dateOnly(window.To)
+	// Clamp the window start to the first recorded activity: a year of empty
+	// leading months wastes the grid without telling the user anything.
+	if len(source) > 0 {
+		first := dateOnly(source[0].Date)
+		if first.After(window.From) && !first.After(window.To) {
+			window.From = first
+		}
+	}
 
 	byDate := make(map[string]HeatmapDay, len(source))
 	for _, day := range source {

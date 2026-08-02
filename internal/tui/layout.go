@@ -313,6 +313,26 @@ func ShareBar(render theme.Context, label string, value, total float64, width in
 	return fitLine(strings.TrimSpace(label)+" "+render.Palette.Emphasis().Render(bar), width)
 }
 
+// ShareBarAligned is ShareBar for fixed-column layouts: the label is used
+// verbatim (padding preserved) so bars in a block all start at the same cell.
+func ShareBarAligned(render theme.Context, label string, value, total float64, width int) string {
+	width = max(1, width)
+	if value < 0 {
+		value = 0
+	}
+	if total <= 0 {
+		total = value
+	}
+	barWidth := max(0, width-lipgloss.Width(label)-1)
+	fillWidth := 0
+	if total > 0 {
+		fillWidth = int(math.Round(float64(barWidth) * value / total))
+	}
+	fillWidth = min(max(0, fillWidth), barWidth)
+	bar := strings.Repeat("█", fillWidth) + strings.Repeat("·", max(0, barWidth-fillWidth))
+	return fitLine(label+" "+render.Palette.Emphasis().Render(bar), width)
+}
+
 // Sparkline renders values using eight stable intensity levels. It is safe for
 // empty input and always returns at most width terminal cells.
 func Sparkline(values []float64, width int) string {
