@@ -26,6 +26,7 @@ type KeyBinding struct {
 	Display     string
 	Keys        []string
 	Description string
+	HelpGroup   string
 	FooterKey   string
 	Footer      string
 	Action      keyAction
@@ -33,25 +34,25 @@ type KeyBinding struct {
 }
 
 var keyRegistry = [...]KeyBinding{
-	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
-	{Display: "← / →", Keys: []string{"left", "right"}, Description: "move active page / day cursor", Action: keyActionPageCommand},
-	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to page edge", Action: keyActionPageCommand},
-	{Display: "h / l", Keys: []string{"h", "l"}, Description: "zoom ledger period", Action: keyActionPageCommand},
-	{Display: "j / k", Keys: []string{"j", "k"}, Description: "move ledger row", Action: keyActionPageCommand},
-	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "move active page / day detail", Action: keyActionPageCommand},
-	{Display: "enter", Keys: []string{"enter"}, Description: "open selected item", Action: keyActionPageCommand},
-	{Display: "esc", Keys: []string{"esc"}, Description: "back to list", Action: keyActionPageCommand},
-	{Display: "f", Keys: []string{"f"}, Description: "cycle project filter", Action: keyActionPageCommand},
-	{Display: "s", Keys: []string{"s"}, Description: "sort models", Action: keyActionPageCommand},
-	{Display: "y", Keys: []string{"y"}, Description: "calendar-year heatmap", Action: keyActionPageCommand},
-	{Display: "e", Keys: []string{"e"}, Description: "export session", Action: keyActionPageCommand},
-	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", FooterKey: "p", Footer: "provider", Action: keyActionProvider},
-	{Display: "r", Keys: []string{"r"}, Description: "cycle range", FooterKey: "r", Footer: "range", Action: keyActionRange},
-	{Display: "R", Keys: []string{"R"}, Description: "refresh now", FooterKey: "R", Footer: "refresh", Action: keyActionRefresh},
-	{Display: "v", Keys: []string{"v", "V"}, Description: "verify vault", Action: keyActionPageCommand},
-	{Display: "ctrl+k", Keys: []string{"ctrl+k"}, Description: "open command palette", Action: keyActionOpenPalette},
-	{Display: "?", Keys: []string{"?"}, Description: "close help", FooterKey: "?", Footer: "help", Action: keyActionToggleHelp},
-	{Display: "q / ctrl+c", Keys: []string{"q", "ctrl+c"}, Description: "quit", FooterKey: "q", Footer: "quit", Action: keyActionQuit},
+	{Keys: []string{"tab", "shift+tab"}, Description: "switch view", HelpGroup: "NAVIGATE", FooterKey: "tab", Footer: "views", Action: keyActionNavigatePages, PageNumbers: true},
+	{Display: "← / →", Keys: []string{"left", "right"}, Description: "move active page / day cursor", HelpGroup: "NAVIGATE", Action: keyActionPageCommand},
+	{Display: "home / end", Keys: []string{"home", "end"}, Description: "jump to page edge", HelpGroup: "NAVIGATE", Action: keyActionPageCommand},
+	{Display: "h / l", Keys: []string{"h", "l"}, Description: "zoom ledger period", HelpGroup: "PAGES", Action: keyActionPageCommand},
+	{Display: "j / k", Keys: []string{"j", "k"}, Description: "move ledger row", HelpGroup: "PAGES", Action: keyActionPageCommand},
+	{Display: "↑ / ↓", Keys: []string{"up", "down"}, Description: "move active page / day detail", HelpGroup: "NAVIGATE", Action: keyActionPageCommand},
+	{Display: "enter", Keys: []string{"enter"}, Description: "open selected item", HelpGroup: "NAVIGATE", Action: keyActionPageCommand},
+	{Display: "esc", Keys: []string{"esc"}, Description: "back to list", HelpGroup: "NAVIGATE", Action: keyActionPageCommand},
+	{Display: "f", Keys: []string{"f"}, Description: "cycle project filter", HelpGroup: "PAGES", Action: keyActionPageCommand},
+	{Display: "s", Keys: []string{"s"}, Description: "sort models", HelpGroup: "PAGES", Action: keyActionPageCommand},
+	{Display: "y", Keys: []string{"y"}, Description: "calendar-year heatmap", HelpGroup: "PAGES", Action: keyActionPageCommand},
+	{Display: "e", Keys: []string{"e"}, Description: "export session", HelpGroup: "ACTIONS", Action: keyActionPageCommand},
+	{Display: "p", Keys: []string{"p"}, Description: "cycle provider", HelpGroup: "ACTIONS", FooterKey: "p", Footer: "provider", Action: keyActionProvider},
+	{Display: "r", Keys: []string{"r"}, Description: "cycle range", HelpGroup: "ACTIONS", FooterKey: "r", Footer: "range", Action: keyActionRange},
+	{Display: "R", Keys: []string{"R"}, Description: "refresh now", HelpGroup: "ACTIONS", FooterKey: "R", Footer: "refresh", Action: keyActionRefresh},
+	{Display: "v", Keys: []string{"v", "V"}, Description: "verify vault", HelpGroup: "ACTIONS", Action: keyActionPageCommand},
+	{Display: "ctrl+k", Keys: []string{"ctrl+k"}, Description: "open command palette", HelpGroup: "SYSTEM", Action: keyActionOpenPalette},
+	{Display: "?", Keys: []string{"?"}, Description: "close help", HelpGroup: "SYSTEM", FooterKey: "?", Footer: "help", Action: keyActionToggleHelp},
+	{Display: "q / ctrl+c", Keys: []string{"q", "ctrl+c"}, Description: "quit", HelpGroup: "SYSTEM", FooterKey: "q", Footer: "quit", Action: keyActionQuit},
 }
 
 // KeyBindings returns the registered bindings for tests and future page chrome.
@@ -171,30 +172,161 @@ func joinFooterSegments(left, right string, width int) string {
 }
 
 func (m Model) helpView() string {
-	entries := m.helpEntries()
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	dimmed := lipgloss.NewStyle().Faint(true).Render(m.baseView())
+	return overlayBlock(dimmed, m.helpModal(layout), layout.width, layout.height)
+}
+
+type helpGroup struct {
+	title   string
+	entries []helpEntry
+}
+
+func helpWidth(windowWidth int) int {
+	return max(1, min(110, windowWidth-8))
+}
+
+func (m Model) helpModal(layout cockpitLayout) string {
+	width := helpWidth(layout.width)
+	contentWidth := max(1, width-6)
+	groups := m.helpGroups()
+	compact := layout.tiers.Height == HeightShort
+	if compact {
+		groups = compactHelpGroups(groups)
+	}
+	heading := m.render.Palette.Header().Render("HELP") + "  " + m.render.Palette.Subtle().Render("? / esc close")
+	body := heading + "\n"
+	if !compact {
+		body += "\n"
+	}
+	if layout.tiers.Width == WidthWide || compact {
+		body += renderHelpColumns(m, groups, contentWidth, compact)
+	} else {
+		body += renderHelpGroups(m, groups, contentWidth, false)
+	}
+	if !compact || layout.height > minimumHeight {
+		body += "\n"
+		if !compact {
+			body += "\n"
+		}
+		body += m.render.Palette.Subtle().Render("Keyboard-first controls; page keys stay in their group.")
+	}
+	return m.render.Palette.Surface().
+		Width(max(1, width-2)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.render.Palette.AccentBorderColor()).
+		Padding(0, 2).
+		Render(body)
+}
+
+func (m Model) helpGroups() []helpGroup {
+	groups := []helpGroup{
+		{title: "NAVIGATE"},
+		{title: "PAGES"},
+		{title: "ACTIONS"},
+		{title: "SYSTEM"},
+	}
+	groupIndex := map[string]int{
+		"NAVIGATE": 0,
+		"PAGES":    1,
+		"ACTIONS":  2,
+		"SYSTEM":   3,
+	}
+	for _, binding := range helpBindings() {
+		index, ok := groupIndex[binding.HelpGroup]
+		if !ok {
+			index = len(groups) - 1
+		}
+		groups[index].entries = append(groups[index].entries, helpEntry{
+			display:     keyBindingDisplay(binding, len(m.router.Pages())),
+			description: binding.Description,
+		})
+	}
+	return groups
+}
+
+func renderHelpColumns(model Model, groups []helpGroup, width int, compact bool) string {
+	if len(groups) < 4 {
+		return renderHelpGroups(model, groups, width, compact)
+	}
+	gap := 4
+	if compact {
+		gap = 2
+	}
+	leftWidth := max(1, (width-gap)/2)
+	rightWidth := max(1, width-gap-leftWidth)
+	left := renderHelpGroups(model, groups[:2], leftWidth, compact)
+	right := renderHelpGroups(model, groups[2:], rightWidth, compact)
+	height := max(strings.Count(left, "\n")+1, strings.Count(right, "\n")+1)
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		fitBlock(left, leftWidth, height),
+		fitBlock("", gap, height),
+		fitBlock(right, rightWidth, height),
+	)
+}
+
+func renderHelpGroups(model Model, groups []helpGroup, width int, compact bool) string {
+	parts := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if len(group.entries) == 0 {
+			continue
+		}
+		parts = append(parts, renderHelpGroup(model, group, width))
+	}
+	separator := "\n\n"
+	if compact {
+		separator = "\n"
+	}
+	return strings.Join(parts, separator)
+}
+
+func compactHelpGroups(groups []helpGroup) []helpGroup {
+	compactGroups := make([]helpGroup, 0, len(groups))
+	for _, group := range groups {
+		group.entries = compactHelpEntries(group.entries)
+		compactGroups = append(compactGroups, group)
+	}
+	return compactGroups
+}
+
+func compactHelpEntries(entries []helpEntry) []helpEntry {
+	compact := make([]helpEntry, 0, len(entries))
+	for index := 0; index < len(entries); index++ {
+		if index+1 < len(entries) {
+			pair := entries[index].display + " / " + entries[index+1].display
+			if pair == "h / l / j / k" {
+				compact = append(compact, helpEntry{display: "h / l · j / k", description: "ledger zoom / row"})
+				index++
+				continue
+			}
+			if pair == "enter / esc" {
+				compact = append(compact, helpEntry{display: "enter · esc", description: "open / back"})
+				index++
+				continue
+			}
+			if pair == "p / r" {
+				compact = append(compact, helpEntry{display: "p · r", description: "cycle provider / range"})
+				index++
+				continue
+			}
+		}
+		compact = append(compact, entries[index])
+	}
+	return compact
+}
+
+func renderHelpGroup(model Model, group helpGroup, width int) string {
 	keyWidth := 0
-	for _, entry := range entries {
+	for _, entry := range group.entries {
 		keyWidth = max(keyWidth, lipgloss.Width(entry.display))
 	}
-	var body strings.Builder
-	body.WriteString(m.render.Palette.Header().Render("Keys"))
-	if m.request.Height > minimumHeight {
-		body.WriteString("\n\n")
-	} else {
-		body.WriteByte('\n')
+	lines := []string{model.render.Palette.Header().Render(group.title)}
+	for _, entry := range group.entries {
+		key := entry.display + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(entry.display)))
+		line := model.render.Palette.Emphasis().Render(key) + "  " + model.render.Palette.Subtle().Render(entry.description)
+		lines = append(lines, fitLine(line, width))
 	}
-	for _, entry := range entries {
-		key := entry.display + strings.Repeat(" ", keyWidth-lipgloss.Width(entry.display))
-		body.WriteString(m.render.Palette.Emphasis().Render(key))
-		body.WriteString("   ")
-		body.WriteString(m.render.Palette.Subtle().Render(entry.description))
-		body.WriteByte('\n')
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.render.Palette.BorderColor()).
-		Padding(0, 2).Render(strings.TrimRight(body.String(), "\n"))
-	return m.place(modal)
+	return strings.Join(lines, "\n")
 }
 
 type helpEntry struct {
@@ -215,25 +347,7 @@ func (m Model) helpEntries() []helpEntry {
 		return entries
 	}
 
-	compact := make([]helpEntry, 0, len(entries)-2)
-	for index := 0; index < len(entries); index++ {
-		if index+1 < len(entries) && ((entries[index].display == "h / l" && entries[index+1].display == "j / k") || (entries[index].display == "enter" && entries[index+1].display == "esc") || (entries[index].display == "p" && entries[index+1].display == "r")) {
-			description := "open / back"
-			if entries[index].display == "h / l" {
-				description = "ledger zoom / row"
-			} else if entries[index].display == "p" {
-				description = "cycle provider / range"
-			}
-			compact = append(compact, helpEntry{
-				display:     entries[index].display + " · " + entries[index+1].display,
-				description: description,
-			})
-			index++
-			continue
-		}
-		compact = append(compact, entries[index])
-	}
-	return compact
+	return compactHelpEntries(entries)
 }
 
 func helpBindings() []KeyBinding {

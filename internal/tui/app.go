@@ -1281,13 +1281,13 @@ func (m Model) View() string {
 	if m.commandOutput != "" {
 		return m.commandOutputView()
 	}
+	if m.help {
+		return m.helpView()
+	}
 	return m.baseView()
 }
 
 func (m Model) baseView() string {
-	if m.help {
-		return m.helpView()
-	}
 	if m.loading {
 		elapsed := time.Since(m.started).Round(time.Second)
 		line := fmt.Sprintf("%s Syncing Codex + Claude · %s · %s\n", m.spinner.View(), m.syncProgressText(), elapsed)

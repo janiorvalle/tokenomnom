@@ -443,11 +443,26 @@ func renderPagePane(render theme.Context, title, content string, width, height i
 }
 
 func fitPageLines(lines []string, width, height int) []string {
+	blankRun := 0
+	for _, line := range lines {
+		if strings.TrimSpace(ansi.Strip(line)) == "" {
+			blankRun++
+			continue
+		}
+		blankRun = 0
+	}
 	if len(lines) > height {
 		lines = lines[:height]
 	}
 	for len(lines) < height {
-		lines = append(lines, "")
+		line := ""
+		if blankRun >= 3 {
+			line = strings.Repeat("┈", max(1, width))
+			blankRun = 0
+		} else {
+			blankRun++
+		}
+		lines = append(lines, line)
 	}
 	for index := range lines {
 		lines[index] = fitPageLine(lines[index], width)
