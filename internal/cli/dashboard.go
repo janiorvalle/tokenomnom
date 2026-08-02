@@ -1010,7 +1010,7 @@ type dashboardDailyViewResult struct {
 
 func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, pricingTable pricing.Table, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
 	selectedIndex := dailyCursorIndex(allRows, request.DailyCursor)
-	capacity := dashboardRowCapacity(request.Height)
+	capacity := dashboardRowCapacity(request.Width, request.Height)
 	windowStart := normalizedDailyWindowStart(allRows, selectedIndex, capacity, request.DailyWindowStart)
 	rows := windowDailyRows(allRows, windowStart, capacity)
 	selectedDate := ""
@@ -1031,14 +1031,14 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 	if len(periods) > 0 {
 		height := chartHeight
 		if !dailyDetailSideBySide(render.Width) {
-			height = dailyStackedChartHeight(chartRender, periods, chartUsesTokens(costs), tui.ContentHeight(request.Height))
+			height = dailyStackedChartHeight(chartRender, periods, chartUsesTokens(costs), tui.ContentHeightFor(request.Width, request.Height))
 		}
 		if height > 0 {
 			chart = renderPeriodChartWithHeight(chartRender, periods, "day", "days", chartUsesTokens(costs), height)
 		}
 	}
 	if selectedDate == "" {
-		view, detailOffset, detailMaxOffset := composeDailyView(render, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
+		view, detailOffset, detailMaxOffset := composeDailyView(render, request.Width, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
 		return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
 	}
 	detail, err := loadDashboardDailyDetail(database, filter, selectedDate, pricingTable)
@@ -1046,7 +1046,7 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 		return dashboardDailyViewResult{}, err
 	}
 	detailWidth := dailyDetailRenderWidth(render.Width)
-	view, detailOffset, detailMaxOffset := composeDailyView(render, chart, renderDailyDetail(render, detail, detailWidth), request.Height, request.DailyDetailOffset)
+	view, detailOffset, detailMaxOffset := composeDailyView(render, request.Width, chart, renderDailyDetail(render, detail, detailWidth), request.Height, request.DailyDetailOffset)
 	return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
 }
 
@@ -1076,8 +1076,8 @@ func dailyStackedChartHeight(render theme.Context, periods []chartPeriod, tokens
 	return 0
 }
 
-func composeDailyView(render theme.Context, chart, detail string, height, detailOffset int) (string, int, int) {
-	contentHeight := max(1, tui.ContentHeight(height))
+func composeDailyView(render theme.Context, terminalWidth int, chart, detail string, height, detailOffset int) (string, int, int) {
+	contentHeight := max(1, tui.ContentHeightFor(terminalWidth, height))
 	if !dailyDetailSideBySide(render.Width) {
 		parts := make([]string, 0, 3)
 		if chart != "" {
@@ -1445,7 +1445,7 @@ func dashboardModelsView(rows []store.ModelRow, costs reportCosts, request tui.R
 			return rows[i].Total > rows[j].Total
 		}
 	})
-	capacity := dashboardRowCapacity(request.Height) + 5
+	capacity := dashboardRowCapacity(request.Width, request.Height) + 5
 	start := min(max(0, request.ModelOffset), max(0, len(rows)-1))
 	end := min(len(rows), start+capacity)
 	rows = rows[start:end]
@@ -1488,11 +1488,11 @@ func dashboardHeatmapView(database *store.Store, globalFilter store.Filter, requ
 	return renderHeatmap(render, buildHeatmapReport(window, filteredRows, costs)), nil
 }
 
-func dashboardRowCapacity(height int) int {
+func dashboardRowCapacity(width, height int) int {
 	if height <= 0 {
 		return 8
 	}
-	return max(3, min(10, tui.ContentHeight(height)-10))
+	return max(3, min(10, tui.ContentHeightFor(width, height)-10))
 }
 
 func dailyCursorIndex(rows []store.DailyRow, cursor int) int {

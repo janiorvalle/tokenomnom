@@ -1,0 +1,38 @@
+Quest 145: TUI densify 1 layout foundation
+
+Source: internal/tui/layout_test.go::TestLayoutTiersUseContractBoundaries
+Command: go test ./internal/tui -run TestLayoutTiersUseContractBoundaries -count=1 -v
+Result: PASS
+
+Source: internal/tui/layout_test.go::TestCockpitLayoutExactArithmeticAtReferenceSizes
+Command: go test ./internal/tui -run TestCockpitLayoutExactArithmeticAtReferenceSizes -count=1 -v
+Result: PASS at 192x66, 120x40, and 80x24; each frame has exact requested width and height.
+
+Source: internal/tui/layout_test.go::TestRenderBandFillsEveryCellAndKeepsPaneArithmetic
+Command: go test ./internal/tui -run TestRenderBandFillsEveryCellAndKeepsPaneArithmetic -count=1 -v
+Result: PASS for titled two-pane bands and explicit-width panes.
+
+Source: internal/tui/layout_test.go::TestRailDropsOptionalBlocksFromTheBottom
+Command: go test ./internal/tui -run TestRailDropsOptionalBlocksFromTheBottom -count=1 -v
+Result: PASS for bottom-up rail dropping, short-standard filter preservation, and floor rail removal.
+
+Source: internal/tui/layout_test.go::TestQuest145FoundationFrames
+Command: go test ./internal/tui -run TestQuest145FoundationFrames -count=1 -v
+Result: PASS; committed cell-exact snapshots are frame-a-foundation-{192x66,120x40,80x24}.txt.
+
+Source: repository
+Command: go vet ./...
+Result: PASS
+
+Source: repository
+Command: go test ./internal/tui ./internal/tui/pages ./internal/cli
+Result: PASS
+
+Review gate:
+Command: $HOME/.codex/skills/autoreview/scripts/autoreview --mode local
+Result: autoreview clean; no accepted/actionable P0-P2 findings.
+
+Full repository gate:
+Command: GOFLAGS=-buildvcs=false make verify
+Result: PASS; build, vet, all tests, GoReleaser configuration/snapshot, and install-smoke completed successfully.
+Note: plain `make verify` cannot stamp VCS metadata in this linked worktree because Go probes the parent home directory; the code gate is otherwise identical with the standard `-buildvcs=false` workaround.

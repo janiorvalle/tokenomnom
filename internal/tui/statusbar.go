@@ -49,7 +49,7 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 	}}
 
 	if m.warning != "" {
-		return fitLine(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
+		return fitRight(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
 	}
 	if m.commandBusy && !m.syncing {
 		working := m.spinner.View() + m.render.Palette.Subtle().Render(" working")
@@ -78,7 +78,7 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 		})
 	}
 
-	return fitLine(joinStatusBarSegments(segments, layout.innerWidth, m.render.Palette.Subtle()), layout.innerWidth)
+	return fitRight(joinStatusBarSegments(segments, layout.innerWidth, m.render.Palette.Subtle()), layout.innerWidth)
 }
 
 func (m Model) statusBarWarning(sync statusBarSegment, width int) string {

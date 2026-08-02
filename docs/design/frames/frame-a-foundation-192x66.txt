@@ -1,0 +1,69 @@
+Source: internal/tui/layout_test.go::TestQuest145FoundationFrames
+Command: go test ./internal/tui -run TestQuest145FoundationFrames -count=1 -v
+
+ tokenomnom  /  DAILY                                                                                                                                                     LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                                                                                              
+ WIDE 192x66                                                                                                                                                                                    
+ SPEND                        │  ■ Codex  ■ Claude  cost/day                                                                                                                                    
+ > 1  Daily                   │   $1,584.23       █████████████████████████████                                                                                                                 
+ 2  Ledger                    │     $824.12       ████████████                                                                                                                                  
+ 3  Models                    │                   13       14       ^                                                                                                                           
+ 4  Heatmap                   │                   Jul 2026                                                                                                                                      
+                              │  ----------------------------------------------------------                                                                                                     
+ HISTORY                      │  DAY DETAIL                                                                                                                                                     
+ 5  Sessions                  │  2026-07-14                                                                                                                                                     
+                              │  TOTAL $2,209.23                                                                                                                                                
+ FILTERS                      │                                                                                                                                                                 
+ provider                     │  PROVIDER SPLIT · COST                                                                                                                                          
+   all                        │  Codex  72% ################ $1,584.23                                                                                                                          
+ range                        │  Claude 28% ##########         $625.00                                                                                                                          
+   30d                        │                                                                                                                                                                 
+                              │  TOP MODELS BY COST                                                                                                                                             
+ SNAPSHOT                     │  gpt-5.2                  $1,584.23                                                                                                                             
+ total $3,033.35              │  claude-sonnet              $625.00                                                                                                                             
+ tokens 178,000,000           │                                                                                                                                                                 
+ active days 2                │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+ MIX                          │                                                                                                                                                                 
+ provider ALL                 │                                                                                                                                                                 
+ range 30D                    │                                                                                                                                                                 
+ status ● idle                │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+ PROJECTS                     │                                                                                                                                                                 
+   alpha                      │                                                                                                                                                                 
+   beta                       │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                              │                                                                                                                                                                 
+                                                                                                                                                                                         ● idle 
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                                                                                                 
+ API list-price equivalents, not actual bills                                                                                                                                                   

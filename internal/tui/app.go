@@ -1021,7 +1021,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 		}
 		context := PageContext{
 			Render: m.render, Snapshot: m.snapshot, Request: m.request,
-			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
+			Width: ContentWidth(m.request.Width), Height: ContentHeightFor(m.request.Width, m.request.Height),
 		}
 		request, changed := page.Update(context, value)
 		if !changed {
@@ -1291,18 +1291,24 @@ func (m Model) syncProgressText() string {
 
 func (m Model) cockpitView() string {
 	layout := newCockpitLayout(m.request.Width, m.request.Height)
-	content := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.railView(layout),
-		strings.Repeat(" ", gridGap),
-		m.contentView(layout),
-	)
-	view := strings.Join([]string{
+	content := m.contentView(layout)
+	if layout.showRail {
+		content = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.railView(layout),
+			fitBlock("", gridGap, layout.bodyHeight),
+			content,
+		)
+	}
+	content = fitBlock(content, layout.bodyWidth, layout.bodyHeight)
+	rows := []string{
 		m.topBarView(layout),
 		m.summaryView(layout),
-		content,
-		m.statusBarView(layout),
-		m.footerView(layout),
-	}, "\n")
+	}
+	if layout.chrome.SizeBadge > 0 {
+		rows = append(rows, sizeBadge(m.render, layout))
+	}
+	rows = append(rows, content, m.statusBarView(layout), m.footerView(layout))
+	view := strings.Join(rows, "\n")
 	return frameBlock(view, layout)
 }
 
@@ -1314,7 +1320,11 @@ func (m Model) topBarView(layout cockpitLayout) string {
 	left := m.render.Palette.Header().Render("tokenomnom") +
 		m.render.Palette.Subtle().Render("  /  ") +
 		m.render.Palette.Emphasis().Render(strings.ToUpper(active))
-	right := m.render.Palette.Subtle().Render("LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String()))
+	rightText := "LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String())
+	if !layout.showRail {
+		rightText = fmt.Sprintf("%s %dx%d  ·  1-8 pages", strings.ToUpper(layout.tiers.Width.String()), layout.width, layout.height)
+	}
+	right := m.render.Palette.Subtle().Render(rightText)
 	space := max(2, layout.innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
 	return fitLine(left+strings.Repeat(" ", space)+right, layout.innerWidth)
 }
@@ -1345,14 +1355,18 @@ func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
 
 func (m Model) contentView(layout cockpitLayout) string {
 	body := ""
+	render := m.render
+	render.Width = layout.paneWidth
 	if page := m.activePage(); page != nil {
 		body = page.View(PageContext{
-			Render: m.render, Snapshot: m.snapshot, Request: m.request,
-			Width: layout.paneWidth, Height: layout.bodyHeight,
+			Render: render, Snapshot: m.snapshot, Request: m.request,
+			Width: layout.paneWidth, Height: layout.pageHeight,
 		})
 	}
-	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
-	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)
+	// The global top bar already names the page. Keeping the band title empty
+	// here preserves the existing page body while giving later pages the same
+	// exact-fill primitive for their own titled bands.
+	return RenderBand(render, NewBand("", layout.paneWidth, layout.bodyHeight, NewPane("", body)))
 }
 
 // place centers transient states (loading, too-small) in the full window.
