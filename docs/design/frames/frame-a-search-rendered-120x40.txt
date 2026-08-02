@@ -1,0 +1,43 @@
+Source: internal/tui/quest150_test.go::TestQuest150Frames
+Command: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest150Frames -count=1 -v
+
+ tokenomnom  /  SEARCH                                                                            LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                      
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  FIND IN HISTORY                                                                                  
+ 1  Daily           │  Search your indexed prompts by exact phrase.                                                     
+ 2  Ledger          │                                                                                                   
+ 3  Models          │  SEARCH /do not implement█                                                                        
+ 4  Heatmap         │  ──────────────────────────────────────────────────────────────────────────────────────────────── 
+                    │    said do not implement prompt context 0                                                         
+ HISTORY            │      2026-07-21 · codex · tokenomnom                                                              
+ 5  Sessions        │    said do not implement prompt context 1                                                         
+ > 6  Search        │      2026-07-21 · codex · tokenomnom                                                              
+                    │    said do not implement prompt context 2                                                         
+ FILTERS            │      2026-07-21 · codex · tokenomnom                                                              
+ provider           │    said do not implement prompt context 3                                                         
+   all              │      2026-07-21 · codex · tokenomnom                                                              
+ range              │  › said do not implement prompt context 4                                                         
+   30d              │      2026-07-21 · codex · tokenomnom                                                              
+ project            │    said do not implement prompt context 5                                                         
+   all              │      2026-07-21 · codex · tokenomnom                                                              
+                    │    said do not implement prompt context 6                                                         
+ SNAPSHOT           │      2026-07-21 · codex · tokenomnom                                                              
+ today $2,209.23    │    said do not implement prompt context 7                                                         
+ 7d $3,033.35       │      2026-07-21 · codex · tokenomnom                                                              
+ 30d $3,033.35      │                                                                                                   
+ peak $2,209.23     │  ↑/↓  enter open  e export  / edit  esc                                                           
+   Jul 14           │                                                                                                   
+                    │                                                                                                   
+ MIX · 30D          │                                                                                                   
+ Codex 72% ██████···│                                                                                                   
+ Claude 28% ██······│                                                                                                   
+                    │                                                                                                   
+ PROJECTS 30D       │                                                                                                   
+ alpha 50% █████····│                                                                                                   
+ beta 30% ███·······│                                                                                                   
+ other 20% ██·······│                                                                                                   
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                    ● idle  ·  last sync now  ·  2 sources  ·  2 models 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                         
+ API list-price equivalents, not actual bills                                                         120x40 · standard 

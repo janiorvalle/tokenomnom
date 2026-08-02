@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/janiorvalle/tokenomnom/internal/history"
 )
 
 // ErrNoAvailableRawLocation means the index knows the session but none of
@@ -264,6 +266,73 @@ func (s *Store) SessionPrompts(publicID string, query PromptQuery) (PromptsPage,
 		page.Prompts = []PromptResult{}
 	}
 	return page, nil
+}
+
+// SessionPromptContext returns a prompt-centered window from one logical
+// session. It avoids paging from the session's newest prompt when a search hit
+// points deep into a long session.
+func (s *Store) SessionPromptContext(sessionID, promptID string, radius int) (PromptsPage, error) {
+	if radius < 0 || radius > 10 {
+		return PromptsPage{}, fmt.Errorf("history prompt context radius must be between 0 and 10")
+	}
+	resolvedSession, err := s.ResolvePublicID(sessionID)
+	if err != nil {
+		return PromptsPage{}, err
+	}
+	resolvedPrompt, err := s.ResolvePublicID(promptID)
+	if err != nil {
+		return PromptsPage{}, err
+	}
+	if !strings.HasPrefix(resolvedSession, "ses_") {
+		return PromptsPage{}, fmt.Errorf("%q is not a history session ID", sessionID)
+	}
+	if !strings.HasPrefix(resolvedPrompt, "prm_") {
+		return PromptsPage{}, fmt.Errorf("%q is not a history prompt ID", promptID)
+	}
+	generation, err := s.indexGeneration()
+	if err != nil {
+		return PromptsPage{}, err
+	}
+	query := PromptQuery{Role: string(history.RoleUser), Source: CatalogSourceAny}
+	where, args := promptWhere(query, true, "p", "s")
+	where = append(where, "s.public_id=?")
+	args = append(args, resolvedSession)
+	sortExpr := sqliteTimestampKey("p.timestamp")
+	statement := `WITH session_prompts AS (
+		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
+			s.repository_name,s.project,s.project_source,s.cwd,s.branch,
+			NULL AS rank,` + sortExpr + ` AS sort_ts,substr(p.clean_text,1,2048) AS snippet,p.clean_text AS full_text,
+			ROW_NUMBER() OVER (
+				ORDER BY (` + sortExpr + `='') ASC,` + sortExpr + ` DESC,p.public_id ASC
+			) AS row_no
+		FROM prompts p JOIN sessions s ON s.id=p.session_id
+		WHERE ` + strings.Join(where, " AND ") + `
+	)
+	SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,
+		repository_name,project,project_source,cwd,branch,rank,sort_ts,
+		snippet,full_text
+	FROM session_prompts
+	WHERE row_no BETWEEN
+		(SELECT row_no FROM session_prompts WHERE prompt_id=?)-?
+		AND (SELECT row_no FROM session_prompts WHERE prompt_id=?)+?
+	ORDER BY row_no`
+	args = append(args, resolvedPrompt, radius, resolvedPrompt, radius)
+	rows, err := s.runner.Query(statement, args...)
+	if err != nil {
+		return PromptsPage{}, fmt.Errorf("read history prompt context: %w", err)
+	}
+	prompts, err := s.scanPromptRows(rows, true, false, true)
+	if err != nil {
+		return PromptsPage{}, err
+	}
+	if len(prompts) == 0 {
+		return PromptsPage{}, fmt.Errorf("history prompt ID %q was not found in session %q", promptID, sessionID)
+	}
+	return PromptsPage{
+		Prompts: prompts, Generation: generation,
+		Page:     PageMetadata{Limit: 2*radius + 1},
+		Warnings: []string{},
+	}, nil
 }
 
 // RawCandidates returns only stored IDs and locations, never an arbitrary user path.

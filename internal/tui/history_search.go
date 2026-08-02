@@ -35,24 +35,28 @@ type HistorySearchPage struct {
 	load   func(Request) (HistorySearchData, error)
 	export func(Request) (string, error)
 
-	query           string
-	sessionID       string
-	hits            []SearchHit
-	hasMore         bool
-	warnings        []string
-	detail          *SessionDetail
-	notIndexed      bool
-	searched        bool
-	loading         bool
-	inputMode       bool
-	exporting       bool
-	errorText       string
-	exportErrorText string
-	exportText      string
-	exportID        string
-	exportAttemptID string
-	exportAttempt   uint64
-	loadToken       string
+	query              string
+	sessionID          string
+	hits               []SearchHit
+	hasMore            bool
+	warnings           []string
+	detail             *SessionDetail
+	preview            *tuipages.SearchPreview
+	previewLoading     bool
+	previewLoadPending bool
+	notIndexed         bool
+	searched           bool
+	loading            bool
+	inputMode          bool
+	exporting          bool
+	errorText          string
+	previewErrorText   string
+	exportErrorText    string
+	exportText         string
+	exportID           string
+	exportAttemptID    string
+	exportAttempt      uint64
+	loadToken          string
 }
 
 // NewHistorySearchPage creates the page without opening the history index.
@@ -87,14 +91,25 @@ func (p *HistorySearchPage) Editing() bool {
 // background history query starts.
 func (p *HistorySearchPage) BeginLoad(request Request) {
 	p.loadToken = request.PageLoadToken
+	previewOnly := p.previewLoadPending
+	p.previewLoadPending = false
+	if previewOnly {
+		p.previewLoading = true
+		p.previewErrorText = ""
+		p.errorText = ""
+		return
+	}
 	p.loading = true
+	p.previewLoading = false
 	p.inputMode = false
 	p.hits = nil
 	p.hasMore = false
 	p.warnings = nil
 	p.detail = nil
+	p.preview = nil
 	p.notIndexed = false
 	p.errorText = ""
+	p.previewErrorText = ""
 	if !p.exporting {
 		p.clearExportReceipt()
 	}
@@ -120,7 +135,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 	}
 	value := key.String()
 	result := PageKeyResult{Request: request}
-	if p.loading && value != "esc" {
+	if (p.loading || p.previewLoading) && value != "esc" {
 		result.Handled = true
 		return result
 	}
@@ -156,6 +171,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 			if nextSelection != request.HistorySelect {
 				result.Request.HistorySelect = nextSelection
 				p.updateSelectionExport(&result.Request, nextSelection)
+				p.schedulePreview(&result)
 				result.Changed = true
 			}
 		}
@@ -183,6 +199,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 			if nextSelection != request.HistorySelect {
 				result.Request.HistorySelect = nextSelection
 				p.updateSelectionExport(&result.Request, nextSelection)
+				p.schedulePreview(&result)
 				result.Changed = true
 			}
 		}
@@ -204,6 +221,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		if p.sessionID == "" && request.HistorySelect != 0 {
 			result.Request.HistorySelect = 0
 			p.updateSelectionExport(&result.Request, 0)
+			p.schedulePreview(&result)
 			result.Changed = true
 		}
 		return result
@@ -222,6 +240,7 @@ func (p *HistorySearchPage) HandleKey(request Request, key tea.KeyMsg) PageKeyRe
 		if p.sessionID == "" && len(p.hits) > 0 && request.HistorySelect != len(p.hits)-1 {
 			result.Request.HistorySelect = len(p.hits) - 1
 			p.updateSelectionExport(&result.Request, len(p.hits)-1)
+			p.schedulePreview(&result)
 			result.Changed = true
 		}
 		return result
@@ -408,21 +427,29 @@ func (p *HistorySearchPage) Apply(request Request, value any, err error) {
 	if request.PageLoadToken != p.loadToken || request.HistoryQuery != p.query || request.HistorySessionID != p.sessionID {
 		return
 	}
+	previewOnly := p.previewLoading
 	p.loading = false
+	p.previewLoading = false
 	if err != nil {
 		p.notIndexed = false
+		if previewOnly {
+			p.previewErrorText = "Selected prompt context is unavailable."
+			p.preview = nil
+			return
+		}
 		p.errorText = "History search is unavailable. Try again."
-		p.hits, p.warnings, p.detail = nil, nil, nil
+		p.hits, p.warnings, p.detail, p.preview = nil, nil, nil, nil
 		return
 	}
 	data, ok := value.(HistorySearchData)
 	if !ok {
 		p.notIndexed = false
 		p.errorText = "History search returned an unreadable result."
-		p.hits, p.warnings, p.detail = nil, nil, nil
+		p.hits, p.warnings, p.detail, p.preview = nil, nil, nil, nil
 		return
 	}
 	p.errorText = ""
+	p.previewErrorText = ""
 	if request.HistoryExportID == "" {
 		p.exportErrorText, p.exportText = "", ""
 	}
@@ -432,8 +459,14 @@ func (p *HistorySearchPage) Apply(request Request, value any, err error) {
 	}
 	p.warnings = append([]string(nil), data.Search.Warnings...)
 	p.hasMore = data.Search.HasMore
-	p.hits = append([]SearchHit(nil), data.Search.Hits...)
+	if !previewOnly || len(data.Search.Hits) > 0 {
+		p.hits = append([]SearchHit(nil), data.Search.Hits...)
+	}
 	p.detail = data.Session
+	p.preview = data.Preview
+	if request.HistorySessionID == "" && data.Preview == nil && !previewOnly {
+		p.preview = nil
+	}
 }
 
 // Export writes the selected session through the CLI-owned callback.
@@ -516,13 +549,59 @@ func (p *HistorySearchPage) resetSearch() {
 	p.hasMore = false
 	p.warnings = nil
 	p.detail = nil
+	p.preview = nil
+	p.previewLoading = false
+	p.previewLoadPending = false
 	p.searched = false
 	p.loading = false
 	p.errorText = ""
+	p.previewErrorText = ""
 	p.clearExportReceipt()
 }
 
+func (p *HistorySearchPage) schedulePreview(result *PageKeyResult) {
+	if !isWideSearchRequest(result.Request) || p.sessionID != "" || len(p.hits) == 0 {
+		return
+	}
+	p.previewLoadPending = true
+	p.previewLoading = true
+	result.Action = PageActionLoad
+}
+
+func isWideSearchRequest(request Request) bool {
+	return WidthTierFor(request.Width) == WidthWide && HeightTierFor(request.Height) == HeightTall
+}
+
 func (p *HistorySearchPage) searchView(width int, context PageContext) string {
+	if isWideSearchRequest(context.Request) {
+		return p.wideSearchView(width, context)
+	}
+	return p.searchViewNarrow(width, context)
+}
+
+func (p *HistorySearchPage) wideSearchView(width int, context PageContext) string {
+	const previewWidth = 57
+	if width < previewWidth+4 {
+		return p.searchViewNarrow(width, context)
+	}
+	leftWidth := max(1, width-previewWidth-2)
+	selectedIndex := 0
+	if len(p.hits) > 0 {
+		selectedIndex = min(max(context.Request.HistorySelect, 0), len(p.hits)-1)
+	}
+	left := p.searchResultsContent(leftWidth, context, selectedIndex)
+	right := p.searchPreviewContent(previewWidth, context, selectedIndex)
+	height := context.Height
+	if height <= 0 {
+		height = ContentHeightFor(context.Request.Width, context.Request.Height)
+	}
+	return tuipages.RenderSearchColumns(context.Render, width, height, left, leftWidth, right, previewWidth)
+}
+
+// searchViewNarrow retains the compact list used at standard and floor tiers.
+// It is split from searchView so wide mode cannot accidentally inherit a
+// two-pane height calculation when the terminal is resized.
+func (p *HistorySearchPage) searchViewNarrow(width int, context PageContext) string {
 	query := truncateSearchInput(oneLine(p.query), max(0, width-lipgloss.Width("SEARCH /█")))
 	lines := []string{
 		context.Render.Palette.Header().Render("FIND IN HISTORY"),
@@ -592,6 +671,181 @@ func (p *HistorySearchPage) searchView(width int, context PageContext) string {
 	return strings.Join(lines, "\n")
 }
 
+func (p *HistorySearchPage) searchResultsContent(width int, context PageContext, selectedIndex int) string {
+	query := truncateSearchInput(oneLine(p.query), max(0, width-lipgloss.Width("SEARCH /█")))
+	lines := []string{
+		context.Render.Palette.Subtle().Render("SEARCH ") + context.Render.Palette.Emphasis().Render("/"+query+"█"),
+		context.Render.Palette.Border().Render(strings.Repeat("─", width)),
+	}
+	switch {
+	case p.loading:
+		lines = append(lines, context.Render.Palette.Subtle().Render("Searching local history…"))
+	case p.notIndexed:
+		lines = append(lines, context.Render.Palette.Warning().Render("History index is not available."), context.Render.Palette.Subtle().Render("run `tokenomnom history index`, then search here."))
+	case p.errorText != "":
+		lines = append(lines, context.Render.Palette.Warning().Render(truncateText(p.errorText, width)))
+	case !p.searched:
+		lines = append(lines, context.Render.Palette.Subtle().Render("Press enter to search."))
+	case len(p.hits) == 0:
+		lines = append(lines, context.Render.Palette.Subtle().Render("No matching prompts."))
+	default:
+		pageHeight := context.Height
+		if pageHeight <= 0 {
+			pageHeight = ContentHeightFor(context.Request.Width, context.Request.Height)
+		}
+		statusLines := 0
+		if p.exportText != "" {
+			statusLines += 2
+		}
+		if p.exporting {
+			statusLines += 2
+		}
+		if p.exportErrorText != "" {
+			statusLines += 2
+		}
+		if len(p.warnings) > 0 {
+			statusLines += 2
+		}
+		resultBudget := max(1, pageHeight-1-2-statusLines-2)
+		visibleCount := max(1, resultBudget/2)
+		for visibleCount > 1 {
+			start, end := searchVisibleWindow(len(p.hits), selectedIndex, visibleCount)
+			markerLines := 0
+			if start > 0 {
+				markerLines++
+			}
+			if end < len(p.hits) || p.hasMore {
+				markerLines++
+			}
+			if 2*visibleCount+markerLines <= resultBudget {
+				break
+			}
+			visibleCount = max(1, (resultBudget-markerLines)/2)
+		}
+		start, end := searchVisibleWindow(len(p.hits), selectedIndex, visibleCount)
+		if start > 0 {
+			lines = append(lines, context.Render.Palette.Subtle().Render("↑ earlier results"))
+		}
+		for index, hit := range p.hits[start:end] {
+			absoluteIndex := start + index
+			selected := absoluteIndex == selectedIndex
+			prefix, style := "  ", context.Render.Palette.Subtle()
+			if selected {
+				prefix, style = "› ", context.Render.Palette.Emphasis().Bold(true)
+			}
+			snippet := truncateMarkedSnippet(oneLine(hit.Snippet), max(1, width-3), hit.SnippetMatchStart, hit.SnippetMatchEnd)
+			matchStyle := context.Render.Palette.Emphasis()
+			if selected {
+				matchStyle = style.Underline(true)
+			}
+			lines = append(lines, prefix+highlightSnippet(snippet, hit.SnippetMatchStart, hit.SnippetMatchEnd, style, matchStyle))
+			project := oneLine(hit.Project)
+			if project == "" {
+				project = "unknown project"
+			}
+			lines = append(lines, "    "+context.Render.Palette.Subtle().Render(truncateText(oneLine(hit.Date)+" · "+oneLine(hit.Provider)+" · "+project, max(1, width-4))))
+		}
+		if end < len(p.hits) || p.hasMore {
+			lines = append(lines, context.Render.Palette.Subtle().Render("More results available."))
+		}
+	}
+	lines = appendPageStatus(lines, context.Render, width, p.warnings, p.exporting, p.exportText, p.exportErrorText)
+	lines = append(lines, "", context.Render.Palette.Subtle().Render("↑/↓ select  ·  enter open  ·  e export  ·  / edit"))
+	return strings.Join(lines, "\n")
+}
+
+func searchVisibleWindow(length, selected, capacity int) (int, int) {
+	capacity = max(1, capacity)
+	if length <= capacity {
+		return 0, length
+	}
+	selected = min(max(selected, 0), length-1)
+	start := max(0, min(selected-capacity+1, length-capacity))
+	return start, start + capacity
+}
+
+func (p *HistorySearchPage) searchPreviewContent(width int, context PageContext, selectedIndex int) string {
+	if p.previewLoading {
+		return "Loading selected prompt context…\n\nMove with ↑/↓; enter opens the full session."
+	}
+	if p.previewErrorText != "" {
+		return strings.Join([]string{
+			context.Render.Palette.Warning().Render(p.previewErrorText),
+			"", context.Render.Palette.Subtle().Render("Enter opens the full session."),
+		}, "\n")
+	}
+	if p.preview != nil && p.preview.Detail != nil {
+		height := context.Height
+		if height <= 0 {
+			height = ContentHeightFor(context.Request.Width, context.Request.Height)
+		}
+		return renderSearchPreview(context.Render, *p.preview, width, max(1, height-1))
+	}
+	if selectedIndex < 0 || selectedIndex >= len(p.hits) {
+		return "No search result is selected."
+	}
+	hit := p.hits[selectedIndex]
+	return strings.Join([]string{
+		context.Render.Palette.Emphasis().Render(oneLine(hit.SessionID)),
+		tuipages.PageBandTitle(context.Render, "MATCHED PROMPT", width),
+		truncateMarkedSnippet(oneLine(hit.Snippet), max(1, width-2), hit.SnippetMatchStart, hit.SnippetMatchEnd),
+		"", tuipages.PageBandTitle(context.Render, "SESSION", width),
+		tuipages.MetadataLine(context.Render, "provider", hit.Provider, width),
+		tuipages.MetadataLine(context.Render, "project", hit.Project, width),
+		tuipages.MetadataLine(context.Render, "date", hit.Date, width),
+		"", context.Render.Palette.Subtle().Render("Context loads for the selected hit."),
+	}, "\n")
+}
+
+func renderSearchPreview(render theme.Context, preview tuipages.SearchPreview, width, height int) string {
+	detail := preview.Detail
+	lines := []string{render.Palette.Emphasis().Render(detail.SessionID), tuipages.PageBandTitle(render, "SESSION OVERVIEW", width),
+		tuipages.MetadataLine(render, "provider", detail.Provider, width), tuipages.MetadataLine(render, "project", detail.Project, width),
+		tuipages.MetadataLine(render, "first", detail.FirstDate, width), tuipages.MetadataLine(render, "last", detail.LastDate, width),
+		"", tuipages.PageBandTitle(render, "MATCHED PROMPT", width)}
+	matched := ""
+	matchIndex := -1
+	for index, prompt := range detail.Prompts {
+		if prompt.PromptID == preview.PromptID {
+			matched = prompt.Snippet
+			matchIndex = index
+			break
+		}
+	}
+	if matched == "" {
+		matched = detail.Preview
+	}
+	contextLines := []string{"", tuipages.PageBandTitle(render, "PROMPT CONTEXT", width)}
+	start, end := max(0, matchIndex-2), min(len(detail.Prompts), matchIndex+3)
+	if matchIndex < 0 {
+		start, end = 0, min(len(detail.Prompts), 5)
+	}
+	if start == end {
+		contextLines = append(contextLines, render.Palette.Subtle().Render("No surrounding prompts are available."))
+	}
+	for index := start; index < end; index++ {
+		prompt := detail.Prompts[index]
+		prefix := "  "
+		if index == matchIndex {
+			prefix = "› "
+		}
+		contextLines = append(contextLines, truncate(prefix+tuipages.CleanInline(prompt.Date)+"  "+tuipages.CleanInline(prompt.Snippet), width))
+	}
+	contextLines = append(contextLines, "", render.Palette.Subtle().Render("enter opens full detail  ·  e export"))
+	matchedLines := strings.Split(tuipages.IndentWrapped(tuipages.CleanText(matched), max(1, width-2)), "\n")
+	matchedCapacity := max(1, height-len(lines)-len(contextLines))
+	if len(matchedLines) > matchedCapacity {
+		if matchedCapacity == 1 {
+			matchedLines = []string{render.Palette.Subtle().Render("  …")}
+		} else {
+			matchedLines = append(matchedLines[:matchedCapacity-1], render.Palette.Subtle().Render("  …"))
+		}
+	}
+	lines = append(lines, matchedLines...)
+	lines = append(lines, contextLines...)
+	return strings.Join(lines, "\n")
+}
+
 func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 	if p.loading {
 		return strings.Join([]string{
@@ -622,7 +876,7 @@ func (p *HistorySearchPage) detailView(width int, context PageContext) string {
 	if height <= 0 {
 		height = ContentHeightFor(context.Request.Width, context.Request.Height)
 	}
-	return tuipages.RenderHistorySearchSessionDetail(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, notices)
+	return tuipages.RenderHistorySearchSessionDetailForViewport(context.Render, *p.detail, width, height, context.Request.SessionDetailOffset, context.Request.Width, context.Request.Height, notices)
 }
 
 func (p *HistorySearchPage) detailNotices() []string {
@@ -649,7 +903,7 @@ func (p *HistorySearchPage) detailMaxOffset(request Request) int {
 	}
 	width, height := ContentWidth(request.Width), ContentHeightFor(request.Width, request.Height)
 	render := theme.Context{Mode: theme.Plain, Width: width, Palette: theme.NewPalette(nil)}
-	return tuipages.HistorySearchSessionDetailMaxOffset(render, *p.detail, width, height, p.detailNotices())
+	return tuipages.HistorySearchSessionDetailMaxOffsetForViewport(render, *p.detail, width, height, request.Width, request.Height, p.detailNotices())
 }
 
 func appendPageStatus(lines []string, render theme.Context, width int, warnings []string, exporting bool, exported, exportError string) []string {

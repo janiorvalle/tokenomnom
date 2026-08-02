@@ -116,7 +116,7 @@ func loadHistorySearchPageWithFreshness(cmd *cobra.Command, request tui.Request,
 	defer database.Close()
 	location, _ := historyPresentationTimezone(cmd)
 	if request.HistorySessionID != "" {
-		data, err := loadHistorySessionPage(database, request.HistorySessionID, location)
+		data, err := loadHistorySessionPageWithCost(cmd, database, request.HistorySessionID, location, codexDir, claudeDir)
 		data.Search.Warnings = append(data.Search.Warnings, freshnessWarnings...)
 		return data, err
 	}
@@ -146,6 +146,15 @@ func loadHistorySearchPageWithFreshness(cmd *cobra.Command, request tui.Request,
 			SnippetMatchStart: result.SnippetMatchStart, SnippetMatchEnd: result.SnippetMatchEnd,
 		})
 	}
+	if tui.WidthTierFor(request.Width) == tui.WidthWide && tui.HeightTierFor(request.Height) == tui.HeightTall && len(data.Search.Hits) > 0 {
+		selected := min(max(request.HistorySelect, 0), len(data.Search.Hits)-1)
+		preview, previewErr := loadHistorySessionPreview(database, data.Search.Hits[selected].SessionID, data.Search.Hits[selected].PromptID, location)
+		if previewErr != nil {
+			data.Search.Warnings = append(data.Search.Warnings, "Selected prompt context could not be loaded; enter opens the full session.")
+		} else {
+			data.Preview = &pages.SearchPreview{PromptID: data.Search.Hits[selected].PromptID, Detail: preview.Session}
+		}
+	}
 	return data, nil
 }
 
@@ -163,6 +172,10 @@ func historySearchFreshnessWarnings(cmd *cobra.Command, path, codexDir, claudeDi
 }
 
 func loadHistorySessionPage(database *historystore.Store, sessionID string, location *time.Location) (pages.HistorySearchData, error) {
+	return loadHistorySessionPageWithCost(nil, database, sessionID, location, "", "")
+}
+
+func loadHistorySessionPageWithCost(cmd *cobra.Command, database *historystore.Store, sessionID string, location *time.Location, codexDir, claudeDir string) (pages.HistorySearchData, error) {
 	session, err := database.GetSession(sessionID)
 	if err != nil {
 		return pages.HistorySearchData{}, err
@@ -173,6 +186,37 @@ func loadHistorySessionPage(database *historystore.Store, sessionID string, loca
 	if err != nil {
 		return pages.HistorySearchData{}, err
 	}
+	detail := historySessionDetail(session, prompts, location)
+	if cmd != nil {
+		cost, warning := loadDashboardSessionCost(cmd, database, sessionID, codexDir, claudeDir)
+		detail.Cost = cost
+		if warning != "" {
+			prompts.Warnings = append(prompts.Warnings, warning)
+		}
+	}
+	return pages.HistorySearchData{
+		Search:  pages.SearchResult{Warnings: append([]string(nil), prompts.Warnings...)},
+		Session: detail,
+	}, nil
+}
+
+func loadHistorySessionPreview(database *historystore.Store, sessionID, promptID string, location *time.Location) (pages.HistorySearchData, error) {
+	session, err := database.GetSession(sessionID)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	prompts, err := database.SessionPromptContext(sessionID, promptID, 2)
+	if err != nil {
+		return pages.HistorySearchData{}, err
+	}
+	detail := historySessionDetail(session, prompts, location)
+	return pages.HistorySearchData{
+		Search:  pages.SearchResult{Warnings: append([]string(nil), prompts.Warnings...)},
+		Session: detail,
+	}, nil
+}
+
+func historySessionDetail(session historystore.CatalogSession, prompts historystore.PromptsPage, location *time.Location) *pages.SessionDetail {
 	presentHistorySession(&session, location)
 	presentHistoryPromptPage(&prompts, location)
 	detail := &pages.SessionDetail{
@@ -187,10 +231,7 @@ func loadHistorySessionPage(database *historystore.Store, sessionID string, loca
 			PromptID: prompt.PromptID, Date: historyPageDate(prompt.Timestamp), Snippet: safePrettyPreview(prompt.Snippet),
 		})
 	}
-	return pages.HistorySearchData{
-		Search:  pages.SearchResult{Warnings: append([]string(nil), prompts.Warnings...)},
-		Session: detail,
-	}, nil
+	return detail
 }
 
 func exportHistorySearch(cmd *cobra.Command, request tui.Request, codexDir, claudeDir string) (string, error) {

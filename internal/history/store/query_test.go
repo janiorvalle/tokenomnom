@@ -51,6 +51,41 @@ func TestPromptKindFiltersAndCompactOccurrenceOutput(t *testing.T) {
 	}
 }
 
+func TestSessionPromptContextCentersSelectedPrompt(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/context.jsonl", history.LocationProviderLive)
+	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	prompts := make([]history.Prompt, 0, 7)
+	for index := 0; index < 7; index++ {
+		value := prompt(fmt.Sprintf("native:context-%d", index), fmt.Sprintf("context-%d", index), fmt.Sprintf("context prompt %d", index), int64(index+1))
+		when := base.Add(time.Duration(index) * time.Minute)
+		value.Timestamp = &when
+		prompts = append(prompts, value)
+	}
+	extract := extraction("native:context-session", "context-session", source, prompts...)
+	extract.Session.FirstTimestamp = prompts[0].Timestamp
+	extract.Session.LastTimestamp = prompts[len(prompts)-1].Timestamp
+	result, err := database.ApplySource(extract, head(source, "context-hash", 100, int64(len(prompts))), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := database.SessionPromptContext(result.SessionID, result.PromptIDs["native:context-3"], 2)
+	if err != nil || len(page.Prompts) != 5 {
+		t.Fatalf("context page err=%v page=%+v", err, page)
+	}
+	for index, prompt := range page.Prompts {
+		want := fmt.Sprintf("native:context-%d", 5-index)
+		if prompt.PromptID != result.PromptIDs[want] {
+			t.Fatalf("context row %d = %q, want %q", index, prompt.PromptID, result.PromptIDs[want])
+		}
+	}
+	if _, err := database.SessionPromptContext(result.SessionID, result.PromptIDs["native:context-3"], 11); err == nil || !strings.Contains(err.Error(), "radius") {
+		t.Fatalf("invalid context radius error=%v", err)
+	}
+}
+
 func TestCompactOutputBudgetForTwentyFiveItems(t *testing.T) {
 	database := openTestStore(t)
 	defer database.Close()

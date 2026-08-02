@@ -228,7 +228,7 @@ func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
 	calls := 0
 	refresh := func() tuipages.SessionPageData {
 		calls++
-		return tuipages.SessionPageData{Warning: []string{"", "one", "two", "three", "four"}[calls]}
+		return tuipages.SessionPageData{Warning: []string{"", "one", "two", "three", "four", "five", "six", "seven", "eight"}[calls]}
 	}
 	request := tui.Request{Provider: tui.CodexProvider, Range: tui.Range30Days}
 
@@ -238,27 +238,42 @@ func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
 	}
 	request.SessionOffset = 1
 	data = cache.snapshot(request, refresh)
-	if data.Warning != "one" || calls != 1 {
-		t.Fatalf("selection-only session snapshot = %+v calls=%d", data, calls)
+	if data.Warning != "two" || calls != 2 {
+		t.Fatalf("selected session snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionDetailID = "ses_1"
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "three" || calls != 3 {
+		t.Fatalf("session detail snapshot = %+v calls=%d", data, calls)
+	}
+	request.SessionReturnToEnd = true
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "four" || calls != 4 {
+		t.Fatalf("return-to-end session snapshot = %+v calls=%d", data, calls)
+	}
+	request.Width, request.Height = 192, 50
+	data = cache.snapshot(request, refresh)
+	if data.Warning != "five" || calls != 5 {
+		t.Fatalf("viewport session snapshot = %+v calls=%d", data, calls)
 	}
 	request.SessionCursor = "next"
 	data = cache.snapshot(request, refresh)
-	if data.Warning != "two" || calls != 2 {
+	if data.Warning != "six" || calls != 6 {
 		t.Fatalf("cursor session snapshot = %+v calls=%d", data, calls)
 	}
 	request.SessionProject, request.SessionProjectActive = "tokenomnom", true
 	data = cache.snapshot(request, refresh)
-	if data.Warning != "three" || calls != 3 {
+	if data.Warning != "seven" || calls != 7 {
 		t.Fatalf("project-filter session snapshot = %+v calls=%d", data, calls)
 	}
 	request.Sync = true
 	data = cache.snapshot(request, refresh)
-	if data.Warning != "four" || calls != 4 {
+	if data.Warning != "eight" || calls != 8 {
 		t.Fatalf("sync session snapshot = %+v calls=%d", data, calls)
 	}
 	request.Sync = false
 	data = cache.snapshot(request, refresh)
-	if data.Warning != "four" || calls != 4 {
+	if data.Warning != "eight" || calls != 8 {
 		t.Fatalf("post-sync session snapshot = %+v calls=%d", data, calls)
 	}
 }
