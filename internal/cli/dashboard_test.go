@@ -614,8 +614,8 @@ func TestQuest108AfterSnapshot(t *testing.T) {
 	wideLines := len(strings.Split(strings.TrimRight(daily, "\n"), "\n"))
 	narrowDaily := narrow.Views[tui.DailyTab]
 	narrowLines := len(strings.Split(strings.TrimRight(narrowDaily, "\n"), "\n"))
-	if narrowLines <= wideLines || !strings.Contains(narrowDaily, "PROVIDER SPLIT") {
-		t.Fatalf("narrow daily view did not collapse below chart (wide=%d narrow=%d):\n%s", wideLines, narrowLines, narrowDaily)
+	if narrowLines != wideLines || !strings.Contains(narrowDaily, "PROJECTS · ALL-TIME TRENDS") {
+		t.Fatalf("standard daily view changed its exact-fill analysis layout (wide=%d narrow=%d):\n%s", wideLines, narrowLines, narrowDaily)
 	}
 	t.Logf("wide daily cockpit:\n%s\n\nnarrow daily cockpit:\n%s", daily, narrowDaily)
 }

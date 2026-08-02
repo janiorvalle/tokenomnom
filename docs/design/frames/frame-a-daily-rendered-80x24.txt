@@ -1,0 +1,21 @@
+Source: internal/tui/pages/daily_test.go::TestQuest146DailyFrames
+Command: go test ./internal/tui/pages -run TestQuest146DailyFrames -count=1 -v
+
+COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day
+ $300                                                    █ █ █ █              
+                                                   █ █ █ █ █ █ █              
+                                             █ █ █ █ █ █ █ █ █ █              
+                                     █ █ █ █ █ █ █ █ █ █ █ █ █ █              
+ $150                          █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
+     ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ ┈ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █  avg $100.00 
+                 █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
+           █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
+ $0.0█ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █              
+     01     04     07     10     13     16     19     22     25     28   ^    
+avg $100.00 · peak 09                                                         
+──────────────────────────────────────────────────────────────────────────────
+DAY DETAIL · 2026-07-30 · $200.00 · PROVIDER SPLIT · COST                     
+codex    $120.00  60%                                                         
+claude   $80.00  40%                                                          
+TOP MODELS BY COST · gpt-test $120.00                                         
+~ Cost attribution unavailable · restore source · rerun history index         
