@@ -200,9 +200,10 @@ func TestSchemaThreeMigrationPreservesStableIDs(t *testing.T) {
 		ALTER TABLE sessions DROP COLUMN thread_confidence;
 		ALTER TABLE sessions DROP COLUMN thread_rule_version;
 		ALTER TABLE sessions DROP COLUMN forked_from_message_id;
-			ALTER TABLE sessions DROP COLUMN repository_rule_version;
+		ALTER TABLE sessions DROP COLUMN repository_rule_version;
 			ALTER TABLE sessions DROP COLUMN project_source;
 			ALTER TABLE sessions DROP COLUMN project;
+		ALTER TABLE source_heads DROP COLUMN settled_missing;
 		DELETE FROM meta WHERE key='sampling_ready';
 		UPDATE meta SET value='2' WHERE key='schema_version';
 		UPDATE meta SET value='1' WHERE key='extractor_version'`); err != nil {
@@ -274,6 +275,7 @@ func TestRepositoryMigrationBackfillsStoredCodexURLWithoutIDChurn(t *testing.T) 
 			ALTER TABLE sessions DROP COLUMN repository_rule_version;
 			ALTER TABLE sessions DROP COLUMN project_source;
 			ALTER TABLE sessions DROP COLUMN project;
+		ALTER TABLE source_heads DROP COLUMN settled_missing;
 		UPDATE meta SET value='8' WHERE key='schema_version'`); err != nil {
 		t.Fatal(err)
 	}
@@ -359,6 +361,102 @@ func TestHealthDoesNotCountMissingSourceAsStale(t *testing.T) {
 	health, err := database.Health()
 	if err != nil || health.MissingSources != 1 || health.StaleSources != 0 {
 		t.Fatalf("missing source health=%+v err=%v", health, err)
+	}
+}
+
+func TestSettleMissingSourcesKeepsDoctorCountAndClearsOnRestore(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	source := sourceRef("/provider/settle-missing.jsonl", history.LocationProviderLive)
+	extract := extraction("native:settle-missing", "settle-missing", source, prompt("native:p", "p", "settle me", 1))
+	if _, err := database.ApplySource(extract, head(source, "settle-hash", 10, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := database.MarkSourceMissing(history.ProviderCodex, source.Path); err != nil || !changed {
+		t.Fatalf("mark missing changed=%v err=%v", changed, err)
+	}
+	health, err := database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.MissingSources != 1 || health.SettledMissingSources != 0 || health.UnsettledMissingSources != 1 {
+		t.Fatalf("unsettled health=%+v", health)
+	}
+	beforeGeneration := health.IndexGeneration
+	settled, err := database.SettleMissingSources(history.ProviderCodex)
+	if err != nil || settled != 1 {
+		t.Fatalf("settle count=%d err=%v", settled, err)
+	}
+	health, err = database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.MissingSources != 1 || health.SettledMissingSources != 1 || health.UnsettledMissingSources != 0 || health.IndexGeneration <= beforeGeneration {
+		t.Fatalf("settled health=%+v before generation=%d", health, beforeGeneration)
+	}
+	checkpoints, err := database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, ok := checkpoints[CheckpointKey(history.ProviderCodex, source.Path)]
+	if !ok || !checkpoint.Missing || !checkpoint.SettledMissing {
+		t.Fatalf("settled checkpoint = %+v found=%v", checkpoint, ok)
+	}
+	settled, err = database.SettleMissingSources(history.ProviderCodex)
+	if err != nil || settled != 0 {
+		t.Fatalf("repeat settle count=%d err=%v", settled, err)
+	}
+	repeatedHealth, err := database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeatedHealth.IndexGeneration != health.IndexGeneration {
+		t.Fatalf("repeat settle advanced generation from %d to %d", health.IndexGeneration, repeatedHealth.IndexGeneration)
+	}
+	if _, err := database.ApplySource(extract, head(source, "restored-hash", 12, 1), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.MissingSources != 0 || health.SettledMissingSources != 0 || health.UnsettledMissingSources != 0 {
+		t.Fatalf("restored health=%+v", health)
+	}
+}
+
+func TestSettledMissingDoesNotHideUnavailableSnapshot(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	providerSource := sourceRef("/provider/settle-mixed.jsonl", history.LocationProviderLive)
+	extract := extraction("native:settle-mixed", "settle-mixed", providerSource, prompt("native:p", "p", "mixed source", 1))
+	result, err := database.ApplySource(extract, head(providerSource, "mixed-hash", 10, 1), ApplyReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MarkSourceMissing(history.ProviderCodex, providerSource.Path); err != nil {
+		t.Fatal(err)
+	}
+	if settled, err := database.SettleMissingSources(history.ProviderCodex); err != nil || settled != 1 {
+		t.Fatalf("settle mixed source count=%d err=%v", settled, err)
+	}
+	vaultSource := history.SourceReference{
+		Provider: history.ProviderCodex, Kind: history.LocationVault, Path: "/vault/settle-mixed.jsonl",
+		Archive: "codex/settle-mixed.tar.zst", RelativePath: "settle-mixed.jsonl", VaultVersion: 1,
+	}
+	vaultExtract := extraction("native:settle-mixed", "settle-mixed", vaultSource, prompt("native:vault", "vault", "vault copy", 1))
+	if _, err := database.PreserveSnapshot(vaultExtract, history.PreservedSnapshot{Provider: history.ProviderCodex, ContentSHA256: "mixed-vault-hash", Size: 12}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE locations SET available=0 WHERE kind='vault'`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := database.ListSessionCostSources(SessionCostQuery{SessionID: result.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 || page.Sessions[0].MissingSourceSettled || len(page.Warnings) != 1 {
+		t.Fatalf("mixed unavailable cost sources = %+v warnings=%+v", page.Sessions, page.Warnings)
 	}
 }
 

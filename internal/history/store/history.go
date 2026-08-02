@@ -727,7 +727,7 @@ func (s *Store) RelocateSource(provider history.Provider, oldPath string, source
 		if err := tx.tx.QueryRow(`SELECT id FROM source_heads WHERE provider=? AND source_path=?`, provider, oldPath).Scan(&sourceID); err != nil {
 			return fmt.Errorf("find source to relocate: %w", err)
 		}
-		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_path=?,source_kind=?,available=1 WHERE id=?`, source.Path, providerSourceKind(provider, source.Kind), sourceID); err != nil {
+		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_path=?,source_kind=?,available=1,settled_missing=0 WHERE id=?`, source.Path, providerSourceKind(provider, source.Kind), sourceID); err != nil {
 			return fmt.Errorf("relocate source head: %w", err)
 		}
 		if _, err := tx.tx.Exec(`UPDATE locations SET available=0 WHERE source_head_id=?`, sourceID); err != nil {
@@ -1296,10 +1296,10 @@ func (tx *Tx) ensureSourceHead(sessionID int64, provider history.Provider, head 
 		if err != nil {
 			return 0, "", err
 		}
-		result, err := tx.tx.Exec(`INSERT INTO source_heads(public_id,provider,source_path,source_kind,session_id,current_sha256,content_hash_state,prefix_fingerprint,tail_fingerprint,extractor_state,size,mtime_unix,complete_offset,line_count,available,first_ts,last_ts,extractor_version,indexed_at,last_attempt_unix,last_error)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, head.Source.Path, providerSourceKind(provider, head.Source.Kind), sessionID, head.ContentSHA256,
+		result, err := tx.tx.Exec(`INSERT INTO source_heads(public_id,provider,source_path,source_kind,session_id,current_sha256,content_hash_state,prefix_fingerprint,tail_fingerprint,extractor_state,size,mtime_unix,complete_offset,line_count,available,settled_missing,first_ts,last_ts,extractor_version,indexed_at,last_attempt_unix,last_error)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, publicID, provider, head.Source.Path, providerSourceKind(provider, head.Source.Kind), sessionID, head.ContentSHA256,
 			head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState, head.Size,
-			head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), timeText(firstTimestamp), timeText(lastTimestamp), history.ExtractorVersion, time.Now().Unix(), time.Now().Unix(), "")
+			head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), 0, timeText(firstTimestamp), timeText(lastTimestamp), history.ExtractorVersion, time.Now().Unix(), time.Now().Unix(), "")
 		if err != nil {
 			return 0, "", fmt.Errorf("insert history source head: %w", err)
 		}
@@ -1317,7 +1317,7 @@ func (tx *Tx) ensureSourceHead(sessionID int64, provider history.Provider, head 
 		firstTS = earliestTimestamp(existingFirstTS.String, firstTS)
 		lastTS = latestTimestamp(existingLastTS.String, lastTS)
 	}
-	_, err = tx.tx.Exec(`UPDATE source_heads SET session_id=?,source_kind=?,current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,available=?,first_ts=?,last_ts=?,extractor_version=?,indexed_at=?,last_attempt_unix=?,last_error='' WHERE id=?`,
+	_, err = tx.tx.Exec(`UPDATE source_heads SET session_id=?,source_kind=?,current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,available=?,settled_missing=0,first_ts=?,last_ts=?,extractor_version=?,indexed_at=?,last_attempt_unix=?,last_error='' WHERE id=?`,
 		sessionID, providerSourceKind(provider, head.Source.Kind), head.ContentSHA256, head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState,
 		head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount, boolInt(head.Available), nullableTimestamp(firstTS), nullableTimestamp(lastTS), history.ExtractorVersion, time.Now().Unix(), time.Now().Unix(), id)
 	if err != nil {

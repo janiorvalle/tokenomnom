@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,6 +57,97 @@ func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
 	}
 	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.DefaultSessionsPerPage != 20 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
 		t.Fatalf("session cost bounds/page = %+v / %+v", data.Bounds, data.Page)
+	}
+}
+
+func TestHistoryCostsSettledMissingSourceStopsWarning(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	sourcePath := filepath.Join(codexDir, "sessions", "settle-missing.jsonl")
+	fixture := strings.Join([]string{
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"settle-missing","thread_source":"user","cwd":"/repo"}}`,
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"settle this missing source"}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, sourcePath, fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--provider", "codex", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--provider", "codex", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	beforeOutput, err := executeReport([]string{"history", "costs", "--provider", "codex", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := decodeEnvelope(t, beforeOutput)
+	if len(before.Warnings) == 0 || !strings.Contains(strings.Join(before.Warnings, " "), "no available exact transcript location") {
+		t.Fatalf("missing-source warning before settlement = %+v", before.Warnings)
+	}
+	var beforeData historySessionCostData
+	if err := json.Unmarshal(before.Data, &beforeData); err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeData.Sessions) != 1 || beforeData.Sessions[0].AttributionStatus != "unavailable" {
+		t.Fatalf("unsettled cost row = %+v", beforeData.Sessions)
+	}
+
+	settledOutput, err := executeReport([]string{"history", "index", "--source", "provider", "--provider", "codex", "--settle-missing", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settledIndex jsonHistoryIndexData
+	if err := json.Unmarshal(decodeEnvelope(t, settledOutput).Data, &settledIndex); err != nil {
+		t.Fatal(err)
+	}
+	if settledIndex.SettledMissingSources != 1 {
+		t.Fatalf("settlement receipt = %+v", settledIndex)
+	}
+
+	afterOutput, err := executeReport([]string{"history", "costs", "--provider", "codex", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := decodeEnvelope(t, afterOutput)
+	if len(after.Warnings) != 0 {
+		t.Fatalf("settled cost warnings = %+v", after.Warnings)
+	}
+	var afterData historySessionCostData
+	if err := json.Unmarshal(after.Data, &afterData); err != nil {
+		t.Fatal(err)
+	}
+	if len(afterData.Sessions) != 1 || afterData.Sessions[0].AttributionStatus != "settled_missing" || !afterData.Sessions[0].MissingSourceSettled || afterData.Sessions[0].TokenSource != "settled_missing" || len(afterData.Sessions[0].Warnings) != 0 {
+		t.Fatalf("settled cost row = %+v", afterData.Sessions)
+	}
+
+	statusOutput, err := executeReport([]string{"history", "status", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status jsonHistoryHealth
+	if err := json.Unmarshal(decodeEnvelope(t, statusOutput).Data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.MissingSources != 1 || status.SettledMissingSources != 1 || status.UnsettledMissingSources != 0 || status.Status != "ready" {
+		t.Fatalf("settled history status = %+v", status)
+	}
+}
+
+func TestHistoryIndexSettleMissingRejectsVaultScope(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	_, err := executeReport([]string{"history", "index", "--source", "vault", "--settle-missing"}, filepath.Join(root, "codex"), filepath.Join(root, "claude"))
+	if err == nil || !strings.Contains(err.Error(), "history_index_settle_missing_scope") || !strings.Contains(err.Error(), "--source provider") {
+		t.Fatalf("settle scope error = %v", err)
 	}
 }
 

@@ -64,6 +64,7 @@ type ExclusionCount struct {
 	Classification history.Classification `json:"classification"`
 	Reason         string                 `json:"reason"`
 	Count          int                    `json:"count"`
+	Expected       bool                   `json:"expected"`
 }
 
 // Summary reports aggregate work without emitting one object per source.
@@ -754,7 +755,7 @@ func (a *extractionAccumulator) result() (history.Extraction, string, []Exclusio
 func exclusionCounts(counts map[diagnosticKey]int) []ExclusionCount {
 	values := make([]ExclusionCount, 0, len(counts))
 	for key, count := range counts {
-		values = append(values, ExclusionCount{Classification: key.classification, Reason: key.reason, Count: count})
+		values = append(values, ExclusionCount{Classification: key.classification, Reason: key.reason, Count: count, Expected: isExpectedExclusion(key.classification)})
 	}
 	sort.Slice(values, func(i, j int) bool {
 		if values[i].Classification != values[j].Classification {
@@ -763,6 +764,10 @@ func exclusionCounts(counts map[diagnosticKey]int) []ExclusionCount {
 		return values[i].Reason < values[j].Reason
 	})
 	return values
+}
+
+func isExpectedExclusion(classification history.Classification) bool {
+	return classification != "" && classification != history.ClassificationUnknown
 }
 
 func mergeExclusionCounts(current, added []ExclusionCount) []ExclusionCount {

@@ -338,8 +338,18 @@ func TestExtractionDiagnosticsBecomeBoundedWarnings(t *testing.T) {
 	writeFile(t, path, codexMeta("diagnostic")+"not-json\n"+codexPrompt("p1", "accepted"))
 	summary := env.index(t, false)
 	if summary.IndexedPrompts != 1 || len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0].Error, "malformed JSON") ||
-		len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Classification != history.ClassificationUnknown || summary.ExclusionCounts[0].Reason != "malformed JSON" || summary.ExclusionCounts[0].Count != 1 {
+		len(summary.ExclusionCounts) != 1 || summary.ExclusionCounts[0].Classification != history.ClassificationUnknown || summary.ExclusionCounts[0].Reason != "malformed JSON" || summary.ExclusionCounts[0].Count != 1 || summary.ExclusionCounts[0].Expected {
 		t.Fatalf("diagnostic summary=%+v", summary)
+	}
+}
+
+func TestExclusionCountsMarkRoutineFilteringExpected(t *testing.T) {
+	values := exclusionCounts(map[diagnosticKey]int{
+		{classification: history.ClassificationToolResult, reason: "non-user response item excluded"}:       12,
+		{classification: history.ClassificationUnknown, reason: "conflicting session_meta record excluded"}: 1,
+	})
+	if len(values) != 2 || !values[0].Expected || values[1].Expected {
+		t.Fatalf("expected exclusion classifications = %+v", values)
 	}
 }
 

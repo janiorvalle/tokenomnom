@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
@@ -30,6 +31,7 @@ type Checkpoint struct {
 	LastAttemptUnix   int64
 	LastError         string
 	Missing           bool
+	SettledMissing    bool
 	Session           history.Session
 }
 
@@ -77,6 +79,8 @@ type Health struct {
 	StaleSources            int
 	ErrorSources            int
 	MissingSources          int
+	SettledMissingSources   int
+	UnsettledMissingSources int
 	LastIndexUnix           int64
 	LastAttemptUnix         int64
 	LastCompleteSuccessUnix int64
@@ -92,7 +96,7 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 	rows, err := s.runner.Query(`SELECT sh.public_id,sh.provider,sh.source_path,sh.source_kind,sh.size,sh.mtime_unix,
 		sh.complete_offset,sh.line_count,sh.current_sha256,sh.content_hash_state,sh.prefix_fingerprint,
 		sh.tail_fingerprint,sh.extractor_state,sh.extractor_version,sh.indexed_at,sh.last_attempt_unix,
-		sh.last_error,sh.available,s.identity_key,COALESCE(s.native_session_id,''),s.fallback_key,
+		sh.last_error,sh.available,sh.settled_missing,s.identity_key,COALESCE(s.native_session_id,''),s.fallback_key,
 			COALESCE(s.cwd,''),COALESCE(s.repository_root,''),COALESCE(s.repository_name,''),
 			COALESCE(s.repository_identity,''),s.repository_rule_version,COALESCE(s.branch,''),s.thread_kind,
 		COALESCE(s.thread_evidence,''),s.thread_confidence,s.thread_rule_version,
@@ -107,12 +111,12 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 	result := make(map[string]Checkpoint)
 	for rows.Next() {
 		var value Checkpoint
-		var available bool
+		var available, settledMissing bool
 		var firstTS, lastTS sql.NullString
 		if err := rows.Scan(&value.SourceID, &value.Provider, &value.Path, &value.SourceKind, &value.Size,
 			&value.ModTimeUnixNano, &value.CompleteOffset, &value.LineCount, &value.ContentSHA256,
 			&value.ContentHashState, &value.PrefixFingerprint, &value.TailFingerprint, &value.ExtractorState,
-			&value.ExtractorVersion, &value.IndexedAtUnix, &value.LastAttemptUnix, &value.LastError, &available,
+			&value.ExtractorVersion, &value.IndexedAtUnix, &value.LastAttemptUnix, &value.LastError, &available, &settledMissing,
 			&value.Session.IdentityKey, &value.Session.NativeSessionID, &value.Session.FallbackKey, &value.Session.CWD,
 			&value.Session.RepositoryRoot, &value.Session.RepositoryName, &value.Session.RepositoryIdentity,
 			&value.Session.RepositoryRuleVersion, &value.Session.Branch, &value.Session.ThreadKind, &value.Session.ThreadEvidence,
@@ -122,6 +126,7 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 			return nil, fmt.Errorf("scan history checkpoint: %w", err)
 		}
 		value.Missing = !available
+		value.SettledMissing = settledMissing
 		if value.SourceKind == "codex_archive" {
 			value.Kind = history.LocationProviderArchive
 		} else {
@@ -145,7 +150,7 @@ func (s *Store) UpdateCheckpointOnly(head history.SourceHead) error {
 	return s.Transaction(func(tx *Tx) error {
 		if _, err := tx.tx.Exec(`UPDATE source_heads SET source_kind=?,size=?,mtime_unix=?,complete_offset=?,line_count=?,
 			current_sha256=?,content_hash_state=?,prefix_fingerprint=?,tail_fingerprint=?,extractor_state=?,
-			last_attempt_unix=?,last_error='' WHERE provider=? AND source_path=?`,
+			last_attempt_unix=?,last_error='',settled_missing=0 WHERE provider=? AND source_path=?`,
 			providerSourceKind(head.Source.Provider, head.Source.Kind), head.Size, head.ModTimeUnix, head.CompleteOffset, head.LineCount,
 			head.ContentSHA256, head.ContentHashState, head.PrefixFingerprint, head.TailFingerprint, head.ExtractorState,
 			time.Now().Unix(), head.Source.Provider, head.Source.Path); err != nil {
@@ -199,6 +204,35 @@ func (s *Store) MarkSourceMissing(provider history.Provider, path string) (bool,
 		return tx.advanceGenerationIf(true)
 	})
 	return changed, err
+}
+
+// SettleMissingSources acknowledges missing source heads without hiding them
+// from health or doctor. A later successful index clears the acknowledgement.
+func (s *Store) SettleMissingSources(providers ...history.Provider) (int, error) {
+	settled := 0
+	err := s.Transaction(func(tx *Tx) error {
+		query := `UPDATE source_heads SET settled_missing=1 WHERE available=0 AND settled_missing=0`
+		args := make([]any, 0, len(providers))
+		if len(providers) > 0 {
+			placeholders := make([]string, len(providers))
+			for index, provider := range providers {
+				placeholders[index] = "?"
+				args = append(args, provider)
+			}
+			query += ` AND provider IN (` + strings.Join(placeholders, ",") + `)`
+		}
+		result, err := tx.tx.Exec(query, args...)
+		if err != nil {
+			return fmt.Errorf("settle missing history source heads: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count settled history source heads: %w", err)
+		}
+		settled = int(rowsAffected)
+		return tx.advanceGenerationIf(settled > 0)
+	})
+	return settled, err
 }
 
 // RecordSourceError retains bounded diagnostics without storing transcript text.
@@ -375,6 +409,7 @@ var healthQuery = `SELECT
 		 (SELECT COUNT(*) FROM vault_bundle_state WHERE last_success_unix>0 AND extractor_version<>?)+
 		 (SELECT COUNT(*) FROM preserved_snapshots WHERE extractor_version<>?)),
 		((SELECT COUNT(*) FROM source_heads WHERE last_error<>'')+(SELECT COUNT(*) FROM source_errors)+(SELECT COUNT(*) FROM vault_bundle_state WHERE last_error<>'')),(SELECT COUNT(*) FROM source_heads WHERE available=0),
+		(SELECT COUNT(*) FROM source_heads WHERE available=0 AND settled_missing=1),(SELECT COUNT(*) FROM source_heads WHERE available=0 AND settled_missing=0),
 		MAX(COALESCE((SELECT MAX(indexed_at) FROM source_heads),0),COALESCE((SELECT MAX(last_success_unix) FROM vault_bundle_state),0)),
 		COALESCE((SELECT value FROM meta WHERE key='last_attempt_unix'),'0'),
 		COALESCE((SELECT value FROM meta WHERE key='last_complete_success_unix'),'0'),
@@ -396,7 +431,7 @@ func scanHealth(row rowScanner, value *Health) error {
 		&value.UnavailableMetadata, &value.IndexedVaultBundles, &value.IndexedVaultVersions,
 		&value.BrokenSkippedBundles, &value.CoverageFirst, &value.CoverageLast,
 		&value.UserCoverageFirst, &value.UserCoverageLast, &value.AssistantCoverageFirst, &value.AssistantCoverageLast,
-		&value.StaleSources, &value.ErrorSources, &value.MissingSources,
+		&value.StaleSources, &value.ErrorSources, &value.MissingSources, &value.SettledMissingSources, &value.UnsettledMissingSources,
 		&value.LastIndexUnix, &value.LastAttemptUnix, &value.LastCompleteSuccessUnix, &value.LastRunErrorCount, &value.LastErrorSummary,
 		&value.SamplingReady, &value.IndexGeneration, &value.AssistantIndexed)
 }

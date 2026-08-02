@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS source_heads (
     complete_offset INTEGER NOT NULL DEFAULT 0,
 	line_count INTEGER NOT NULL DEFAULT 0,
 	available INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0, 1)),
+	settled_missing INTEGER NOT NULL DEFAULT 0 CHECK (settled_missing IN (0, 1)),
 	first_ts TEXT,
 	last_ts TEXT,
     extractor_version INTEGER NOT NULL,

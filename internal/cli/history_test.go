@@ -557,15 +557,15 @@ func TestHistoryIndexQuietDefaultAndVerboseDiagnostics(t *testing.T) {
 		summary := indexer.Summary{
 			Errors: []indexer.Issue{{Provider: "claude", Path: "source.jsonl", Error: "source failure"}}, ErrorCount: 1,
 			Warnings:         []indexer.Issue{{Provider: "codex", Path: "source.jsonl", Error: "line 2: malformed JSON"}},
-			ExclusionCounts:  []indexer.ExclusionCount{{Classification: history.ClassificationUnknown, Reason: "malformed JSON", Count: 1}},
+			ExclusionCounts:  []indexer.ExclusionCount{{Classification: history.ClassificationUnknown, Reason: "malformed JSON", Count: 1}, {Classification: history.ClassificationToolResult, Reason: "non-user response item excluded", Count: 650, Expected: true}},
 			PromptKindCounts: map[history.PromptKind]int{},
 		}
-		if err := writeHistoryIndex(command, "", "provider", summary, indexer.VaultSummary{}, historystore.ThreadKindCoverage{}, verbose); err != nil {
+		if err := writeHistoryIndex(command, "", "provider", summary, indexer.VaultSummary{}, historystore.ThreadKindCoverage{}, 0, verbose); err != nil {
 			t.Fatal(err)
 		}
 		return output.String()
 	}
-	if output := render("pretty", false); !strings.Contains(output, "Error: claude:") || strings.Contains(output, "Warning:") {
+	if output := render("pretty", false); !strings.Contains(output, "Error: claude:") || strings.Contains(output, "Warning:") || !strings.Contains(output, "Excluded (expected: non-prompt records): 650") || !strings.Contains(output, "Excluded unknown / malformed JSON: 1") {
 		t.Fatalf("default pretty output included details:\n%s", output)
 	}
 	if output := render("pretty", true); !strings.Contains(output, "Error: claude:") || !strings.Contains(output, "Warning: codex:") {
