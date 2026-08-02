@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -167,24 +168,47 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			return tui.Snapshot{}, err
 		}
 		databasePath := filepath.Join(stateDir, store.DatabaseName)
-		var release func()
-		if request.Sync {
-			release, err = store.Lock(databasePath)
-			if err != nil {
-				return tui.Snapshot{}, err
-			}
-			defer release()
-		}
-		database, err := store.Open(databasePath)
-		if err != nil {
-			return tui.Snapshot{}, err
-		}
-		defer database.Close()
-
 		location, timezoneName, err := dashboardTimezone(timezone)
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
+		var database *store.Store
+		var release func()
+		if request.Initial && !request.Sync {
+			// Existing usage is safe to read while a sync owns the writer
+			// lock. A missing or uninitialized store is handed to the writer
+			// before the sync can create its first snapshot.
+			database, err = store.OpenReadOnly(databasePath)
+			if errors.Is(err, os.ErrNotExist) {
+				release, err = store.Lock(databasePath)
+				if err == nil {
+					database, err = store.Open(databasePath)
+				}
+			} else if errors.Is(err, store.ErrStoreNeedsMigration) || errors.Is(err, store.ErrStoreNeedsInitialization) {
+				release, err = store.Lock(databasePath)
+				if err == nil {
+					database, err = store.Open(databasePath)
+				}
+			}
+		} else {
+			if request.Sync {
+				release, err = store.Lock(databasePath)
+				if err != nil {
+					return tui.Snapshot{}, err
+				}
+			}
+			database, err = store.Open(databasePath)
+		}
+		if err != nil {
+			if release != nil {
+				release()
+			}
+			return tui.Snapshot{}, err
+		}
+		if release != nil {
+			defer release()
+		}
+		defer database.Close()
 		if request.Initial && !request.Sync {
 			snapshot, err := dashboardSnapshot(database, request, render, location, syncer.Summary{})
 			if err != nil {

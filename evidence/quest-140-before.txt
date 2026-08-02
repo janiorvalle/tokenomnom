@@ -1,0 +1,32 @@
+Quest 140 baseline, captured before implementation.
+
+Repro: create an empty usage store, write an orphaned
+`usage.db.lock` owner record (`pid=2147483647 started=2026-08-01T23:00:00Z`),
+then run `tokenomnom doctor --format json`.
+
+Observed doctor result:
+
+```json
+{
+  "warnings": [],
+  "store": {
+    "exists": true,
+    "schema_version": 3,
+    "usage_rows": 0,
+    "missing_files": 0
+  }
+}
+```
+
+The store lock is present, but doctor reports no lock state or remediation.
+
+Existing lock tests before the fix:
+
+```text
+=== RUN   TestSyncLockFailsFastAndReleases
+--- PASS: TestSyncLockFailsFastAndReleases (0.00s)
+=== RUN   TestStaleLockFileWithoutOSLockIsReclaimed
+--- PASS: TestStaleLockFileWithoutOSLockIsReclaimed (0.00s)
+PASS
+ok   github.com/janiorvalle/tokenomnom/internal/store  0.013s
+```

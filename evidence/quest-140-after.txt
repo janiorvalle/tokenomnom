@@ -1,0 +1,60 @@
+Quest 140 verification, captured after implementation.
+
+Real CLI flow with a temporary state directory:
+
+```text
+CLEAN RELEASE:
+warnings: []
+store.lock: exists=true held=false stale=false owner_known=true released=true
+
+STALE RECORD:
+warnings: [usage store lock is stale at .../usage.db.lock (pid=2147483647 started=2026-08-01T23:00:00Z is no longer running); retry tokenomnom to reclaim it]
+store.lock: exists=true held=false stale=true released=false pid=2147483647 pid_alive=false
+
+TAKEOVER:
+skipped: false
+warnings: []
+
+POST-TAKEOVER CLEAN RELEASE:
+warnings: []
+store.lock: exists=true held=false stale=false owner_known=true released=true
+```
+
+Focused regression tests:
+
+```text
+=== RUN   TestSyncLockWaitsBoundedlyAndReleases
+--- PASS: TestSyncLockWaitsBoundedlyAndReleases (2.04s)
+=== RUN   TestInspectLockReportsDeadOwner
+--- PASS: TestInspectLockReportsDeadOwner (0.00s)
+=== RUN   TestOpenReadOnlyDoesNotCreateOrMigrate
+--- PASS: TestOpenReadOnlyDoesNotCreateOrMigrate (0.01s)
+=== RUN   TestStaleLockFileWithoutOSLockIsReclaimed
+--- PASS: TestStaleLockFileWithoutOSLockIsReclaimed (0.01s)
+PASS
+ok   github.com/janiorvalle/tokenomnom/internal/store  2.069s
+
+=== RUN   TestDoctorReportsStaleUsageLock
+--- PASS: TestDoctorReportsStaleUsageLock (0.02s)
+=== RUN   TestDashboardInitialLoaderMigratesSupportedStoreBeforeReading
+--- PASS: TestDashboardInitialLoaderMigratesSupportedStoreBeforeReading (0.01s)
+=== RUN   TestDashboardInitialLoaderInitializesExistingEmptyStore
+--- PASS: TestDashboardInitialLoaderInitializesExistingEmptyStore (0.01s)
+=== RUN   TestDashboardInitialLoaderLocksMissingStoreInitialization
+--- PASS: TestDashboardInitialLoaderLocksMissingStoreInitialization (2.04s)
+PASS
+ok   github.com/janiorvalle/tokenomnom/internal/cli  2.087s
+
+=== RUN   TestDroppedLoadedSnapshotResumesPendingResize
+--- PASS: TestDroppedLoadedSnapshotResumesPendingResize (0.00s)
+PASS
+ok   github.com/janiorvalle/tokenomnom/internal/tui  0.009s
+
+Final gates:
+
+```text
+go build -buildvcs=false ./...                           PASS
+GOOS=windows GOARCH=amd64 go build -buildvcs=false ./... PASS
+go vet -buildvcs=false ./...                             PASS
+GOFLAGS=-buildvcs=false make verify                      PASS
+```

@@ -699,7 +699,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		initialLoad := !m.loaded && msg.request.Initial && msg.request.LoadID == 0
 		requestMatches := initialLoad || sameRequestIgnoringSync(msg.request, m.request)
 		if !requestMatches {
-			return m, nil
+			return m, m.resumePendingWork()
 		}
 		if msg.err != nil {
 			m.loading, m.syncFresh = false, false

@@ -861,6 +861,158 @@ func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.
 	}
 }
 
+func TestDashboardInitialLoaderMigratesSupportedStoreBeforeReading(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(tempDir, "config")
+	codexDir := filepath.Join(tempDir, "codex")
+	claudeDir := filepath.Join(tempDir, "claude")
+	for _, path := range []string{stateDir, dataDir, configDir, codexDir, claudeDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+
+	legacyPath := filepath.Join(stateDir, store.DatabaseName)
+	legacy, err := sql.Open("sqlite", legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta(key, value) VALUES ('schema_version', '1');`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--format", "pretty", "--codex-dir", codexDir, "--claude-dir", claudeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
+	if _, err := loader(tui.Request{Initial: true, Width: 100, Height: 30}); err != nil {
+		t.Fatalf("initial loader did not migrate the supported store: %v", err)
+	}
+
+	database, err := store.OpenReadOnly(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := database.Info()
+	closeErr := database.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if info.SchemaVersion != store.SchemaVersion {
+		t.Fatalf("dashboard migration schema = %d, want %d", info.SchemaVersion, store.SchemaVersion)
+	}
+}
+
+func TestDashboardInitialLoaderInitializesExistingEmptyStore(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(tempDir, "config")
+	codexDir := filepath.Join(tempDir, "codex")
+	claudeDir := filepath.Join(tempDir, "claude")
+	for _, path := range []string{stateDir, dataDir, configDir, codexDir, claudeDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	emptyPath := filepath.Join(stateDir, store.DatabaseName)
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--format", "pretty", "--codex-dir", codexDir, "--claude-dir", claudeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
+	if _, err := loader(tui.Request{Initial: true, Width: 100, Height: 30}); err != nil {
+		t.Fatalf("initial loader did not initialize the existing empty store: %v", err)
+	}
+
+	database, err := store.OpenReadOnly(emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := database.Info()
+	closeErr := database.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if info.SchemaVersion != store.SchemaVersion {
+		t.Fatalf("dashboard initialization schema = %d, want %d", info.SchemaVersion, store.SchemaVersion)
+	}
+}
+
+func TestDashboardInitialLoaderLocksMissingStoreInitialization(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(tempDir, "config")
+	codexDir := filepath.Join(tempDir, "codex")
+	claudeDir := filepath.Join(tempDir, "claude")
+	for _, path := range []string{stateDir, dataDir, configDir, codexDir, claudeDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", dataDir)
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", configDir)
+	databasePath := filepath.Join(stateDir, store.DatabaseName)
+	release, err := store.Lock(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	cmd := newRootCommand(theme.ResolveOptions{ForceTerminal: boolPointer(true), Width: 100, ForceColor: true, Dark: boolPointer(true)})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--format", "pretty", "--codex-dir", codexDir, "--claude-dir", claudeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
+	_, err = loader(tui.Request{Initial: true, Width: 100, Height: 30})
+	if !errors.Is(err, store.ErrStoreInUse) {
+		t.Fatalf("missing-store initialization error = %v", err)
+	}
+}
+
 func boolPointer(value bool) *bool { return &value }
 
 func TestBarePlainInvocationRemainsHelp(t *testing.T) {

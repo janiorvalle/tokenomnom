@@ -406,6 +406,24 @@ func TestInitialSnapshotSurvivesResizeBeforeLoadCompletes(t *testing.T) {
 	}
 }
 
+func TestDroppedLoadedSnapshotResumesPendingResize(t *testing.T) {
+	model := loadedTestModel()
+	model.pendingResize = true
+	model.dashboardLoadBusy = true
+	staleRequest := model.request
+	staleRequest.DailyCursor = 1
+
+	updated, command := model.Update(loadedMsg{
+		request:    staleRequest,
+		generation: model.loadGeneration,
+		snapshot:   Snapshot{Views: [4]string{"stale"}},
+	})
+	model = updated.(Model)
+	if command == nil || !model.dashboardLoadBusy || model.pendingResize {
+		t.Fatalf("stale loaded snapshot stranded pending resize: command=%v busy=%v pending=%v", command != nil, model.dashboardLoadBusy, model.pendingResize)
+	}
+}
+
 func TestEveryViewRendersStructure(t *testing.T) {
 	model := loadedTestModel()
 	for tab := Tab(0); tab < tabCount; tab++ {
