@@ -2687,12 +2687,11 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 		dates = append(dates, date)
 	}
 	sort.Strings(dates)
-	recentDates := modelCalendarDates(dates)
+	recentDates := modelCalendarDates(dates, reportDate)
 
 	var totalTokens int64
 	var totalCost pricing.Money
 	var totalPriced, totalUnpriced int64
-	var totalModelSessions int
 	for _, row := range rows {
 		key := modelCostKey{Provider: row.Provider, Model: row.Model}
 		value := costs.ByModel[key]
@@ -2707,7 +2706,6 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 			Pricing: modelPricingLabel(stats), Sessions: modelSessions.ByModel[key],
 			Days: row.ActiveDays, FirstDate: row.FirstDate, LastDate: row.LastDate,
 		}
-		totalModelSessions += modelRow.Sessions
 		modelRow.Sparkline = modelSparklineValues(dailyCosts[key], recentDates)
 		data.Rows = append(data.Rows, modelRow)
 	}
@@ -2749,7 +2747,9 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 		Provider: "TOTAL", Model: fmt.Sprintf("%d models", len(data.Rows)), Tokens: totalTokens,
 		Cost: totalCost, PricedTokens: totalPriced, UnpricedTokens: totalUnpriced,
 		TokenShare: totalTokenShare, CostShare: totalCostShare, Pricing: fmt.Sprintf("%d priced", countPricedModels(data.Rows)),
-		Sessions: totalModelSessions,
+		// This is the distinct logical-session count; per-model rows can overlap
+		// when one session uses more than one model.
+		Sessions: modelSessions.Total,
 		Days:     len(dates),
 	}
 	if len(dates) > 0 {
@@ -2839,13 +2839,15 @@ func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []st
 	return data
 }
 
-func modelCalendarDates(activeDates []string) []string {
-	if len(activeDates) == 0 {
-		return nil
+func modelCalendarDates(activeDates []string, reportDate string) []string {
+	end, err := time.Parse(heatmapDateLayout, reportDate)
+	if err != nil && len(activeDates) > 0 {
+		end, err = time.Parse(heatmapDateLayout, activeDates[len(activeDates)-1])
 	}
-	latest := activeDates[len(activeDates)-1]
-	end, err := time.Parse(heatmapDateLayout, latest)
 	if err != nil {
+		if len(activeDates) == 0 {
+			return nil
+		}
 		start := max(0, len(activeDates)-30)
 		return append([]string(nil), activeDates[start:]...)
 	}
