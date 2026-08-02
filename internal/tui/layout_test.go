@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -209,4 +210,55 @@ func heatmapEvidenceData() tuipages.HeatmapData {
 		days = append(days, day)
 	}
 	return tuipages.HeatmapData{Window: tuipages.HeatmapWindow{From: from, To: to}, Days: days}
+}
+
+func TestQuest151PageFramesExactFill(t *testing.T) {
+	model := loadedTestModel()
+	model.router = newRouter(NewVaultPage(), NewSystemPage())
+	model.snapshot.Vault = tuipages.VaultPageData{
+		Directory: "/tmp/tokenomnom-vault", Initialized: true, Format: "v1, none", Files: 42,
+		RawBytes: 12 * 1024 * 1024, StoredBytes: 4 * 1024 * 1024, RawSize: "12.0 MiB", StoredSize: "4.0 MiB", Ratio: "3.00x",
+		Verified: "yes · 2026-08-12T04:00:00Z", VerificationState: tuipages.FindingOK, LastArchive: "2026-08-12T03:00:00Z",
+		LastVerification: "2026-08-12T04:00:00Z", Reclaimable: "8.0 MiB",
+		Bundles: []tuipages.VaultBundle{
+			{Date: "2026-08-12", Files: 12, RawSize: "12.0 MiB", StoredSize: "4.0 MiB", Status: "ready"},
+			{Date: "2026-08-11", Files: 8, RawSize: "8.0 MiB", StoredSize: "3.0 MiB", Status: "ready"},
+		},
+	}
+	pricingRows := make([]tuipages.PricingRow, 0, 18)
+	for index := 0; index < 18; index++ {
+		pricingRows = append(pricingRows, tuipages.PricingRow{
+			Model: fmt.Sprintf("model-%02d", index), BaseInput: "$1.00", CacheRead: "$0.10", Write5m: "$1.25", Write1h: "$2.00", Output: "$5.00",
+			Status: "published", Effective: "always", Source: "embedded",
+		})
+	}
+	model.snapshot.System = tuipages.SystemPageData{
+		Findings: []tuipages.SystemFinding{{Name: "Codex", Value: "ready · 42 files", State: tuipages.FindingOK}, {Name: "History", Value: "ready · 44 sessions", State: tuipages.FindingOK}},
+		Warnings: []string{"One provider source is stale; run tokenomnom sync to refresh it."}, Pricing: pricingRows,
+		PricingDisclaimer: "Dollar figures are API list-price equivalents, not actual bills.",
+		Schedule:          tuipages.SystemSchedule{Installed: true, DefinitionExists: true, BinaryExists: true, Mechanism: "launchd", ConfiguredInterval: "24h", InstalledInterval: "24h"},
+		Sources:           []tuipages.SystemSource{{Name: "Codex", Files: 42, Size: "12.0 MiB", Exists: true}, {Name: "Claude", Files: 18, Size: "4.0 MiB", Exists: true}},
+	}
+	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
+		model.request.Width, model.request.Height = size.width, size.height
+		model.render.Width = size.width
+		for _, pageID := range []PageID{VaultPageID, SystemPageID} {
+			if !model.router.Select(pageID) {
+				t.Fatalf("could not select %s", pageID)
+			}
+			view := model.View()
+			lines := strings.Split(view, "\n")
+			if len(lines) != size.height {
+				t.Fatalf("%s %dx%d rendered %d rows", pageID, size.width, size.height, len(lines))
+			}
+			for index, line := range lines {
+				if got := lipgloss.Width(line); got != size.width {
+					t.Fatalf("%s %dx%d row %d width=%d", pageID, size.width, size.height, index+1, got)
+				}
+			}
+			if size.width == 192 {
+				t.Logf("FRAME: %s %dx%d\nSource: internal/tui/layout_test.go::TestQuest151PageFramesExactFill\nCommand: go test ./internal/tui -run TestQuest151PageFramesExactFill -count=1 -v\n\n%s", pageID, size.width, size.height, view)
+			}
+		}
+	}
 }

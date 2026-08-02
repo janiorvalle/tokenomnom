@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/janiorvalle/tokenomnom/internal/theme"
 )
 
 func TestVaultPageRendersHealth(t *testing.T) {
@@ -148,5 +150,176 @@ func TestSystemPagePaginatesWrappedPricingRows(t *testing.T) {
 		if lineWidth := lipgloss.Width(line); lineWidth > width {
 			t.Fatalf("system line width = %d, want <= %d: %q", lineWidth, width, line)
 		}
+	}
+}
+
+func TestQuest151WidePagesExactFillAndAvoidVoids(t *testing.T) {
+	dataVault, dataSystem := quest151PageFixtures()
+	render := theme.Context{Mode: theme.Plain, Width: 168, Palette: theme.NewPalette(nil)}
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{width: 136, height: 59},
+		{width: 168, height: 59},
+	} {
+		vault := RenderVault(render, dataVault, size.width, size.height, 0)
+		assertDenseFrame(t, "Vault", vault, size.width, size.height)
+		assertNoDenseVoids(t, "Vault", vault)
+		system := RenderSystem(render, dataSystem, size.width, size.height, 0)
+		assertDenseFrame(t, "System", system, size.width, size.height)
+		assertNoDenseVoids(t, "System", system)
+	}
+}
+
+func TestQuest151WideListsUseAvailableHeight(t *testing.T) {
+	vault, system := quest151PageFixtures()
+	render := theme.Context{Mode: theme.Plain, Width: 168, Palette: theme.NewPalette(nil)}
+	smallVault := RenderVault(render, vault, 168, 20, 0)
+	largeVault := RenderVault(render, vault, 168, 40, 0)
+	if strings.Count(largeVault, "2026-08-") <= strings.Count(smallVault, "2026-08-") {
+		t.Fatalf("Vault bundle rows did not grow with height:\nsmall:\n%s\nlarge:\n%s", smallVault, largeVault)
+	}
+	smallSystem := RenderSystem(render, system, 168, 20, 0)
+	largeSystem := RenderSystem(render, system, 168, 40, 0)
+	if strings.Count(largeSystem, "model-") <= strings.Count(smallSystem, "model-") {
+		t.Fatalf("System pricing rows did not grow with height:\nsmall:\n%s\nlarge:\n%s", smallSystem, largeSystem)
+	}
+}
+
+func TestQuest151WideVaultCanReachOldestBundle(t *testing.T) {
+	vault, _ := quest151PageFixtures()
+	render := theme.Context{Mode: theme.Plain, Width: 168, Palette: theme.NewPalette(nil)}
+	width, height := 168, 20
+	offset := 0
+	for {
+		next, changed := UpdateVaultOffset(render, vault, width, height, offset, "down")
+		if !changed {
+			break
+		}
+		offset = next
+	}
+	view := RenderVault(render, vault, width, height, offset)
+	if !strings.Contains(view, "\n2026-08-01") || strings.Contains(view, "\n2026-08-12") || !strings.Contains(view, "[v] VERIFY VAULT (DEEP)") {
+		t.Fatalf("wide Vault page did not reach the oldest bundle at offset %d:\n%s", offset, view)
+	}
+	assertDenseFrame(t, "Vault oldest bundle", view, width, height)
+}
+
+func TestQuest151WideVaultPreservesUnavailableState(t *testing.T) {
+	render := theme.Context{Mode: theme.Plain, Width: 168, Palette: theme.NewPalette(nil)}
+	view := RenderVault(render, VaultPageData{}, 168, 20, 0)
+	if !strings.Contains(view, "Vault status is not loaded yet.") {
+		t.Fatalf("wide Vault page hid its unavailable state:\n%s", view)
+	}
+	if strings.Contains(view, "VERIFY VAULT") {
+		t.Fatalf("wide Vault page showed an enabled verification action without data:\n%s", view)
+	}
+	assertDenseFrame(t, "Vault unavailable", view, 168, 20)
+}
+
+func TestQuest151WidePanesKeepWrappedValuesVisible(t *testing.T) {
+	vault, system := quest151PageFixtures()
+	vault.Directory = "/Users/janiorvalle/.local/share/tokenomnom/vault/provider/codex/archive/2026/08/transcripts/with/a/path/that/needs/wrapping"
+	vaultView := RenderVault(testRender(), vault, 136, 20, 0)
+	for _, fragment := range []string{"12.0 MiB", "4.0 MiB", "wrapping"} {
+		if !strings.Contains(vaultView, fragment) {
+			t.Fatalf("wide Vault storage pane hid %q:\n%s", fragment, vaultView)
+		}
+	}
+	system.Pricing[0].Override = "manual-override"
+	system.Warnings = []string{"This warning is deliberately long so the final TAIL-MARKER remains visible after wrapping inside the warnings pane."}
+	systemView := RenderSystem(testRender(), system, 136, 20, 0)
+	if !strings.Contains(systemView, "TAIL-MARKER") || !strings.Contains(systemView, "manual-override") {
+		t.Fatalf("wide System warnings pane truncated its wrapped text:\n%s", systemView)
+	}
+}
+
+func TestQuest151WideSystemWarningsCanScroll(t *testing.T) {
+	_, system := quest151PageFixtures()
+	system.Pricing = nil
+	system.Warnings = make([]string, 12)
+	for index := range system.Warnings {
+		system.Warnings[index] = fmt.Sprintf("warning-%02d", index)
+	}
+	render := testRender()
+	offset := 0
+	for {
+		next, changed := UpdateSystemOffset(render, system, 136, 20, offset, "down")
+		if !changed {
+			break
+		}
+		offset = next
+	}
+	view := RenderSystem(render, system, 136, 20, offset)
+	if !strings.Contains(view, "warning-11") || strings.Contains(view, "warning-00") {
+		t.Fatalf("wide System warnings did not reach their oldest entry at offset %d:\n%s", offset, view)
+	}
+}
+
+func TestQuest151WideSystemPreservesUnavailableScheduleState(t *testing.T) {
+	view := RenderSystem(testRender(), SystemPageData{}, 136, 50, 0)
+	if !strings.Contains(view, "Status:") || !strings.Contains(view, "unavailable") || !strings.Contains(view, "unknown") {
+		t.Fatalf("wide System page did not label unavailable schedule data:\n%s", view)
+	}
+	if strings.Contains(view, "not installed") {
+		t.Fatalf("wide System page presented unavailable schedule data as uninstalled:\n%s", view)
+	}
+}
+
+func quest151PageFixtures() (VaultPageData, SystemPageData) {
+	bundles := make([]VaultBundle, 0, 12)
+	for index := 0; index < 12; index++ {
+		bundles = append(bundles, VaultBundle{Date: fmt.Sprintf("2026-08-%02d", 12-index), Files: index + 1, RawSize: fmt.Sprintf("%d.0 MiB", index+1), StoredSize: fmt.Sprintf("%d00 KiB", index+1), Status: "ready"})
+	}
+	pricing := make([]PricingRow, 0, 30)
+	for index := 0; index < 30; index++ {
+		pricing = append(pricing, PricingRow{Model: fmt.Sprintf("model-%02d", index), BaseInput: "$1.00", CacheRead: "$0.10", Write5m: "$1.25", Write1h: "$2.00", Output: "$5.00", Status: "published", Effective: "always", Source: "embedded"})
+	}
+	return VaultPageData{
+			Directory: "/tmp/tokenomnom-vault", Initialized: true, Format: "v1, none", Files: 42,
+			RawBytes: 12 * 1024 * 1024, StoredBytes: 4 * 1024 * 1024, ReclaimableBytes: 8 * 1024 * 1024,
+			RawSize: "12.0 MiB", StoredSize: "4.0 MiB", Ratio: "3.00x", Verified: "yes · 2026-08-12T04:00:00Z",
+			VerificationState: FindingOK, LastArchive: "2026-08-12T03:00:00Z", LastVerification: "2026-08-12T04:00:00Z",
+			Reclaimable: "8.0 MiB", Bundles: bundles,
+		}, SystemPageData{
+			Findings: []SystemFinding{
+				{Name: "Codex", Value: "ready · 42 files · 12.0 MiB", State: FindingOK},
+				{Name: "Claude", Value: "ready · 18 files · 4.0 MiB", State: FindingOK},
+				{Name: "Store", Value: "ready · 60 rows · 6 models · 2.0 MiB", State: FindingOK},
+				{Name: "History", Value: "ready · 44 sessions · 180 prompts", State: FindingOK},
+			},
+			Warnings: []string{"One provider source is stale; run tokenomnom sync to refresh it."},
+			Pricing:  pricing, PricingDisclaimer: "Dollar figures are API list-price equivalents, not actual bills.",
+			Schedule: SystemSchedule{Installed: true, DefinitionExists: true, BinaryExists: true, Mechanism: "launchd", ConfiguredInterval: "24h", InstalledInterval: "24h"},
+			Sources:  []SystemSource{{Name: "Codex", Files: 42, Size: "12.0 MiB", Exists: true}, {Name: "Claude", Files: 18, Size: "4.0 MiB", Exists: true}},
+		}
+}
+
+func assertDenseFrame(t *testing.T, name, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) != height {
+		t.Fatalf("%s frame rows=%d, want %d:\n%s", name, len(lines), height, view)
+	}
+	for index, line := range lines {
+		if got := lipgloss.Width(line); got != width {
+			t.Fatalf("%s frame line %d width=%d, want %d: %q", name, index+1, got, width, line)
+		}
+	}
+}
+
+func assertNoDenseVoids(t *testing.T, name, view string) {
+	t.Helper()
+	run := 0
+	for index, line := range strings.Split(view, "\n") {
+		if strings.TrimSpace(line) == "" {
+			run++
+			if run > 3 {
+				t.Fatalf("%s has more than three blank rows ending at %d:\n%s", name, index+1, view)
+			}
+			continue
+		}
+		run = 0
 	}
 }

@@ -1,0 +1,71 @@
+# tokenomnom System page frame at 192x66
+
+Source: internal/tui/layout_test.go::TestQuest151PageFramesExactFill
+Command: go test ./internal/tui -run TestQuest151PageFramesExactFill -count=1 -v
+
+ tokenomnom  /  SYSTEM                                                                                                                                                    LOCAL  ·  ALL  ·  30D 
+ TOTAL $1.00  ·  TOKENS 100  ·  ACTIVE DAYS 2  ·  AVG/DAY $0.50  ·  PEAK $1.00                                                                                                                  
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  SYSTEM HEALTH ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ 1  Daily           │  DOCTOR ────────────────────────────────────────────────────────────────────────────  WARNINGS ────────────────────────────────────────────────────────────────────────── 
+ 2  Ledger          │    Codex:                 ready · 42 files                                            ! One provider source is stale; run tokenomnom sync to refresh it.                  
+ 3  Models          │    History:               ready · 44 sessions                                         ·                                                                                   
+ 4  Heatmap         │  ·                                                                                    ·                                                                                   
+                    │  ·                                                                                    ·                                                                                   
+ HISTORY            │  ·                                                                                    ·                                                                                   
+ 5  Sessions        │  ·                                                                                    ·                                                                                   
+                    │  ·                                                                                    ·                                                                                   
+ VAULT              │  ·                                                                                    ·                                                                                   
+ 6  Vault           │  ·                                                                                    ·                                                                                   
+                    │  ·                                                                                    ·                                                                                   
+ SYSTEM             │  ·                                                                                    ·                                                                                   
+ > 7  System        │  ·                                                                                    ·                                                                                   
+                    │  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ FILTERS            │  EFFECTIVE PRICING ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ provider           │  Dollar figures are API list-price equivalents, not actual bills.                                                                                                         
+   all              │  MODEL                        BASE INPUT  CACHE READ  WRITE 5M    WRITE 1H    OUTPUT      STATUS              EFFECTIVE        SOURCE                                     
+ range              │  model-00                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+   30d              │  model-01                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ project            │  model-02                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+   all              │  model-03                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+                    │  model-04                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ SNAPSHOT           │  model-05                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ today —            │  model-06                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ 7d —               │  model-07                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ 30d —              │  model-08                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ peak —             │  model-09                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+                    │  model-10                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ MIX · 30D          │  model-11                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ Codex 0% ··········│  model-12                          $1.00       $0.10       $1.25       $2.00       $5.00  published           always           embedded                                   
+ Claude 0% ·········│  ↓ 5 more pricing rows                                                                                                                                                    
+                    │  ·                                                                                                                                                                        
+ PROJECTS 30D       │  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ no project data    │  SCHEDULE & SOURCES ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                    │    Status:                installed                                                                                                                                       
+                    │    Mechanism:             launchd                                                                                                                                         
+                    │    Interval:              24h                                                                                                                                             
+                    │    Definition:            yes                                                                                                                                             
+                    │    Binary:                yes                                                                                                                                             
+                    │  SOURCE  FILES  SIZE                                                                                                                                                      
+                    │  Codex       42  12.0 MiB                                                                                                                                                 
+                    │  Claude      18  4.0 MiB                                                                                                                                                  
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+                    │  ·                                                                                                                                                                        
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                                                                                                                                         ● idle 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                                                                                                 
+ API list-price equivalents, not actual bills                                                                                                                              192x66 · wide + tall 
