@@ -1,0 +1,638 @@
+package tui
+
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/theme"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
+)
+
+// PageID is the stable identity used by the sidebar and page router.
+type PageID string
+
+const (
+	DailyPageID    PageID = "daily"
+	LedgerPageID   PageID = "ledger"
+	ModelsPageID   PageID = "models"
+	HeatmapPageID  PageID = "heatmap"
+	SessionsPageID PageID = "sessions"
+	VaultPageID    PageID = "vault"
+	SystemPageID   PageID = "system"
+)
+
+// MonthlyPageID is retained for callers that still use the old page name.
+const MonthlyPageID PageID = LedgerPageID
+
+// PageSection is a navigation group in the sidebar.
+type PageSection string
+
+const (
+	SpendSection   PageSection = "SPEND"
+	HistorySection PageSection = "HISTORY"
+	VaultSection   PageSection = "VAULT"
+	SystemSection  PageSection = "SYSTEM"
+)
+
+// PageContext contains the immutable state a page needs to render itself.
+// A page can use the same context whether it is backed by a loaded snapshot
+// today or by its own loader in a later dashboard iteration.
+type PageContext struct {
+	Render   theme.Context
+	Snapshot Snapshot
+	Request  Request
+	Width    int
+	Height   int
+}
+
+// Page is one isolated destination in the dashboard.
+type Page interface {
+	ID() PageID
+	Section() PageSection
+	Title() string
+	View(PageContext) string
+	Update(PageContext, string) (Request, bool)
+	NeedsReload(PageContext, Request) bool
+}
+
+// PageAction tells the app whether a handled key needs background work.
+type PageAction uint8
+
+const (
+	PageActionNone PageAction = iota
+	PageActionLoad
+	PageActionExport
+)
+
+// PageKeyResult is the result of a page-owned key interaction.
+type PageKeyResult struct {
+	Request Request
+	Handled bool
+	Changed bool
+	Action  PageAction
+}
+
+// InteractivePage can claim keys that are not global dashboard bindings, such
+// as text input, Enter, and page-local export commands.
+type InteractivePage interface {
+	Page
+	HandleKey(Request, tea.KeyMsg) PageKeyResult
+	Editing() bool
+}
+
+// PageLoader owns data retrieval for a page. The app runs Load outside the
+// Bubble Tea update loop and applies the result back on the update loop.
+type PageLoader interface {
+	Page
+	Load(Request) (any, error)
+	Apply(Request, any, error)
+}
+
+// PageLoadTracker receives a load token on the update loop before the app
+// starts a PageLoader command, so the page can reject stale responses safely.
+type PageLoadTracker interface {
+	BeginLoad(Request)
+}
+
+// PageExporter owns a page-local export action.
+type PageExporter interface {
+	Page
+	Export(Request) (string, error)
+	ApplyExport(Request, string, error)
+}
+
+type pageKeyHandler func(Request, string) (Request, bool)
+
+// snapshotPage adapts one of the existing report views to the page contract.
+// New pages can implement Page in their own file without changing Model.
+type snapshotPage struct {
+	id         PageID
+	section    PageSection
+	title      string
+	viewIndex  int
+	keyHandler pageKeyHandler
+}
+
+func (p snapshotPage) ID() PageID           { return p.id }
+func (p snapshotPage) Section() PageSection { return p.section }
+func (p snapshotPage) Title() string        { return p.title }
+
+func (p snapshotPage) View(context PageContext) string {
+	if p.viewIndex < 0 || p.viewIndex >= len(context.Snapshot.Views) {
+		return ""
+	}
+	return context.Snapshot.Views[p.viewIndex]
+}
+
+func (p snapshotPage) Update(context PageContext, key string) (Request, bool) {
+	if p.keyHandler == nil {
+		return context.Request, false
+	}
+	return p.keyHandler(context.Request, key)
+}
+
+func (snapshotPage) NeedsReload(PageContext, Request) bool { return true }
+
+type ledgerPage struct{}
+
+func (ledgerPage) ID() PageID           { return LedgerPageID }
+func (ledgerPage) Section() PageSection { return SpendSection }
+func (ledgerPage) Title() string        { return "Ledger" }
+
+func (ledgerPage) View(context PageContext) string {
+	render := context.Render
+	render.Width = context.Width
+	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
+}
+
+func (ledgerPage) NeedsReload(context PageContext, request Request) bool {
+	// Provider and range bindings bypass this page predicate and always reload
+	// the dashboard, including expanded-session data.
+	before, after := context.Request.Ledger, request.Ledger
+	return before.Zoom != after.Zoom || before.Year != after.Year || before.Month != after.Month || before.ExpandedDay != after.ExpandedDay ||
+		before.SessionPageCursor != after.SessionPageCursor
+}
+
+func (ledgerPage) Update(context PageContext, key string) (Request, bool) {
+	if key == "left" || key == "right" {
+		return context.Request, false
+	}
+	if context.Request.Ledger.DetailID != "" && (key == "up" || key == "down" || key == "home" || key == "end") {
+		return updateLedgerDetailOffset(context, key)
+	}
+	state, changed := tuipages.Update(context.Request.Ledger, context.Snapshot.Ledger, key)
+	if !changed {
+		return context.Request, false
+	}
+	context.Request.Ledger = state
+	return context.Request, true
+}
+
+// NewVaultPage returns the dashboard adapter for the pure Vault renderer.
+func NewVaultPage() Page { return vaultPage{} }
+
+type vaultPage struct{}
+
+func (vaultPage) ID() PageID           { return VaultPageID }
+func (vaultPage) Section() PageSection { return VaultSection }
+func (vaultPage) Title() string        { return "Vault" }
+
+func (vaultPage) View(context PageContext) string {
+	return tuipages.RenderVault(context.Render, context.Snapshot.Vault, context.Width, context.Height, context.Request.VaultOffset)
+}
+
+func (vaultPage) Update(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	if key == "v" || key == "V" {
+		if request.Action != "" {
+			return request, false
+		}
+		request.Action = VerifyVaultAction
+		return request, true
+	}
+	offset, changed := tuipages.UpdateVaultOffset(context.Render, context.Snapshot.Vault, context.Width, context.Height, request.VaultOffset, key)
+	if !changed {
+		return request, false
+	}
+	request.VaultOffset = offset
+	return request, true
+}
+
+func (vaultPage) NeedsReload(_ PageContext, request Request) bool {
+	return request.Action == VerifyVaultAction
+}
+
+// NewSystemPage returns the dashboard adapter for the pure System renderer.
+func NewSystemPage() Page { return systemPage{} }
+
+type systemPage struct{}
+
+func (systemPage) ID() PageID           { return SystemPageID }
+func (systemPage) Section() PageSection { return SystemSection }
+func (systemPage) Title() string        { return "System" }
+
+func (systemPage) View(context PageContext) string {
+	return tuipages.RenderSystem(context.Render, context.Snapshot.System, context.Width, context.Height, context.Request.SystemOffset)
+}
+
+func (systemPage) Update(context PageContext, key string) (Request, bool) {
+	offset, changed := tuipages.UpdateSystemOffset(context.Render, context.Snapshot.System, context.Width, context.Height, context.Request.SystemOffset, key)
+	if !changed {
+		return context.Request, false
+	}
+	request := context.Request
+	request.SystemOffset = offset
+	return request, true
+}
+
+func (systemPage) NeedsReload(PageContext, Request) bool { return false }
+
+func updateLedgerDetailOffset(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	var selected *historystore.CatalogSession
+	for index := range context.Snapshot.Ledger.Sessions {
+		session := &context.Snapshot.Ledger.Sessions[index]
+		if session.SessionID == request.Ledger.DetailID {
+			selected = &session.CatalogSession
+			break
+		}
+	}
+	if selected == nil || context.Width <= 0 || context.Height <= 0 {
+		return request, false
+	}
+	maxOffset := tuipages.LedgerSessionDetailMaxOffset(context.Render, *selected, context.Width, context.Height, context.Snapshot.Ledger.Location)
+	next := request.Ledger.DetailOffset
+	switch key {
+	case "up":
+		next = max(0, next-1)
+	case "down":
+		next = min(maxOffset, next+1)
+	case "home":
+		next = 0
+	case "end":
+		next = maxOffset
+	}
+	if next == request.Ledger.DetailOffset {
+		return request, false
+	}
+	request.Ledger.DetailOffset = next
+	return request, true
+}
+
+// PageRouter keeps page order and selection separate from the dashboard
+// state machine. Registration order is also the order used by tab navigation.
+type PageRouter struct {
+	pages  []Page
+	active int
+}
+
+type pageGroup struct {
+	section PageSection
+	pages   []Page
+}
+
+func newRouter(extra ...Page) PageRouter {
+	pages := []Page{
+		dailyPage{snapshotPage{id: DailyPageID, section: SpendSection, title: "Daily", viewIndex: int(DailyTab), keyHandler: updateDailyPage}},
+		ledgerPage{},
+		snapshotPage{id: ModelsPageID, section: SpendSection, title: "Models", viewIndex: int(ModelsTab), keyHandler: updateModelsPage},
+		snapshotPage{id: HeatmapPageID, section: SpendSection, title: "Heatmap", viewIndex: int(HeatmapTab), keyHandler: updateHeatmapPage},
+		sessionsPage{},
+	}
+	return newPageRouter(append(pages, extra...)...)
+}
+
+type dailyPage struct {
+	snapshotPage
+}
+
+func (dailyPage) Update(context PageContext, key string) (Request, bool) {
+	if key == "left" && context.Request.DailyCursor >= max(0, context.Snapshot.DailyCursorMax) {
+		return context.Request, false
+	}
+	if key == "down" && context.Request.DailyDetailOffset >= max(0, context.Snapshot.DailyDetailMaxOffset) {
+		return context.Request, false
+	}
+	return updateDailyPage(context.Request, key)
+}
+
+func (dailyPage) NeedsReload(PageContext, Request) bool { return true }
+
+type sessionsPage struct{}
+
+func (sessionsPage) ID() PageID           { return SessionsPageID }
+func (sessionsPage) Section() PageSection { return HistorySection }
+func (sessionsPage) Title() string        { return "Sessions" }
+
+func (sessionsPage) View(context PageContext) string {
+	return tuipages.RenderSessions(context.Render, context.Snapshot.Sessions, tuipages.SessionViewState{
+		SelectedIndex: context.Request.SessionOffset,
+		DetailID:      context.Request.SessionDetailID,
+		DetailOffset:  context.Request.SessionDetailOffset,
+		Provider:      context.Request.Provider.String(),
+		Project:       context.Request.SessionProject,
+		ProjectActive: context.Request.SessionProjectActive,
+		DateRange:     context.Request.Range.String(),
+		SelectLast:    context.Request.SessionReturnToEnd,
+	}, context.Width, context.Height)
+}
+
+func (sessionsPage) Update(context PageContext, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(context, key)
+}
+
+func (sessionsPage) NeedsReload(context PageContext, request Request) bool {
+	return context.Request.SessionProject != request.SessionProject ||
+		context.Request.SessionProjectActive != request.SessionProjectActive ||
+		context.Request.SessionCursor != request.SessionCursor ||
+		context.Request.SessionCursorStack != request.SessionCursorStack ||
+		context.Request.SessionDetailID != request.SessionDetailID
+}
+
+func updateSessionsRequest(request Request, data tuipages.SessionPageData, key string) (Request, bool) {
+	return updateSessionsRequestWithContext(PageContext{Request: request, Snapshot: Snapshot{Sessions: data}}, key)
+}
+
+func updateSessionsRequestWithContext(context PageContext, key string) (Request, bool) {
+	request := context.Request
+	data := context.Snapshot.Sessions
+	if request.SessionDetailID != "" {
+		switch key {
+		case "esc", "left":
+			request.SessionDetailID = ""
+			request.SessionDetailOffset = 0
+			return request, true
+		case "up", "down", "home", "end":
+			if context.Width <= 0 || context.Height <= 0 {
+				return request, false
+			}
+			session, ok := sessionByID(data.Sessions, request.SessionDetailID)
+			if !ok {
+				return request, false
+			}
+			maxOffset := tuipages.SessionDetailMaxOffset(context.Render, session, context.Width, context.Height, data.Location)
+			nextOffset := request.SessionDetailOffset
+			switch key {
+			case "up":
+				nextOffset = max(0, nextOffset-1)
+			case "down":
+				nextOffset = min(maxOffset, nextOffset+1)
+			case "home":
+				nextOffset = 0
+			case "end":
+				nextOffset = maxOffset
+			}
+			if nextOffset != request.SessionDetailOffset {
+				request.SessionDetailOffset = nextOffset
+				return request, true
+			}
+		}
+		return request, false
+	}
+	normalizedReturn := false
+	if request.SessionReturnToEnd {
+		switch key {
+		case "up", "down", "home", "end", "enter", "f":
+			request.SessionOffset = max(0, len(data.Sessions)-1)
+			request.SessionReturnToEnd = false
+			normalizedReturn = true
+		}
+	}
+
+	switch key {
+	case "up":
+		if request.SessionOffset > 0 {
+			request.SessionOffset--
+			return request, true
+		}
+		if request.SessionCursorStack != "" {
+			last := strings.LastIndexByte(request.SessionCursorStack, '\x00')
+			if last < 0 {
+				return request, false
+			}
+			request.SessionCursor = request.SessionCursorStack[last+1:]
+			request.SessionCursorStack = request.SessionCursorStack[:last]
+			request.SessionOffset = 0
+			request.SessionReturnToEnd = true
+			return request, true
+		}
+	case "down":
+		if request.SessionOffset+1 < len(data.Sessions) {
+			request.SessionOffset++
+			return request, true
+		}
+		if data.HasMore && data.NextCursor != "" {
+			request.SessionCursorStack += "\x00" + request.SessionCursor
+			request.SessionCursor = data.NextCursor
+			request.SessionOffset = 0
+			request.SessionReturnToEnd = false
+			return request, true
+		}
+	case "home":
+		if request.SessionOffset != 0 {
+			request.SessionOffset = 0
+			return request, true
+		}
+	case "end":
+		last := max(0, len(data.Sessions)-1)
+		if request.SessionOffset != last {
+			request.SessionOffset = last
+			return request, true
+		}
+	case "enter":
+		if len(data.Sessions) == 0 {
+			return request, false
+		}
+		index := min(max(request.SessionOffset, 0), len(data.Sessions)-1)
+		request.SessionOffset = index
+		request.SessionDetailID = data.Sessions[index].SessionID
+		request.SessionDetailOffset = 0
+		return request, true
+	case "f":
+		next, active := nextProject(request.SessionProject, request.SessionProjectActive, data.Projects)
+		if next == request.SessionProject && active == request.SessionProjectActive {
+			return request, false
+		}
+		request.SessionProject = next
+		request.SessionProjectActive = active
+		request.SessionCursor = ""
+		request.SessionCursorStack = ""
+		request.SessionOffset = 0
+		request.SessionReturnToEnd = false
+		return request, true
+	case "esc":
+		return request, false
+	}
+	return request, normalizedReturn
+}
+
+func sessionByID(sessions []historystore.CatalogSession, id string) (historystore.CatalogSession, bool) {
+	for _, session := range sessions {
+		if session.SessionID == id {
+			return session, true
+		}
+	}
+	return historystore.CatalogSession{}, false
+}
+
+func nextProject(current string, active bool, projects []tuipages.ProjectOption) (string, bool) {
+	if len(projects) == 0 {
+		return "", false
+	}
+	if !active {
+		return projects[0].Key, true
+	}
+	for index, project := range projects {
+		if project.Key != current {
+			continue
+		}
+		if index+1 < len(projects) {
+			return projects[index+1].Key, true
+		}
+		return "", false
+	}
+	return projects[0].Key, true
+}
+
+func newPageRouter(pages ...Page) PageRouter {
+	registered := make([]Page, 0, len(pages))
+	for _, page := range pages {
+		if page != nil {
+			registered = append(registered, page)
+		}
+	}
+	return PageRouter{pages: registered}
+}
+
+// Pages returns the registered pages in navigation order.
+func (r PageRouter) Pages() []Page {
+	return append([]Page(nil), r.pages...)
+}
+
+// ActivePage returns the current page, or nil when the router has no pages.
+func (r PageRouter) ActivePage() Page {
+	if r.active < 0 || r.active >= len(r.pages) {
+		return nil
+	}
+	return r.pages[r.active]
+}
+
+// ActiveIndex returns the current page index, or -1 when there are no pages.
+func (r PageRouter) ActiveIndex() int {
+	if r.active < 0 || r.active >= len(r.pages) {
+		return -1
+	}
+	return r.active
+}
+
+// PageAt returns the page at a navigation index, or nil when it is out of range.
+func (r PageRouter) PageAt(index int) Page {
+	if index < 0 || index >= len(r.pages) {
+		return nil
+	}
+	return r.pages[index]
+}
+
+// IndexOf returns a page's navigation index, or -1 when it is not registered.
+func (r PageRouter) IndexOf(id PageID) int {
+	for index, page := range r.pages {
+		if page.ID() == id {
+			return index
+		}
+	}
+	return -1
+}
+
+// Select activates a registered page and reports whether selection changed.
+func (r *PageRouter) Select(id PageID) bool {
+	return r.SelectIndex(r.IndexOf(id))
+}
+
+// SelectIndex activates a page by navigation index.
+func (r *PageRouter) SelectIndex(index int) bool {
+	if index < 0 || index >= len(r.pages) || index == r.active {
+		return false
+	}
+	r.active = index
+	return true
+}
+
+// Move advances through all registered pages, wrapping at either end.
+func (r *PageRouter) Move(direction int) bool {
+	if len(r.pages) == 0 || direction == 0 {
+		return false
+	}
+	index := (r.active + direction) % len(r.pages)
+	if index < 0 {
+		index += len(r.pages)
+	}
+	return r.SelectIndex(index)
+}
+
+func (r PageRouter) groups() []pageGroup {
+	groups := make([]pageGroup, 0, 4)
+	for _, page := range r.pages {
+		groupIndex := -1
+		for index := range groups {
+			if groups[index].section == page.Section() {
+				groupIndex = index
+				break
+			}
+		}
+		if groupIndex < 0 {
+			groups = append(groups, pageGroup{section: page.Section(), pages: []Page{page}})
+			continue
+		}
+		groups[groupIndex].pages = append(groups[groupIndex].pages, page)
+	}
+	return groups
+}
+
+func updateDailyPage(request Request, key string) (Request, bool) {
+	previousCursor, previousDetailOffset := request.DailyCursor, request.DailyDetailOffset
+	switch key {
+	case "left":
+		request.DailyCursor++
+		request.DailyDetailOffset = 0
+	case "right":
+		request.DailyCursor = max(0, request.DailyCursor-1)
+		request.DailyDetailOffset = 0
+	case "up":
+		if request.DailyDetailOffset == 0 {
+			return request, false
+		}
+		request.DailyDetailOffset--
+	case "down":
+		request.DailyDetailOffset++
+	case "home":
+		request.DailyCursor = 1_000_000
+		request.DailyWindowStart = 0
+		request.DailyDetailOffset = 0
+	case "end":
+		request.DailyCursor = 0
+		request.DailyWindowStart = 0
+		request.DailyDetailOffset = 0
+	default:
+		return request, false
+	}
+	return request, previousCursor != request.DailyCursor || previousDetailOffset != request.DailyDetailOffset
+}
+
+func updateModelsPage(request Request, key string) (Request, bool) {
+	previousSort, previousOffset := request.ModelSort, request.ModelOffset
+	switch key {
+	case "s":
+		request.ModelSort = (request.ModelSort + 1) % 3
+		request.ModelOffset = 0
+	case "up":
+		if request.ModelOffset > 0 {
+			request.ModelOffset--
+		}
+	case "down":
+		request.ModelOffset++
+	case "home", "end":
+		request.ModelOffset = 0
+	default:
+		return request, false
+	}
+	return request, previousSort != request.ModelSort || previousOffset != request.ModelOffset
+}
+
+func updateHeatmapPage(request Request, key string) (Request, bool) {
+	previousOffset, previousYear := request.HeatmapOffset, request.HeatmapYear
+	switch key {
+	case "y":
+		request.HeatmapYear = !request.HeatmapYear
+	case "left":
+		request.HeatmapYear = false
+		request.HeatmapOffset--
+	case "right":
+		request.HeatmapYear = false
+		request.HeatmapOffset++
+	default:
+		return request, false
+	}
+	return request, previousOffset != request.HeatmapOffset || previousYear != request.HeatmapYear
+}

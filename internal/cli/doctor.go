@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,16 +124,29 @@ type jsonDoctorProvider struct {
 }
 
 type jsonDoctorStore struct {
-	Path           string        `json:"path"`
-	Exists         bool          `json:"exists"`
-	SizeBytes      int64         `json:"size_bytes"`
-	SchemaVersion  *int          `json:"schema_version"`
-	Timezone       *string       `json:"timezone"`
-	LastSync       *string       `json:"last_sync"`
-	UsageRows      int           `json:"usage_rows"`
-	DistinctModels int           `json:"distinct_models"`
-	DateRange      jsonDateRange `json:"date_range"`
-	MissingFiles   int           `json:"missing_files"`
+	Path           string         `json:"path"`
+	Exists         bool           `json:"exists"`
+	SizeBytes      int64          `json:"size_bytes"`
+	SchemaVersion  *int           `json:"schema_version"`
+	Timezone       *string        `json:"timezone"`
+	LastSync       *string        `json:"last_sync"`
+	UsageRows      int            `json:"usage_rows"`
+	DistinctModels int            `json:"distinct_models"`
+	DateRange      jsonDateRange  `json:"date_range"`
+	MissingFiles   int            `json:"missing_files"`
+	Lock           jsonDoctorLock `json:"lock"`
+}
+
+type jsonDoctorLock struct {
+	Path       string  `json:"path"`
+	Exists     bool    `json:"exists"`
+	Held       bool    `json:"held"`
+	Stale      bool    `json:"stale"`
+	OwnerKnown bool    `json:"owner_known"`
+	Released   bool    `json:"released"`
+	PID        *int    `json:"pid"`
+	Started    *string `json:"started"`
+	PIDAlive   *bool   `json:"pid_alive"`
 }
 
 type jsonDoctorData struct {
@@ -189,6 +203,14 @@ type jsonDoctorSkill struct {
 }
 
 func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) error {
+	data, zone, warnings, err := collectDoctorData(cmd, roots, databasePath, requestedZone)
+	if err != nil {
+		return err
+	}
+	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+}
+
+func collectDoctorData(cmd *cobra.Command, roots []discover.Root, databasePath, requestedZone string) (jsonDoctorData, string, []string, error) {
 	data := jsonDoctorData{Providers: make([]jsonDoctorProvider, 0, len(roots)), Skills: make([]jsonDoctorSkill, 0, len(roots)), Store: jsonDoctorStore{Path: databasePath, DateRange: jsonDateRange{}}}
 	warnings := []string{}
 	for _, root := range roots {
@@ -226,21 +248,29 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 	}
 
 	zone := requestedTimezone(requestedZone)
+	lock, lockErr := store.InspectLock(databasePath)
+	if lockErr != nil {
+		return data, "", nil, lockErr
+	}
+	data.Store.Lock = doctorLockJSON(lock)
+	if warning := doctorLockWarning(lock); warning != "" {
+		warnings = append(warnings, warning)
+	}
 	fileInfo, err := os.Stat(databasePath)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("stat usage store: %w", err)
+		return data, "", nil, fmt.Errorf("stat usage store: %w", err)
 	}
 	if err == nil {
 		data.Store.Exists = true
 		data.Store.SizeBytes = fileInfo.Size()
 		database, openErr := store.Open(databasePath)
 		if openErr != nil {
-			return fmt.Errorf("inspect usage store: %w", openErr)
+			return data, "", nil, fmt.Errorf("inspect usage store: %w", openErr)
 		}
 		defer database.Close()
 		info, infoErr := database.Info()
 		if infoErr != nil {
-			return infoErr
+			return data, "", nil, infoErr
 		}
 		data.Store.SchemaVersion = &info.SchemaVersion
 		storeZone := info.Timezone
@@ -264,31 +294,44 @@ func writeDoctorJSON(cmd *cobra.Command, roots []discover.Root, databasePath, re
 		}
 		data.Offer = optionalString(info.SkillOffer)
 	}
+	var healthErr error
 	backupData, err := doctorBackups(cmd, databasePath)
-	if err != nil {
-		return err
-	}
 	data.Backups = backupData
+	if err != nil {
+		failure := doctorHealthError("backups", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
 	scheduleData, err := doctorSchedule(cmd)
-	if err != nil {
-		return err
-	}
 	data.Schedule = scheduleData
+	if err != nil {
+		failure := doctorHealthError("schedule", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
 	vaultData, err := doctorVault(cmd, roots, databasePath, scheduleData)
-	if err != nil {
-		return err
-	}
 	data.Vault = vaultData
-	historyHealth, drift, err := doctorHistory(cmd, roots, databasePath)
 	if err != nil {
-		return err
+		failure := doctorHealthError("vault", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
 	}
+	historyHealth, drift, err := doctorHistory(cmd, roots, databasePath)
 	data.History = configuredHistoryHealth(cmd, historyHealth, drift)
 	if historyHealth.LastErrorSummary != "" {
 		warnings = append(warnings, historyHealth.LastErrorSummary)
 	}
 	warnings = append(warnings, drift.Warnings...)
-	return writeJSONEnvelope(cmd, "doctor", zone, jsonFilters{}, warnings, data)
+	if err != nil {
+		failure := doctorHealthError("history", err)
+		warnings = append(warnings, failure.Error())
+		healthErr = errors.Join(healthErr, failure)
+	}
+	return data, zone, warnings, healthErr
+}
+
+func doctorHealthError(component string, err error) error {
+	return fmt.Errorf("%s health unavailable: %w", component, err)
 }
 
 func doctorHistory(cmd *cobra.Command, roots []discover.Root, usageDatabasePath string) (historystore.Health, historyfreshness.Result, error) {
@@ -569,6 +612,10 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	writer := cmd.OutOrStdout()
 	writeHeading(cmd, "Store")
 	fmt.Fprintf(writer, "  %-17s %s\n", "Path:", databasePath)
+	lock, err := store.InspectLock(databasePath)
+	if err != nil {
+		return err
+	}
 	fileInfo, err := os.Stat(databasePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -581,6 +628,7 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 			fmt.Fprintf(writer, "  %-17s 0\n", "Distinct models:")
 			fmt.Fprintf(writer, "  %-17s -\n", "Date range:")
 			fmt.Fprintf(writer, "  %-45s 0\n", "Synced transcript files no longer present:")
+			writeStoreLockReport(cmd, lock)
 			return nil
 		}
 		return fmt.Errorf("stat usage store: %w", err)
@@ -603,10 +651,59 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	fmt.Fprintf(writer, "  %-17s %d\n", "Distinct models:", info.DistinctModels)
 	fmt.Fprintf(writer, "  %-17s %s\n", "Date range:", dateRange(info.OldestDate, info.NewestDate))
 	fmt.Fprintf(writer, "  %-45s %d\n", "Synced transcript files no longer present:", info.MissingFiles)
+	writeStoreLockReport(cmd, lock)
 	if warning := missingFilesWarning(info.MissingFiles); warning != "" {
 		writeWarningLine(cmd, "WARNING: "+warning)
 	}
 	return nil
+}
+
+func doctorLockJSON(lock store.LockStatus) jsonDoctorLock {
+	result := jsonDoctorLock{
+		Path: lock.Path, Exists: lock.Exists, Held: lock.Held, Stale: lock.Stale, OwnerKnown: lock.OwnerKnown, Released: lock.Released,
+	}
+	if lock.OwnerKnown {
+		pid, started, alive := lock.PID, lock.Started, lock.PIDAlive
+		result.PID, result.Started, result.PIDAlive = &pid, &started, &alive
+	}
+	return result
+}
+
+func doctorLockWarning(lock store.LockStatus) string {
+	if !lock.Exists || !lock.Stale {
+		return ""
+	}
+	if lock.OwnerKnown {
+		if lock.PIDAlive {
+			return fmt.Sprintf("usage store lock is stale at %s (pid=%d started=%s is not currently holding the OS lock); retry tokenomnom to reclaim it", lock.Path, lock.PID, lock.Started)
+		}
+		return fmt.Sprintf("usage store lock is stale at %s (pid=%d started=%s is no longer running); retry tokenomnom to reclaim it", lock.Path, lock.PID, lock.Started)
+	}
+	return fmt.Sprintf("usage store lock at %s is stale or has unreadable owner metadata; run tokenomnom doctor after any sync exits, then retry tokenomnom", lock.Path)
+}
+
+func writeStoreLockReport(cmd *cobra.Command, lock store.LockStatus) {
+	writer := cmd.OutOrStdout()
+	state := "not held"
+	switch {
+	case !lock.Exists:
+		state = "none"
+	case lock.Stale:
+		state = "stale"
+	case lock.Released && !lock.Held:
+		state = "released"
+	case lock.Held:
+		state = "active"
+	}
+	fmt.Fprintf(writer, "  %-17s %s\n", "Sync lock:", state)
+	fmt.Fprintf(writer, "  %-17s %s\n", "Lock path:", lock.Path)
+	if lock.OwnerKnown {
+		fmt.Fprintf(writer, "  %-17s %d\n", "Lock PID:", lock.PID)
+		fmt.Fprintf(writer, "  %-17s %s\n", "Lock started:", lock.Started)
+	}
+	if warning := doctorLockWarning(lock); warning != "" {
+		writeWarningLine(cmd, "WARNING: "+warning)
+	}
 }
 
 func missingFilesWarning(count int) string {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -207,11 +208,13 @@ func (value PromptResult) MarshalJSON() ([]byte, error) {
 
 // SearchPage is one generation-bound FTS result page.
 type SearchPage struct {
-	Hits       []PromptResult `json:"hits"`
-	Page       PageMetadata   `json:"page"`
-	Coverage   QueryCoverage  `json:"coverage"`
-	Warnings   []string       `json:"-"`
-	Generation int64          `json:"index_generation"`
+	Hits              []PromptResult `json:"hits"`
+	Page              PageMetadata   `json:"page"`
+	Coverage          QueryCoverage  `json:"coverage"`
+	Warnings          []string       `json:"-"`
+	Generation        int64          `json:"index_generation"`
+	SnippetMatchStart string         `json:"-"`
+	SnippetMatchEnd   string         `json:"-"`
 }
 
 // PromptsPage is one generation-bound prompt enumeration page.
@@ -284,20 +287,22 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	if err != nil {
 		return SearchPage{}, err
 	}
+	matchStart, matchEnd, err := searchSnippetMarkers()
+	if err != nil {
+		return SearchPage{}, err
+	}
 	where, args := promptWhere(query.PromptQuery, true, "p", "s")
-	args = append([]any{match, query.IncludeText}, args...)
+	args = append([]any{matchStart, matchEnd, query.IncludeText, match}, args...)
 	statement := `WITH matched AS (
 		SELECT p.id,p.public_id AS prompt_id,s.public_id AS session_id,s.provider,p.role,p.prompt_kind,p.timestamp,
 			s.repository_name,s.project,s.project_source,s.cwd,s.branch,bm25(prompt_fts) AS rank,
 			` + sqliteTimestampKey("p.timestamp") + ` AS sort_ts,
-			snippet(prompt_fts,0,'[',']',' ... ',24) AS snippet,
-			CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
+				snippet(prompt_fts,0,?,?,' ... ',24) AS snippet,
+				CASE WHEN ? THEN p.clean_text ELSE NULL END AS full_text
 		FROM prompt_fts JOIN prompts p ON p.id=prompt_fts.rowid JOIN sessions s ON s.id=p.session_id
 		WHERE prompt_fts MATCH ? AND ` + strings.Join(where, " AND ") + `)
 		SELECT id,prompt_id,session_id,provider,role,prompt_kind,timestamp,repository_name,project,project_source,cwd,branch,rank,sort_ts,snippet,full_text
 		FROM matched`
-	// IncludeText precedes MATCH in SQL, so repair the argument order.
-	args[0], args[1] = args[1], args[0]
 	if query.Cursor != "" {
 		rank, parseErr := cursor.rank()
 		if parseErr != nil {
@@ -322,7 +327,11 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 	if err != nil {
 		return SearchPage{}, err
 	}
-	page := SearchPage{Hits: hits, Coverage: coverage, Warnings: warnings, Generation: generation, Page: PageMetadata{Limit: query.Limit}}
+	page := SearchPage{
+		Hits: hits, Coverage: coverage, Warnings: warnings, Generation: generation,
+		SnippetMatchStart: matchStart, SnippetMatchEnd: matchEnd,
+		Page: PageMetadata{Limit: query.Limit},
+	}
 	if len(page.Hits) > query.Limit {
 		page.Hits = page.Hits[:query.Limit]
 		page.Page.HasMore = true
@@ -336,6 +345,18 @@ func (s *Store) Search(query SearchQuery) (SearchPage, error) {
 		page.Hits = []PromptResult{}
 	}
 	return page, nil
+}
+
+func searchSnippetMarkers() (string, string, error) {
+	var nonce [24]byte
+	if _, err := cryptorand.Read(nonce[:]); err != nil {
+		return "", "", fmt.Errorf("create history search snippet markers: %w", err)
+	}
+	// A fresh cryptographic nonce avoids a full-table collision scan before
+	// every FTS query while making accidental prompt collisions negligible.
+	suffix := base64.RawURLEncoding.EncodeToString(nonce[:])
+	return string(history.SearchSnippetMatchStart) + suffix + string(history.SearchSnippetMatchEnd),
+		string(history.SearchSnippetMatchEnd) + suffix + string(history.SearchSnippetMatchStart), nil
 }
 
 // ListPrompts returns clean logical human prompts without FTS ranking.

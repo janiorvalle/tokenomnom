@@ -27,8 +27,9 @@ const (
 )
 
 type chartPeriod struct {
-	label  string
-	values map[discover.Provider]providerChartValue
+	label    string
+	values   map[discover.Provider]providerChartValue
+	selected bool
 }
 
 func writeDailyChart(cmd *cobra.Command, rows []store.DailyRow, costs reportCosts) {
@@ -66,6 +67,10 @@ func writePeriodChart(cmd *cobra.Command, periods []chartPeriod, singular, plura
 
 // renderPeriodChart is pure string generation; terminal probing happens in theme.Resolve.
 func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, plural string, tokens bool) string {
+	return renderPeriodChartWithHeight(render, periods, singular, plural, tokens, chartHeight)
+}
+
+func renderPeriodChartWithHeight(render theme.Context, periods []chartPeriod, singular, plural string, tokens bool, height int) string {
 	unit := "cost/" + singular
 	if tokens {
 		unit = "tokens/" + singular + " (unpriced)"
@@ -100,7 +105,7 @@ func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, pl
 	if len(periods) > 0 {
 		barWidth = max(minimumBarWidth, min(maximumBarWidth, (plotWidth-(len(periods)-1)*barGap)/len(periods)))
 	}
-	chart := barchart.New(plotWidth, chartHeight,
+	chart := barchart.New(plotWidth, max(1, height),
 		barchart.WithNoAxis(),
 		barchart.WithNoAutoBarWidth(),
 		barchart.WithBarWidth(barWidth),
@@ -147,12 +152,40 @@ func renderPeriodChart(render theme.Context, periods []chartPeriod, singular, pl
 	output.WriteString(strings.Repeat(" ", axisWidth))
 	output.WriteString(render.Palette.Subtle().Render(strings.TrimRight(strings.Join(ticks, strings.Repeat(" ", barGap)), " ")))
 	output.WriteByte('\n')
+	if selectedIndex := selectedChartPeriod(periods); selectedIndex >= 0 {
+		var marker strings.Builder
+		for index := range periods {
+			if index > 0 {
+				marker.WriteString(strings.Repeat(" ", barGap))
+			}
+			if index == selectedIndex {
+				leftPad := max(0, (barWidth-1)/2)
+				marker.WriteString(strings.Repeat(" ", leftPad))
+				marker.WriteByte('^')
+				marker.WriteString(strings.Repeat(" ", max(0, barWidth-leftPad-1)))
+				continue
+			}
+			marker.WriteString(strings.Repeat(" ", barWidth))
+		}
+		output.WriteString(strings.Repeat(" ", axisWidth))
+		output.WriteString(render.Palette.Emphasis().Render(strings.TrimRight(marker.String(), " ")))
+		output.WriteByte('\n')
+	}
 	if caption := periodCaption(periods); caption != "" {
 		output.WriteString(strings.Repeat(" ", axisWidth))
 		output.WriteString(render.Palette.Subtle().Render(caption))
 		output.WriteByte('\n')
 	}
 	return output.String()
+}
+
+func selectedChartPeriod(periods []chartPeriod) int {
+	for index, period := range periods {
+		if period.selected {
+			return index
+		}
+	}
+	return -1
 }
 
 // periodCaption names the charted span in one line — "Jul 2026" or

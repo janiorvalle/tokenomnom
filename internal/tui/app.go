@@ -4,6 +4,8 @@ package tui
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/janiorvalle/tokenomnom/internal/theme"
+	tuipages "github.com/janiorvalle/tokenomnom/internal/tui/pages"
 )
 
 const (
@@ -24,13 +27,15 @@ type Tab uint8
 
 const (
 	DailyTab Tab = iota
-	MonthlyTab
+	LedgerTab
 	ModelsTab
 	HeatmapTab
 	tabCount
 )
 
-var tabNames = [...]string{"Daily", "Monthly", "Models", "Heatmap"}
+// MonthlyTab is retained as an index alias for callers that still refer to
+// the pre-ledger dashboard layout.
+const MonthlyTab = LedgerTab
 
 // Provider is the dashboard-wide provider filter.
 type Provider uint8
@@ -61,57 +66,110 @@ func (r Range) String() string {
 
 // Request describes the data and render state needed for one snapshot.
 type Request struct {
-	Provider      Provider
-	Range         Range
-	Width         int
-	Height        int
-	DailyOffset   int
-	MonthlyOffset int
-	ModelOffset   int
-	ModelSort     int
-	HeatmapOffset int
-	HeatmapYear   bool
-	Sync          bool
+	Provider Provider
+	Range    Range
+	Width    int
+	Height   int
+	Ledger   tuipages.State
+	// DailyCursor is the number of active daily bars to move back from the
+	// newest active day. Zero always means the newest active day.
+	DailyCursor          int
+	DailyWindowStart     int
+	DailyDetailOffset    int
+	MonthlyOffset        int
+	ModelOffset          int
+	ModelSort            int
+	HeatmapOffset        int
+	HeatmapYear          bool
+	SessionProject       string
+	SessionProjectActive bool
+	SessionCursor        string
+	SessionCursorStack   string
+	SessionOffset        int
+	SessionReturnToEnd   bool
+	SessionDetailID      string
+	SessionDetailOffset  int
+	VaultOffset          int
+	SystemOffset         int
+	RefreshPages         bool
+	Sync                 bool
+	Action               string
+	LoadID               uint64
+	PageLoadToken        string
+	// Initial marks the store-only load used to make the first dashboard frame.
+	Initial            bool
+	HistoryQuery       string
+	HistorySelect      int
+	HistorySessionID   string
+	HistoryExportID    string
+	HistoryExportToken string
+	FullSync           bool
+	Progress           *LoadProgressReporter
 }
 
-// CardKind selects the value treatment for one header card.
-type CardKind uint8
+// LoadProgress is the user-facing progress reported by a dashboard loader.
+// The callback stays on Request so existing loaders can opt into streaming
+// status without changing the Loader function signature.
+type LoadProgress struct {
+	Phase          string
+	FilesFound     int
+	FilesProcessed int
+}
+
+// LoadProgressReporter receives progress updates from a dashboard loader.
+type LoadProgressReporter func(LoadProgress)
+
+// ProgressSink delivers background loader progress to the running TUI.
+type ProgressSink func(Request, uint64, LoadProgress)
+
+// ProgressMsg carries a loader update into the Bubble Tea event loop.
+type ProgressMsg struct {
+	Request    Request
+	Generation uint64
+	Progress   LoadProgress
+}
+
+// MetricKind selects the value treatment for one summary metric.
+type MetricKind uint8
 
 const (
-	CardPlain CardKind = iota
-	CardMoney
-	CardModel
+	MetricPlain MetricKind = iota
+	MetricMoney
 )
 
-// Card is one header value.
-type Card struct {
-	Label    string
-	Value    string
-	Kind     CardKind
-	Provider string // provider hue for CardModel values
+// SummaryMetric is one value in the one-line dashboard summary strip.
+type SummaryMetric struct {
+	Label string
+	Value string
+	Kind  MetricKind
 }
 
-// contentMaxWidth bounds the dashboard column: wide enough for a full-year
-// heatmap at two-column cells, narrow enough to stay scannable on wide
-// terminals instead of smearing content across them.
-const contentMaxWidth = 112
-
-// ContentWidth returns the bounded column width for a terminal width.
-func ContentWidth(width int) int {
-	if width <= 0 {
-		return contentMaxWidth
-	}
-	return max(minimumWidth-4, min(width-2, contentMaxWidth))
+// Summary contains the five values that orient every dashboard view.
+type Summary struct {
+	Metrics [5]SummaryMetric
 }
 
 // Snapshot is a fully rendered, immutable dashboard data result.
 type Snapshot struct {
-	Cards        [4]Card
-	Views        [4]string
-	Empty        bool
-	FilesScanned int
-	SyncDuration time.Duration
-	Warning      string
+	Summary   Summary
+	Views     [4]string
+	Sessions  tuipages.SessionPageData
+	StatusBar StatusBar
+	Ledger    tuipages.Data
+	Vault     tuipages.VaultPageData
+	System    tuipages.SystemPageData
+	// DailyCursor is the normalized distance from the newest active daily bar.
+	DailyCursor          int
+	DailyCursorMax       int
+	DailyWindowStart     int
+	DailyDetailOffset    int
+	DailyDetailMaxOffset int
+	Empty                bool
+	FilesScanned         int
+	SyncDuration         time.Duration
+	Warning              string
+	ActionStatus         string
+	ActionWarning        string
 }
 
 // Loader performs all store and sync I/O outside the Bubble Tea update loop.
@@ -141,9 +199,24 @@ type SkillOffer struct {
 }
 
 type loadedMsg struct {
-	request  Request
-	snapshot Snapshot
-	err      error
+	request    Request
+	generation uint64
+	snapshot   Snapshot
+	err        error
+}
+
+type pageLoadedMsg struct {
+	id      PageID
+	request Request
+	data    any
+	err     error
+}
+
+type pageExportedMsg struct {
+	id      PageID
+	request Request
+	path    string
+	err     error
 }
 
 type skillOfferCheckedMsg struct {
@@ -158,6 +231,12 @@ type skillOfferInstalledMsg struct {
 
 type skillOfferRecordedMsg struct{ err error }
 
+type commandFinishedMsg struct {
+	command paletteCommand
+	result  CommandResult
+	err     error
+}
+
 type skillOfferState uint8
 
 const (
@@ -169,55 +248,250 @@ const (
 
 // Model is the pure dashboard state machine.
 type Model struct {
-	render       theme.Context
-	loader       Loader
-	offer        SkillOffer
-	spinner      spinner.Model
-	request      Request
-	snapshot     Snapshot
-	tab          Tab
-	help         bool
-	loading      bool
-	syncing      bool
-	loaded       bool
-	started      time.Time
-	status       string
-	warning      string
-	offerState   skillOfferState
-	offerChecked bool
-	offerResults []string
-	pendingSync  bool
+	render                   theme.Context
+	loader                   Loader
+	offer                    SkillOffer
+	spinner                  spinner.Model
+	router                   PageRouter
+	request                  Request
+	snapshot                 Snapshot
+	help                     bool
+	loading                  bool
+	syncing                  bool
+	syncFresh                bool
+	loaded                   bool
+	started                  time.Time
+	status                   string
+	warning                  string
+	actionInFlight           string
+	loadID                   uint64
+	pendingAction            bool
+	pendingActionStatus      string
+	pendingActionWarning     string
+	offerState               skillOfferState
+	offerChecked             bool
+	offerResults             []string
+	pendingSync              bool
+	syncCompletionPending    bool
+	loadGeneration           uint64
+	syncGeneration           uint64
+	syncInFlight             bool
+	syncCompletionGeneration uint64
+	pageLoadAttempt          uint64
+	pageLoadTokens           map[PageID]string
+	commandRegistry          CommandRegistry
+	palette                  paletteState
+	commandBusy              bool
+	commandOutput            string
+	commandOutputOffset      int
+	pendingResize            bool
+	quitAfterCommand         bool
+	commandOutputFailure     bool
+	commandOutputHint        string
+	dashboardLoadBusy        bool
+	progress                 LoadProgress
+	progressSink             ProgressSink
 }
 
 // New creates a dashboard model. The first snapshot loads in Init.
-func New(render theme.Context, loader Loader, offer SkillOffer) Model {
-	return NewWithProvider(render, loader, offer, AllProviders)
+func New(render theme.Context, loader Loader, offer SkillOffer, registries ...CommandRegistry) Model {
+	return NewWithProvider(render, loader, offer, AllProviders, registries...)
 }
 
 // NewWithProvider creates a dashboard model with an initial provider filter.
-func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider) Model {
+func NewWithProvider(render theme.Context, loader Loader, offer SkillOffer, provider Provider, registries ...CommandRegistry) Model {
+	model := newModel(render, loader, offer, provider)
+	model.commandRegistry = mergeCommandRegistries(registries...)
+	return model
+}
+
+// NewWithPages creates a dashboard with additional registered pages.
+func NewWithPages(render theme.Context, loader Loader, offer SkillOffer, pages ...Page) Model {
+	return NewWithProviderAndPages(render, loader, offer, AllProviders, pages...)
+}
+
+// NewWithProviderAndPages creates a dashboard with additional registered
+// pages. The default spend pages remain first so existing numeric navigation
+// keeps its meaning while later sections can be supplied by their owners.
+func NewWithProviderAndPages(render theme.Context, loader Loader, offer SkillOffer, provider Provider, pages ...Page) Model {
+	return newModel(render, loader, offer, provider, pages...)
+}
+
+// NewWithProviderAndPagesAndCommands combines page and command registration
+// for dashboard adapters that own both extension points.
+func NewWithProviderAndPagesAndCommands(render theme.Context, loader Loader, offer SkillOffer, provider Provider, registry CommandRegistry, pages ...Page) Model {
+	model := newModel(render, loader, offer, provider, pages...)
+	model.commandRegistry = registry
+	return model
+}
+
+func newModel(render theme.Context, loader Loader, offer SkillOffer, provider Provider, pages ...Page) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = render.Palette.Emphasis()
 	return Model{
 		render: render, loader: loader, offer: offer, spinner: spin,
-		request: Request{Provider: provider, Range: Range30Days, Width: render.Width},
-		loading: true, started: time.Now(),
+		router:  newRouter(pages...),
+		palette: newPalette(render.Palette.Emphasis()),
+		request: Request{Provider: provider, Range: Range30Days, Width: render.Width, RefreshPages: true, Initial: true, Ledger: tuipages.State{Cursor: -1}},
+		loading: true, dashboardLoadBusy: true, started: time.Now(), progress: LoadProgress{Phase: "starting sync"},
+		pageLoadTokens: make(map[PageID]string),
 	}
+}
+
+func mergeCommandRegistries(registries ...CommandRegistry) CommandRegistry {
+	merged := CommandRegistry{}
+	for _, registry := range registries {
+		merged.Actions = append(merged.Actions, registry.Actions...)
+	}
+	return merged
+}
+
+// SetProgressSink connects loader progress to the running TUI program.
+func (m *Model) SetProgressSink(sink ProgressSink) {
+	m.progressSink = sink
 }
 
 // Init starts the initial store load.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.loadCmd(m.request))
+	return tea.Batch(m.spinner.Tick, m.loadCmdAt(m.request, m.loadGeneration))
 }
 
-func (m Model) loadCmd(request Request) tea.Cmd {
-	return func() tea.Msg {
-		if m.loader == nil {
-			return loadedMsg{request: request, err: fmt.Errorf("dashboard loader is unavailable")}
+func (m *Model) loadCmd(request Request) tea.Cmd {
+	m.loadGeneration++
+	if m.syncCompletionPending && m.loadGeneration != m.syncCompletionGeneration {
+		m.syncCompletionPending = false
+	}
+	if request.Sync {
+		m.syncGeneration = m.loadGeneration
+		m.syncInFlight = true
+	}
+	return m.loadCmdAt(request, m.loadGeneration)
+}
+
+func (m *Model) startDashboardLoad(request Request) tea.Cmd {
+	if request.Action != "" {
+		m.clearPendingActionOutcome()
+	} else if request.Sync {
+		m.clearPendingActionOutcome()
+	}
+	if request.Sync {
+		m.progress = LoadProgress{Phase: "discovering files"}
+	}
+	request.Initial = false
+	m.loadID++
+	request.LoadID = m.loadID
+	m.request.LoadID = request.LoadID
+	m.request.Initial = false
+	m.dashboardLoadBusy = true
+	return m.loadCmd(request)
+}
+
+func (m *Model) finishAction(request Request, snapshot Snapshot) {
+	m.actionInFlight = ""
+	m.request.Action = ""
+	if request.Sync && request.LoadID == m.loadID {
+		m.syncInFlight = false
+	}
+	if !m.syncInFlight {
+		m.syncing = false
+	}
+	m.status = snapshot.ActionStatus
+	if snapshot.ActionWarning != "" {
+		m.status = ""
+		m.warning = snapshot.ActionWarning
+	}
+}
+
+func (m *Model) queueActionOutcome(snapshot Snapshot) {
+	m.pendingAction = true
+	m.pendingActionStatus = snapshot.ActionStatus
+	m.pendingActionWarning = snapshot.ActionWarning
+}
+
+func (m *Model) clearPendingActionOutcome() {
+	m.pendingAction = false
+	m.pendingActionStatus = ""
+	m.pendingActionWarning = ""
+}
+
+func (m *Model) applyPendingActionOutcome() {
+	if !m.pendingAction {
+		return
+	}
+	m.status = m.pendingActionStatus
+	if m.pendingActionWarning != "" {
+		m.status = ""
+		m.warning = m.pendingActionWarning
+	}
+	m.clearPendingActionOutcome()
+}
+
+func (m *Model) refreshCurrentSnapshotWithActionOutcome(snapshot Snapshot) tea.Cmd {
+	next := m.request
+	next.Action = ""
+	next.Sync = false
+	next.RefreshPages = true
+	if next.Width < minimumWidth || next.Height < minimumHeight {
+		m.clearPendingActionOutcome()
+		return nil
+	}
+	m.queueActionOutcome(snapshot)
+	return m.startDashboardLoad(next)
+}
+
+func (m Model) loadCmdAt(request Request, generation uint64) tea.Cmd {
+	if m.loader == nil {
+		return func() tea.Msg {
+			return loadedMsg{request: request, generation: generation, err: fmt.Errorf("dashboard loader is unavailable")}
 		}
+	}
+	if !request.Sync {
+		return func() tea.Msg {
+			snapshot, err := m.loader(request)
+			return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
+		}
+	}
+	if request.Sync && m.progressSink != nil {
+		reportProgress := LoadProgressReporter(func(update LoadProgress) {
+			m.progressSink(request, generation, update)
+		})
+		request.Progress = &reportProgress
+	}
+	return func() tea.Msg {
 		snapshot, err := m.loader(request)
-		return loadedMsg{request: request, snapshot: snapshot, err: err}
+		return loadedMsg{request: request, generation: generation, snapshot: snapshot, err: err}
+	}
+}
+
+func (m Model) loadPageCmd(page PageLoader, request Request) tea.Cmd {
+	return func() tea.Msg {
+		data, err := page.Load(request)
+		return pageLoadedMsg{id: page.ID(), request: request, data: data, err: err}
+	}
+}
+
+func (m Model) startPageLoad(page PageLoader, request Request) (Model, tea.Cmd) {
+	m.pageLoadAttempt++
+	commandRequest := request
+	commandRequest.PageLoadToken = strconv.FormatUint(m.pageLoadAttempt, 10)
+	request.Sync = false
+	if m.pageLoadTokens == nil {
+		m.pageLoadTokens = make(map[PageID]string)
+	}
+	m.pageLoadTokens[page.ID()] = commandRequest.PageLoadToken
+	if tracker, ok := page.(PageLoadTracker); ok {
+		tracker.BeginLoad(commandRequest)
+	}
+	m.request = request
+	m.request.PageLoadToken = ""
+	return m, m.loadPageCmd(page, commandRequest)
+}
+
+func (m Model) exportPageCmd(page PageExporter, request Request) tea.Cmd {
+	return func() tea.Msg {
+		path, err := page.Export(request)
+		return pageExportedMsg{id: page.ID(), request: request, path: path, err: err}
 	}
 }
 
@@ -259,13 +533,52 @@ func (m *Model) maybeCheckSkillOffer() tea.Cmd {
 }
 
 func (m *Model) resumeInitialSync() tea.Cmd {
-	if !m.pendingSync {
+	if !m.pendingSync || m.commandBusy || m.dashboardLoadBusy {
 		return nil
 	}
 	m.pendingSync = false
+	m.pendingResize = false
+	m.syncing = true
 	next := m.request
 	next.Sync = true
-	return m.loadCmd(next)
+	next.RefreshPages = true
+	return m.startDashboardLoad(next)
+}
+
+func (m *Model) resumePendingResize() tea.Cmd {
+	if !m.pendingResize || m.commandBusy || m.syncing || m.dashboardLoadBusy {
+		return nil
+	}
+	if m.request.Width < minimumWidth || m.request.Height < minimumHeight {
+		m.pendingResize = false
+		return nil
+	}
+	m.pendingResize = false
+	return m.startDashboardLoad(m.request)
+}
+
+func (m *Model) resumePendingWork() tea.Cmd {
+	if command := m.resumeInitialSync(); command != nil {
+		return command
+	}
+	return m.resumePendingResize()
+}
+
+func combineCommands(commands ...tea.Cmd) tea.Cmd {
+	available := make([]tea.Cmd, 0, len(commands))
+	for _, command := range commands {
+		if command != nil {
+			available = append(available, command)
+		}
+	}
+	switch len(available) {
+	case 0:
+		return nil
+	case 1:
+		return available[0]
+	default:
+		return tea.Batch(available...)
+	}
 }
 
 // Update handles navigation and background snapshot results.
@@ -274,32 +587,189 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
-		if msg.Width >= minimumWidth && msg.Height >= minimumHeight {
-			return m, m.loadCmd(m.request)
+		m.palette.resize(msg.Width)
+		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing && !m.pendingSync && !m.dashboardLoadBusy {
+			m.pendingResize = false
+			return m, m.startDashboardLoad(m.request)
 		}
+		m.pendingResize = msg.Width >= minimumWidth && msg.Height >= minimumHeight
 		return m, nil
 	case spinner.TickMsg:
 		var command tea.Cmd
 		m.spinner, command = m.spinner.Update(msg)
 		return m, command
-	case loadedMsg:
-		if msg.err != nil {
-			m.loading, m.syncing = false, false
-			m.warning = msg.err.Error()
+	case ProgressMsg:
+		if msg.Generation == m.loadGeneration && sameRequestIgnoringSync(msg.Request, m.request) {
+			m.progress = msg.Progress
+		}
+		return m, nil
+	case pageLoadedMsg:
+		if m.pageLoadTokens[msg.id] != msg.request.PageLoadToken {
 			return m, nil
+		}
+		if page := m.page(msg.id); page != nil {
+			if loader, ok := page.(PageLoader); ok {
+				loader.Apply(msg.request, msg.data, msg.err)
+			}
+		}
+		return m, nil
+	case pageExportedMsg:
+		if page := m.page(msg.id); page != nil {
+			if exporter, ok := page.(PageExporter); ok {
+				exporter.ApplyExport(msg.request, msg.path, msg.err)
+			}
+		}
+		return m, nil
+	case loadedMsg:
+		if msg.generation == m.loadGeneration {
+			m.dashboardLoadBusy = false
+		}
+		current := msg.request.LoadID == m.loadID
+		if msg.request.LoadID == 0 && msg.generation == m.loadGeneration {
+			current = true
+		}
+		if msg.request.Action != "" {
+			if msg.err != nil {
+				m.actionInFlight = ""
+				m.request.Action = ""
+				m.loading = false
+				if current && msg.request.Sync {
+					m.syncInFlight = false
+				}
+				if !m.syncInFlight {
+					m.syncing = false
+				}
+				m.status = ""
+				m.warning = msg.err.Error()
+				m.clearPendingActionOutcome()
+				if !current {
+					return m, m.refreshCurrentSnapshotWithActionOutcome(Snapshot{ActionWarning: msg.err.Error()})
+				}
+				return m, m.resumePendingWork()
+			}
+			if !current {
+				m.finishAction(msg.request, msg.snapshot)
+				return m, m.refreshCurrentSnapshotWithActionOutcome(msg.snapshot)
+			}
+			m.snapshot = msg.snapshot
+			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
+			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
+			m.request.RefreshPages = false
+			m.loading = false
+			m.loaded = true
+			m.warning = msg.snapshot.Warning
+			m.finishAction(msg.request, msg.snapshot)
+			return m, m.resumePendingWork()
+		}
+		if msg.request.Sync && m.syncInFlight && msg.generation == m.syncGeneration && (msg.generation != m.loadGeneration || !sameRequestIgnoringSync(msg.request, m.request)) {
+			if msg.err != nil {
+				m.syncInFlight = false
+				m.syncing = false
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.warning = msg.err.Error()
+				return m, nil
+			}
+			m.syncInFlight = false
+			m.syncing = false
+			m.loading = true
+			m.syncCompletionPending = true
+			m.syncCompletionGeneration = m.loadGeneration + 1
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			}
+			command := m.startDashboardLoad(m.request)
+			return m, command
+		}
+		if msg.generation != m.loadGeneration {
+			return m, nil
+		}
+		// The first store-only load does not depend on terminal dimensions, but a
+		// resize can update the live request before its result arrives. Keep that
+		// result so the current request can start the initial sync.
+		initialLoad := !m.loaded && msg.request.Initial && msg.request.LoadID == 0
+		requestMatches := initialLoad || sameRequestIgnoringSync(msg.request, m.request)
+		if !requestMatches {
+			return m, m.resumePendingWork()
+		}
+		if msg.err != nil {
+			m.loading, m.syncFresh = false, false
+			m.commandBusy = false
+			if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
+				m.syncCompletionPending = false
+			}
+			if msg.request.Sync {
+				m.syncInFlight = false
+			}
+			if !m.syncInFlight {
+				m.syncing = false
+			}
+			if m.quitAfterCommand {
+				m.quitAfterCommand = false
+				return m, tea.Quit
+			}
+			m.warning = msg.err.Error()
+			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
+		if initial {
+			m.request.Initial = false
+		}
 		m.snapshot = msg.snapshot
+		if requestMatches {
+			m.request.DailyCursor = msg.snapshot.DailyCursor
+			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
+			m.request.DailyDetailOffset = msg.snapshot.DailyDetailOffset
+		}
 		m.loading = false
 		m.loaded = true
+		m.request.RefreshPages = false
 		m.warning = msg.snapshot.Warning
 		if msg.request.Sync {
+			m.syncCompletionPending = false
+			m.syncInFlight = false
 			m.syncing = false
-			m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
-			return m, m.maybeCheckSkillOffer()
+			m.syncFresh = true
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			} else {
+				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
+			}
+			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
+		if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
+			m.syncCompletionPending = false
+			m.syncing = false
+			m.syncFresh = true
+			if msg.request.FullSync {
+				m.commandBusy = false
+				if m.quitAfterCommand {
+					m.quitAfterCommand = false
+					return m, tea.Quit
+				}
+				m.status = "full sync complete"
+			} else {
+				m.status = fmt.Sprintf("synced · %s ago", shortAge(0))
+			}
+			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
+		}
+		m.applyPendingActionOutcome()
 		if !initial {
-			return m, nil
+			return m, m.resumePendingWork()
 		}
 		// Render stored data immediately, then quietly refresh it. Empty stores
 		// keep the progress view up until this initial sync completes.
@@ -310,24 +780,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		next := m.request
 		next.Sync = true
 		if msg.snapshot.Empty {
-			return m, m.loadCmd(next)
+			return m, m.startDashboardLoad(next)
 		}
 		checkCommand := m.maybeCheckSkillOffer()
 		if checkCommand == nil {
-			return m, m.loadCmd(next)
+			return m, m.startDashboardLoad(next)
 		}
 		m.pendingSync = true
 		return m, checkCommand
 	case skillOfferCheckedMsg:
 		if msg.err != nil || msg.check.Answered || !msg.check.HasRoots {
-			return m, m.resumeInitialSync()
+			return m, m.resumePendingWork()
 		}
 		if msg.check.Installed {
 			return m, m.recordSkillOfferCmd(SkillOfferPreinstalled)
 		}
+		m.palette.close()
 		m.offerState = skillOfferPrompt
 		return m, nil
 	case skillOfferInstalledMsg:
+		m.palette.close()
 		m.offerState = skillOfferResult
 		m.offerResults = append([]string(nil), msg.results...)
 		if msg.err != nil {
@@ -339,11 +811,85 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.recordSkillOfferCmd(SkillOfferAccepted)
 	case skillOfferRecordedMsg:
 		// Offer bookkeeping is intentionally best effort and never blocks the TUI.
-		return m, m.resumeInitialSync()
+		return m, m.resumePendingWork()
+	case commandFinishedMsg:
+		m.commandBusy = false
+		m.commandOutputOffset = 0
+		quitAfterCommand := m.quitAfterCommand
+		m.quitAfterCommand = false
+		if msg.err != nil {
+			m.status = ""
+			m.commandOutput = strings.TrimSpace(msg.result.Output)
+			if m.commandOutput == "" {
+				m.commandOutput = msg.err.Error()
+			}
+			m.commandOutputFailure = true
+			m.commandOutputHint = paletteActionFailure(msg.command, msg.err)
+			m.warning = m.commandOutputHint
+			if quitAfterCommand {
+				return m, tea.Quit
+			}
+			return m, m.resumePendingWork()
+		}
+		m.warning = ""
+		m.commandOutput = msg.result.Output
+		m.commandOutputFailure = false
+		m.commandOutputHint = ""
+		m.status = strings.ToLower(msg.command.title) + " complete"
+		if quitAfterCommand {
+			return m, tea.Quit
+		}
+		return m, m.resumePendingWork()
 	case tea.KeyMsg:
+		if m.offerState != skillOfferHidden {
+			m.palette.close()
+			return m.updateSkillOfferKey(msg.String())
+		}
+		if m.palette.active {
+			return m.updatePaletteKey(msg)
+		}
+		if m.commandOutput != "" {
+			return m.updateCommandOutputKey(msg)
+		}
 		return m.updateKey(msg)
 	}
 	return m, nil
+}
+
+func sameRequestIgnoringSync(left, right Request) bool {
+	// Dashboard loads do not own the history-search page's private state.
+	left.Sync = false
+	right.Sync = false
+	left.LoadID = 0
+	right.LoadID = 0
+	left.PageLoadToken = ""
+	right.PageLoadToken = ""
+	left.Initial = false
+	right.Initial = false
+	left.HistoryQuery = ""
+	right.HistoryQuery = ""
+	left.HistorySelect = 0
+	right.HistorySelect = 0
+	left.HistorySessionID = ""
+	right.HistorySessionID = ""
+	left.SessionDetailOffset = 0
+	right.SessionDetailOffset = 0
+	left.HistoryExportID = ""
+	right.HistoryExportID = ""
+	left.HistoryExportToken = ""
+	right.HistoryExportToken = ""
+	left.Progress = nil
+	right.Progress = nil
+	return reflect.DeepEqual(left, right)
+}
+
+func actionProgress(action string) string {
+	switch action {
+	case VerifyVaultAction:
+		return "verifying vault…"
+	default:
+		return "working…"
+	}
 }
 
 func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -351,72 +897,310 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.offerState != skillOfferHidden {
 		return m.updateSkillOfferKey(value)
 	}
-	if value == "ctrl+c" || value == "q" {
+	if value == "?" {
+		if m.help {
+			m.help = false
+			return m, nil
+		}
+		page := m.activePage()
+		interactive, ok := page.(InteractivePage)
+		if !ok || !interactive.Editing() || key.Type != tea.KeyRunes {
+			m.help = true
+			return m, nil
+		}
+	}
+	if m.help {
+		if binding, ok := keyBindingFor(value, len(m.router.Pages())); ok && binding.Action == keyActionQuit {
+			return m.updateBinding(binding, value)
+		}
+		return m, nil
+	}
+	binding, bound := keyBindingFor(value, len(m.router.Pages()))
+	page := m.activePage()
+	interactive, interactivePage := page.(InteractivePage)
+	globalFirst := bound && binding.Action != keyActionPageCommand &&
+		(!interactivePage || !interactive.Editing() || key.Type != tea.KeyRunes)
+	if globalFirst {
+		if (m.commandBusy || m.dashboardLoadBusy || m.pendingSync) && binding.Action != keyActionNavigatePages && binding.Action != keyActionToggleHelp && binding.Action != keyActionQuit {
+			return m, nil
+		}
+		return m.updateBinding(binding, value)
+	}
+	if bound && interactivePage && binding.Action == keyActionPageCommand && (m.commandBusy || m.dashboardLoadBusy || m.syncing || m.pendingSync) {
+		return m, nil
+	}
+	if interactivePage {
+		result := interactive.HandleKey(m.request, key)
+		if result.Handled {
+			m.request = result.Request
+			switch result.Action {
+			case PageActionLoad:
+				if loader, ok := page.(PageLoader); ok {
+					return m.startPageLoad(loader, m.request)
+				}
+			case PageActionExport:
+				if exporter, ok := page.(PageExporter); ok {
+					return m, m.exportPageCmd(exporter, m.request)
+				}
+			}
+			return m, nil
+		}
+	}
+	if !bound {
+		return m, nil
+	}
+	if m.commandBusy || m.pendingSync {
+		return m, nil
+	}
+	return m.updateBinding(binding, value)
+}
+
+func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.Cmd) {
+	if binding.Action == keyActionQuit {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return m, nil
+		}
 		return m, tea.Quit
 	}
-	if value == "?" {
+	if binding.Action == keyActionToggleHelp {
 		m.help = !m.help
 		return m, nil
+	}
+	if binding.Action == keyActionOpenPalette {
+		if m.commandBusy || m.loading || m.syncing || m.pendingSync || m.dashboardLoadBusy {
+			return m, nil
+		}
+		m.help = false
+		m.palette.resize(m.request.Width)
+		return m, m.palette.open(m.router, m.commandRegistry, m.request.Width)
 	}
 	if m.help {
 		return m, nil
 	}
-	switch value {
-	case "tab":
-		m.tab = (m.tab + 1) % tabCount
+	switch binding.Action {
+	case keyActionNavigatePages:
+		if m.navigatePages(value) {
+			if page := m.activePage(); page != nil {
+				if loader, ok := page.(PageLoader); ok {
+					return m.startPageLoad(loader, m.request)
+				}
+			}
+		}
 		return m, nil
-	case "shift+tab":
-		m.tab = (m.tab + tabCount - 1) % tabCount
-		return m, nil
-	case "1", "2", "3", "4":
-		m.tab = Tab(value[0] - '1')
-		return m, nil
-	case "p":
+	case keyActionProvider:
 		m.request.Provider = (m.request.Provider + 1) % 3
-		return m, m.loadCmd(m.request)
-	case "r":
+		m.request.DailyCursor = 0
+		m.request.DailyWindowStart = 0
+		m.request.DailyDetailOffset = 0
+		m.resetSessionNavigation()
+		return m.loadDashboardAndActivePage(m.request)
+	case keyActionRange:
 		m.request.Range = (m.request.Range + 1) % 4
-		return m, m.loadCmd(m.request)
-	case "R":
+		m.request.DailyCursor = 0
+		m.request.DailyWindowStart = 0
+		m.request.DailyDetailOffset = 0
+		m.resetSessionNavigation()
+		return m.loadDashboardAndActivePage(m.request)
+	case keyActionRefresh:
 		m.syncing = true
+		m.resetSessionNavigation()
 		request := m.request
 		request.Sync = true
-		return m, m.loadCmd(request)
-	case "s":
-		if m.tab == ModelsTab {
-			m.request.ModelSort = (m.request.ModelSort + 1) % 3
-			m.request.ModelOffset = 0
-			return m, m.loadCmd(m.request)
+		request.RefreshPages = true
+		return m.loadDashboardAndActivePage(request)
+	case keyActionPageCommand:
+		page := m.activePage()
+		if page == nil {
+			return m, nil
 		}
-	case "y":
-		if m.tab == HeatmapTab {
-			m.request.HeatmapYear = !m.request.HeatmapYear
-			return m, m.loadCmd(m.request)
+		context := PageContext{
+			Render: m.render, Snapshot: m.snapshot, Request: m.request,
+			Width: ContentWidth(m.request.Width), Height: ContentHeight(m.request.Height),
 		}
-	case "left":
-		m.pan(-1)
-		return m, m.loadCmd(m.request)
-	case "right":
-		m.pan(1)
-		return m, m.loadCmd(m.request)
-	case "up":
-		if m.tab == ModelsTab && m.request.ModelOffset > 0 {
-			m.request.ModelOffset--
-			return m, m.loadCmd(m.request)
+		request, changed := page.Update(context, value)
+		if !changed {
+			return m, nil
 		}
-	case "down":
-		if m.tab == ModelsTab {
-			m.request.ModelOffset++
-			return m, m.loadCmd(m.request)
+		if request.Action != "" {
+			if m.actionInFlight != "" || m.syncInFlight || m.dashboardLoadBusy {
+				return m, nil
+			}
+			request.RefreshPages = true
+			loadRequest := request
+			request.Action = ""
+			m.request = request
+			m.warning = ""
+			m.status = actionProgress(loadRequest.Action)
+			m.syncing = true
+			m.actionInFlight = loadRequest.Action
+			return m, m.startDashboardLoad(loadRequest)
 		}
-	case "home":
-		m.setOffset(-1000000)
-		return m, m.loadCmd(m.request)
-	case "end":
-		m.setOffset(0)
-		return m, m.loadCmd(m.request)
+		if !page.NeedsReload(context, request) {
+			m.request = request
+			return m, nil
+		}
+		m.request = request
+		command := m.startDashboardLoad(m.request)
+		return m, command
 	}
 	return m, nil
+}
+
+func (m Model) loadDashboardAndActivePage(request Request) (Model, tea.Cmd) {
+	if page := m.activePage(); page != nil {
+		if loader, ok := page.(PageLoader); ok {
+			var pageCommand tea.Cmd
+			m, pageCommand = m.startPageLoad(loader, request)
+			dashboardCommand := m.startDashboardLoad(request)
+			return m, tea.Batch(dashboardCommand, pageCommand)
+		}
+	}
+	command := m.startDashboardLoad(request)
+	return m, command
+}
+
+func (m Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "ctrl+c" {
+		m.palette.close()
+		return m, tea.Quit
+	}
+	selection, command := m.palette.update(key)
+	if selection.event != paletteSelected {
+		return m, command
+	}
+	return m, m.runPaletteCommand(selection.command)
+}
+
+func (m *Model) runPaletteCommand(command paletteCommand) tea.Cmd {
+	if command.page != "" {
+		if !m.router.Select(command.page) {
+			return nil
+		}
+		if page := m.activePage(); page != nil {
+			if loader, ok := page.(PageLoader); ok {
+				updated, pageCommand := m.startPageLoad(loader, m.request)
+				*m = updated
+				return pageCommand
+			}
+		}
+		return nil
+	}
+	if command.id == CommandQuitID {
+		if m.commandBusy {
+			m.quitAfterCommand = true
+			m.status = "finishing current operation before exit"
+			return nil
+		}
+		return tea.Quit
+	}
+	if m.commandBusy || m.loading || m.syncing || m.pendingSync || m.dashboardLoadBusy {
+		m.warning = "dashboard is busy; wait for the current operation to finish"
+		m.status = ""
+		return nil
+	}
+	if command.id == CommandSyncFullID {
+		m.commandBusy, m.syncing = true, true
+		m.dashboardLoadBusy = true
+		m.warning = ""
+		m.status = "running sync --full"
+		m.resetSessionNavigation()
+		request := m.request
+		request.Sync, request.FullSync = true, true
+		return m.startDashboardLoad(request)
+	}
+	if command.action.Run == nil {
+		m.warning = command.title + " is unavailable in this dashboard build"
+		m.status = ""
+		return nil
+	}
+	m.commandBusy = true
+	m.warning = ""
+	m.status = "running " + strings.ToLower(command.title)
+	return func() tea.Msg {
+		result, err := command.action.Run()
+		return commandFinishedMsg{command: command, result: result, err: err}
+	}
+}
+
+func (m Model) updateCommandOutputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	width := min(84, max(46, layout.width-8))
+	contentWidth := max(1, width-6)
+	_, maxLines, maxOffset := commandOutputViewport(m.commandOutput, contentWidth, layout.height, m.commandOutputFailure, m.commandOutputHint)
+	switch key.String() {
+	case "up":
+		m.commandOutputOffset = max(0, m.commandOutputOffset-1)
+		return m, nil
+	case "down":
+		m.commandOutputOffset = min(maxOffset, m.commandOutputOffset+1)
+		return m, nil
+	case "pgup":
+		m.commandOutputOffset = max(0, m.commandOutputOffset-maxLines)
+		return m, nil
+	case "pgdown":
+		m.commandOutputOffset = min(maxOffset, m.commandOutputOffset+maxLines)
+		return m, nil
+	case "home":
+		m.commandOutputOffset = 0
+		return m, nil
+	case "end":
+		m.commandOutputOffset = maxOffset
+		return m, nil
+	}
+	commandHint := m.commandOutputHint
+	m.commandOutput = ""
+	m.commandOutputOffset = 0
+	if commandHint != "" && m.warning == commandHint {
+		m.warning = ""
+	}
+	m.commandOutputFailure, m.commandOutputHint = false, ""
+	return m, nil
+}
+
+func (m *Model) navigatePages(key string) bool {
+	var changed bool
+	switch key {
+	case "tab":
+		changed = m.router.Move(1)
+	case "shift+tab":
+		changed = m.router.Move(-1)
+	default:
+		if len(key) != 1 || key[0] < '1' || key[0] > '9' {
+			return false
+		}
+		changed = m.router.SelectIndex(int(key[0] - '1'))
+	}
+	return changed
+}
+
+func (m Model) activePage() Page {
+	return m.router.ActivePage()
+}
+
+func (m *Model) resetSessionNavigation() {
+	m.request.SessionProject = ""
+	m.request.SessionProjectActive = false
+	m.request.SessionCursor = ""
+	m.request.SessionCursorStack = ""
+	m.request.SessionOffset = 0
+	m.request.SessionReturnToEnd = false
+	m.request.SessionDetailID = ""
+	m.request.SessionDetailOffset = 0
+	m.request.Ledger.SessionCursor = 0
+	m.request.Ledger.SessionPageCursor = ""
+	m.request.Ledger.SessionCursorStack = ""
+	m.request.Ledger.SessionSelectLast = false
+	m.request.Ledger.DetailID = ""
+	m.request.Ledger.DetailOffset = 0
+}
+
+func (m Model) page(id PageID) Page {
+	return m.router.PageAt(m.router.IndexOf(id))
 }
 
 func (m Model) updateSkillOfferKey(value string) (tea.Model, tea.Cmd) {
@@ -451,29 +1235,6 @@ func (m Model) declineSkillOfferAndQuitCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) pan(direction int) {
-	switch m.tab {
-	case DailyTab:
-		m.request.DailyOffset += direction * 7
-	case MonthlyTab:
-		m.request.MonthlyOffset += direction
-	case HeatmapTab:
-		m.request.HeatmapYear = false
-		m.request.HeatmapOffset += direction
-	}
-}
-
-func (m *Model) setOffset(value int) {
-	switch m.tab {
-	case DailyTab:
-		m.request.DailyOffset = value
-	case MonthlyTab:
-		m.request.MonthlyOffset = value
-	case ModelsTab:
-		m.request.ModelOffset = max(0, value)
-	}
-}
-
 // View renders the current immutable model state.
 func (m Model) View() string {
 	if m.request.Width > 0 && m.request.Height > 0 && (m.request.Width < minimumWidth || m.request.Height < minimumHeight) {
@@ -482,34 +1243,112 @@ func (m Model) View() string {
 	if m.offerState != skillOfferHidden {
 		return m.skillOfferView()
 	}
+	if m.palette.active {
+		return m.paletteView()
+	}
+	if m.commandOutput != "" {
+		return m.commandOutputView()
+	}
+	return m.baseView()
+}
+
+func (m Model) baseView() string {
 	if m.help {
 		return m.helpView()
 	}
 	if m.loading {
 		elapsed := time.Since(m.started).Round(time.Second)
-		line := fmt.Sprintf("%s Syncing Codex + Claude · %d files scanned · %s\n", m.spinner.View(), m.snapshot.FilesScanned, elapsed)
+		line := fmt.Sprintf("%s Syncing Codex + Claude · %s · %s\n", m.spinner.View(), m.syncProgressText(), elapsed)
 		return m.place(line)
 	}
-	body := m.snapshot.Views[m.tab]
-	if !strings.HasSuffix(body, "\n") {
-		body += "\n"
-	}
-	column := m.cardsView() + m.tabsView() + body
-	footer := m.footerView()
-	return m.compose(column, footer)
+	return m.cockpitView()
 }
 
-// compose pins the footer to the bottom edge and centers the bounded column.
-func (m Model) compose(column, footer string) string {
-	width := max(m.request.Width, minimumWidth)
-	if m.request.Height > 0 {
-		filler := m.request.Height - lipgloss.Height(column) - lipgloss.Height(footer)
-		if filler > 0 {
-			column += strings.Repeat("\n", filler)
+func (m Model) syncProgressText() string {
+	switch m.progress.Phase {
+	case "starting sync":
+		return "starting sync"
+	case "discovering files":
+		return "discovering files"
+	case "preparing sync":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("preparing sync · %s files found", formatStatusNumber(m.progress.FilesFound))
 		}
+		return "preparing sync"
+	case "ingesting files":
+		if m.progress.FilesFound > 0 {
+			return fmt.Sprintf("ingesting %s/%s files", formatStatusNumber(m.progress.FilesProcessed), formatStatusNumber(m.progress.FilesFound))
+		}
+		return "ingesting files"
+	default:
+		return fmt.Sprintf("%d files scanned", m.snapshot.FilesScanned)
 	}
-	view := column + footer
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, lipgloss.NewStyle().Width(ContentWidth(m.request.Width)).Render(view))
+}
+
+func (m Model) cockpitView() string {
+	layout := newCockpitLayout(m.request.Width, m.request.Height)
+	content := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.railView(layout),
+		strings.Repeat(" ", gridGap),
+		m.contentView(layout),
+	)
+	view := strings.Join([]string{
+		m.topBarView(layout),
+		m.summaryView(layout),
+		content,
+		m.statusBarView(layout),
+		m.footerView(layout),
+	}, "\n")
+	return frameBlock(view, layout)
+}
+
+func (m Model) topBarView(layout cockpitLayout) string {
+	active := ""
+	if page := m.activePage(); page != nil {
+		active = page.Title()
+	}
+	left := m.render.Palette.Header().Render("tokenomnom") +
+		m.render.Palette.Subtle().Render("  /  ") +
+		m.render.Palette.Emphasis().Render(strings.ToUpper(active))
+	right := m.render.Palette.Subtle().Render("LOCAL  ·  " + strings.ToUpper(m.request.Provider.String()) + "  ·  " + strings.ToUpper(m.request.Range.String()))
+	space := max(2, layout.innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
+	return fitLine(left+strings.Repeat(" ", space)+right, layout.innerWidth)
+}
+
+func (m Model) summaryView(layout cockpitLayout) string {
+	labels := [...]string{"TOTAL", "TOKENS", "ACTIVE DAYS", "AVG/DAY", "PEAK"}
+	parts := make([]string, 0, len(labels))
+	separator := m.render.Palette.Subtle().Render("  ·  ")
+	for index, label := range labels {
+		metric := m.snapshot.Summary.Metrics[index]
+		if metric.Label == "" {
+			metric.Label = label
+		}
+		if metric.Value == "" {
+			metric.Value = "—"
+		}
+		parts = append(parts, m.render.Palette.Subtle().Render(metric.Label+" ")+m.summaryValueStyle(metric).Render(metric.Value))
+	}
+	return fitLine(strings.Join(parts, separator), layout.innerWidth)
+}
+
+func (m Model) summaryValueStyle(metric SummaryMetric) lipgloss.Style {
+	if metric.Kind == MetricMoney {
+		return m.render.Palette.Money().Bold(true)
+	}
+	return m.render.Palette.Emphasis().Bold(true)
+}
+
+func (m Model) contentView(layout cockpitLayout) string {
+	body := ""
+	if page := m.activePage(); page != nil {
+		body = page.View(PageContext{
+			Render: m.render, Snapshot: m.snapshot, Request: m.request,
+			Width: layout.paneWidth, Height: layout.bodyHeight,
+		})
+	}
+	body = fitBlock(body, layout.paneWidth, layout.bodyHeight)
+	return lipgloss.NewStyle().Width(layout.paneWidth).Height(layout.bodyHeight).Render(body)
 }
 
 // place centers transient states (loading, too-small) in the full window.
@@ -620,145 +1459,6 @@ func splitTextWidth(value string, width int) (string, string) {
 		end++
 	}
 	return string(runes[:end]), string(runes[end:])
-}
-
-const cardGap = 2
-
-func (m Model) cardsView() string {
-	content := ContentWidth(m.request.Width)
-	width := max(14, (content-(len(m.snapshot.Cards)-1)*cardGap)/len(m.snapshot.Cards))
-	parts := make([]string, 0, len(m.snapshot.Cards))
-	for index, card := range m.snapshot.Cards {
-		inner := width - 4 // border + padding
-		value := truncate(card.Value, inner)
-		label := m.render.Palette.Subtle().Render(truncate(card.Label, inner))
-		body := label + "\n" + m.cardValueStyle(card).Render(value)
-		style := m.render.Palette.Border().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(m.render.Palette.BorderColor()).
-			Padding(0, 1).Width(width - 2)
-		if index < len(m.snapshot.Cards)-1 {
-			style = style.MarginRight(cardGap)
-		}
-		parts = append(parts, style.Render(body))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "\n" + m.filtersView() + "\n\n"
-}
-
-func (m Model) cardValueStyle(card Card) lipgloss.Style {
-	switch card.Kind {
-	case CardMoney:
-		return m.render.Palette.Money().Bold(true)
-	case CardModel:
-		if card.Provider != "" {
-			return m.render.Palette.Provider(card.Provider, 0).Bold(true)
-		}
-	}
-	return m.render.Palette.Header()
-}
-
-// filtersView dims default filter values and lifts active ones.
-func (m Model) filtersView() string {
-	provider := m.render.Palette.Subtle().Render(m.request.Provider.String())
-	if m.request.Provider != AllProviders {
-		provider = m.render.Palette.Provider(m.request.Provider.String(), 0).Bold(true).Render(m.request.Provider.String())
-	}
-	dateRange := m.render.Palette.Subtle().Render(m.request.Range.String())
-	if m.request.Range != RangeAll && m.request.Range != Range30Days {
-		dateRange = m.render.Palette.Emphasis().Render(m.request.Range.String())
-	}
-	subtle := m.render.Palette.Subtle()
-	return subtle.Render("provider ") + provider + subtle.Render("  ·  range ") + dateRange
-}
-
-func (m Model) tabsView() string {
-	parts := make([]string, 0, tabCount)
-	for tab := Tab(0); tab < tabCount; tab++ {
-		style := m.render.Palette.Subtle().Padding(0, 1)
-		if tab == m.tab {
-			style = m.render.Palette.Emphasis().Underline(true).Bold(true).Padding(0, 1)
-		}
-		parts = append(parts, style.Render(tabNames[tab]))
-	}
-	rule := m.render.Palette.Border().Render(strings.Repeat("─", ContentWidth(m.request.Width)))
-	return strings.Join(parts, " ") + "\n" + rule + "\n\n"
-}
-
-var footerHints = [...][2]string{
-	{"tab", "views"}, {"p", "provider"}, {"r", "range"},
-	{"R", "refresh"}, {"?", "help"}, {"q", "quit"},
-}
-
-func (m Model) footerView() string {
-	subtle := m.render.Palette.Subtle()
-	parts := make([]string, 0, len(footerHints))
-	for _, hint := range footerHints {
-		parts = append(parts, m.render.Palette.Header().Bold(false).Render(hint[0])+" "+subtle.Render(hint[1]))
-	}
-	line := strings.Join(parts, subtle.Render(" · "))
-	status := m.statusView()
-	switch {
-	case status == "":
-	case lipgloss.Width(line)+lipgloss.Width(status)+3 <= ContentWidth(m.request.Width):
-		line += subtle.Render(" · ") + status
-	default:
-		line = status + "\n" + line
-	}
-	return "\n" + line + "\n" + subtle.Render("API list-price equivalents, not actual bills") + "\n"
-}
-
-func (m Model) statusView() string {
-	if m.warning != "" {
-		return m.render.Palette.Warning().Render(m.warning)
-	}
-	status := ""
-	if m.status != "" {
-		status = m.render.Palette.Success().Render(m.status)
-	}
-	if m.syncing {
-		syncing := m.spinner.View() + m.render.Palette.Subtle().Render(" syncing")
-		if status == "" {
-			return syncing
-		}
-		return status + m.render.Palette.Subtle().Render(" · ") + syncing
-	}
-	return status
-}
-
-var helpRows = [...][2]string{
-	{"tab / shift+tab / 1-4", "switch view"},
-	{"← / →", "pan active timeline"},
-	{"home / end", "jump to range edge"},
-	{"↑ / ↓", "scroll models"},
-	{"s", "sort models"},
-	{"y", "calendar-year heatmap"},
-	{"p", "cycle provider"},
-	{"r", "cycle range"},
-	{"R", "refresh now"},
-	{"?", "close help"},
-	{"q / ctrl+c", "quit"},
-}
-
-func (m Model) helpView() string {
-	keyWidth := 0
-	for _, row := range helpRows {
-		keyWidth = max(keyWidth, lipgloss.Width(row[0]))
-	}
-	var body strings.Builder
-	body.WriteString(m.render.Palette.Header().Render("Keys"))
-	body.WriteString("\n\n")
-	for _, row := range helpRows {
-		key := row[0] + strings.Repeat(" ", keyWidth-lipgloss.Width(row[0]))
-		body.WriteString(m.render.Palette.Emphasis().Render(key))
-		body.WriteString("   ")
-		body.WriteString(m.render.Palette.Subtle().Render(row[1]))
-		body.WriteByte('\n')
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.render.Palette.BorderColor()).
-		Padding(0, 2).Render(strings.TrimRight(body.String(), "\n"))
-	return m.place(modal)
 }
 
 func truncate(value string, width int) string {

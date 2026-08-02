@@ -1,0 +1,292 @@
+=== RUN   TestQuest117KeyboardWalkEvidence
+    app_test.go:534: Source: internal/tui/app_test.go::TestQuest117KeyboardWalkEvidence
+        Command: go test -v ./internal/tui -run TestQuest117KeyboardWalkEvidence -count=1
+
+        FRAME: help overlay · 80x24
+
+
+                  ╭─────────────────────────────────────────────────────────╮
+                  │  Keys                                                   │
+                  │                                                         │
+                  │  tab / shift+tab / 1-6   switch view                    │
+                  │  ← / →                   move active page / day cursor  │
+                  │  home / end              jump to page edge              │
+                  │  h / l                   zoom ledger period             │
+                  │  j / k                   move ledger row                │
+                  │  ↑ / ↓                   move active page / day detail  │
+                  │  enter                   open selected item · e export  │
+                  │  esc                     back to list                   │
+                  │  f                       cycle project filter           │
+                  │  s                       sort models                    │
+                  │  y                       calendar-year heatmap          │
+                  │  p                       cycle provider                 │
+                  │  r                       cycle range                    │
+                  │  R                       refresh now                    │
+                  │  ?                       close help                     │
+                  │  q / ctrl+c              quit                           │
+                  ╰─────────────────────────────────────────────────────────╯
+
+
+
+        FRAME: Daily list · 80x24
+         tokenomnom  /  DAILY                                     LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  ■ Codex  ■ Claude  cost/day
+         › 1  Daily       │   $1,584.23       █████████████████████████████
+         2  Ledger        │     $824.12       ████████████
+         3  Models        │                   13       14       ^
+         4  Heatmap       │                   Jul 2026
+                          │  ----------------------------------------------------------
+         HISTORY          │  DAY DETAIL
+         5  Sessions      │  2026-07-14
+         6  Search        │  TOTAL $2,209.23
+                          │
+         FILTERS          │  PROVIDER SPLIT · COST
+         provider         │  Codex  72% ################ $1,584.23
+           all            │  Claude 28% ##########         $625.00
+         range            │
+           30d            │  TOP MODELS BY COST
+                          │  gpt-5.2                  $1,584.23
+                          │  claude-sonnet              $625.00
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Ledger list · 80x24
+         tokenomnom  /  LEDGER                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  ALL YEARS  /  2026  /  2026-07
+         1  Daily         │  PERIOD                                     TOTAL     DELTA
+         › 2  Ledger      │  › Jul 14                                     $2k      +$1k
+         3  Models        │    C      $2k  L  $625.00  █████████████████████▓▓▓▓▓▓▓▓▓
+         4  Heatmap       │    Jul 13                                 $824.12         —
+                          │    C  $824.12  L        —  ████████████
+         HISTORY          │  TOTAL                                        $3k
+         5  Sessions      │    C      $2k  L  $625.00  ████████████████████████▓▓▓▓▓▓
+         6  Search        │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Models list · 80x24
+         tokenomnom  /  MODELS                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  PROVIDER  MODEL                 TOKENS       COST
+         1  Daily         │  codex     gpt-5.2             143,200,000  $2,408.35
+         2  Ledger        │  claude    claude-sonnet         34,800,000    $625.00
+         › 3  Models      │
+         4  Heatmap       │
+                          │
+         HISTORY          │
+         5  Sessions      │
+         6  Search        │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Heatmap list · 80x24
+         tokenomnom  /  HEATMAP                                   LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  2026
+         1  Daily         │  Jul  ·······································
+         2  Ledger        │  Less ·░▒▓█ More
+         3  Models        │  2 active days · total cost $3,033.35
+         › 4  Heatmap     │
+                          │
+         HISTORY          │
+         5  Sessions      │
+         6  Search        │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Sessions list · 80x24
+         tokenomnom  /  SESSIONS                                  LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  SESSIONS
+         1  Daily         │  provider all  ·  project all  ·  range 30d
+         2  Ledger        │
+         3  Models        │  2 sessions on this page
+         4  Heatmap       │
+                          │    DATE        PROVIDER  PROJECT    PROMPTS  FIRST PROMPT
+         HISTORY          │  › 2026-07-31  codex     beta             2  first prompt
+         › 5  Sessions    │    2026-07-31  claude    alpha            4  second prom…
+         6  Search        │
+                          │  ↑/↓ select  ·  enter open  ·  f project filter
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+         project          │
+           all            │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Search list · 80x24
+         tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  FIND IN HISTORY
+         1  Daily         │  Search your indexed prompts by exact phrase.
+         2  Ledger        │
+         3  Models        │  SEARCH /█
+         4  Heatmap       │  ──────────────────────────────────────────────────────────
+                          │  Press enter to search.
+         HISTORY          │
+         5  Sessions      │  / edit
+         › 6  Search      │
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Sessions detail · 80x24
+         tokenomnom  /  SESSIONS                                  LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  SESSION DETAIL
+         1  Daily         │  ses_second
+         2  Ledger        │
+         3  Models        │  FIRST PROMPT
+         4  Heatmap       │    second prompt
+                          │
+         HISTORY          │  OVERVIEW
+         › 5  Sessions    │  PROVIDER          claude
+         6  Search        │  PROJECT           alpha (git)
+                          │  FIRST             2026-07-31 09:30 UTC
+         FILTERS          │  LAST              2026-07-31 10:15 UTC
+         provider         │  PROMPTS           4 logical
+           all            │  OCCURRENCES       6 indexed
+         range            │  THREAD            root (exact confidence)
+           30d            │
+         project          │  PROVENANCE
+           all            │  PREFERRED         provider-live
+                          │  ↓ more below
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: Ledger session detail · 80x24
+         tokenomnom  /  LEDGER                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  SESSION DETAIL
+         1  Daily         │  ses_second
+         › 2  Ledger      │
+         3  Models        │  FIRST PROMPT
+         4  Heatmap       │    Prepare the migration rollout plan
+                          │
+         HISTORY          │  OVERVIEW
+         5  Sessions      │  PROVIDER          claude
+         6  Search        │  PROJECT           alpha (git)
+                          │  FIRST             2026-07-14 09:30 UTC
+         FILTERS          │  LAST              2026-07-14 09:30 UTC
+         provider         │  PROMPTS           4 logical
+           all            │  OCCURRENCES       6 indexed
+         range            │  THREAD            root (exact confidence)
+           30d            │
+                          │  PROVENANCE
+                          │  PREFERRED         provider-live
+                          │  ↓ more below
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: History search results · 80x24
+         tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  FIND IN HISTORY
+         1  Daily         │  Search your indexed prompts by exact phrase.
+         2  Ledger        │
+         3  Models        │  SEARCH /do not implement█
+         4  Heatmap       │  ──────────────────────────────────────────────────────────
+                          │  › said do not implement until the provenance view is rea…
+         HISTORY          │      2026-08-01 · codex · tokenomnom
+         5  Sessions      │
+         › 6  Search      │  ↑/↓  enter open  e export  / edit  esc
+                          │
+         FILTERS          │
+         provider         │
+           all            │
+         range            │
+           30d            │
+                          │
+                          │
+                          │
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+
+        FRAME: History session detail · 80x24
+         tokenomnom  /  SEARCH                                    LOCAL  ·  ALL  ·  30D
+         TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68
+         SPEND            │  SESSION DETAIL
+         1  Daily         │  ses_search
+         2  Ledger        │
+         3  Models        │  esc back to search e export
+         4  Heatmap       │
+                          │  FIRST PROMPT
+         HISTORY          │    do not implement until the provenance view is ready
+         5  Sessions      │
+         › 6  Search      │  OVERVIEW
+                          │  PROVIDER          codex
+         FILTERS          │  PROJECT           tokenomnom (git)
+         provider         │  FIRST             2026-07-14 09:30 UTC
+           all            │  LAST              2026-07-14 09:30 UTC
+         range            │  PROMPTS           3 logical
+           30d            │  OCCURRENCES       5 indexed
+                          │  THREAD            root (exact confidence)
+                          │
+                          │  ↓ more below
+         ● idle
+         ──────────────────────────────────────────────────────────────────────────────
+         tab views · p provider · r range · R refresh · ? help · q quit
+         API list-price equivalents, not actual bills
+--- PASS: TestQuest117KeyboardWalkEvidence (0.00s)
+PASS
+ok  	github.com/janiorvalle/tokenomnom/internal/tui	0.010s

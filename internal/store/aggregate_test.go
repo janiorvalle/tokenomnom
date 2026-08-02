@@ -69,6 +69,20 @@ func TestAggregateQueriesAndFilters(t *testing.T) {
 		t.Fatalf("providers = %v, want %v", gotProviders, wantProviders)
 	}
 
+	breakdown, err := database.DailyBreakdown("2026-02-01", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if breakdown.Date != "2026-02-01" || breakdown.Total != 580 || len(breakdown.Providers) != 2 || len(breakdown.Models) != 2 {
+		t.Fatalf("daily breakdown = %+v", breakdown)
+	}
+	if breakdown.Providers[0].Provider != discover.ProviderClaude || breakdown.Providers[0].Total != 350 || breakdown.Providers[1].Provider != discover.ProviderCodex || breakdown.Providers[1].Total != 230 {
+		t.Fatalf("daily breakdown providers = %+v", breakdown.Providers)
+	}
+	if breakdown.Models[0].Provider != discover.ProviderClaude || breakdown.Models[0].Model != "claude-b" || breakdown.Models[1].Model != "gpt-a" {
+		t.Fatalf("daily breakdown models = %+v", breakdown.Models)
+	}
+
 	empty, err := database.Totals(Filter{Since: "2030-01-01"})
 	if err != nil {
 		t.Fatal(err)
