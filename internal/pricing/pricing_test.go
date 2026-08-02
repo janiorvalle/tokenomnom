@@ -140,6 +140,38 @@ func TestCostRowsSumsIndependentEffectiveDateBuckets(t *testing.T) {
 	}
 }
 
+func TestCostMarksSummedBucketOverflowAsUnpriced(t *testing.T) {
+	table, err := Load(strings.NewReader(`{"test-model":[
+		{"base_input":1000000,"output":1000000,"status":"published","source":"https://example.com"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := table.Cost(store.Usage{Date: "2026-07-18", Model: "test-model", Input: 5_000_000_000, Output: 5_000_000_000})
+	wantCost := Money(5_000_000_000_000_000_000)
+	if got.Total != wantCost || got.BaseInput != wantCost || got.Output != 0 || got.PricedTokens != 5_000_000_000 || got.UnpricedTokens != 5_000_000_000 {
+		t.Fatalf("overflowing bucket sum = %+v, want first bucket priced and second unpriced", got)
+	}
+}
+
+func TestCostRowsMarksAggregateOverflowAsUnpriced(t *testing.T) {
+	table, err := Load(strings.NewReader(`{"test-model":[
+		{"base_input":1000000,"status":"published","source":"https://example.com"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []store.Usage{
+		{Date: "2026-07-18", Model: "test-model", Input: 5_000_000_000},
+		{Date: "2026-07-18", Model: "test-model", Input: 5_000_000_000},
+	}
+	got := table.CostRows(rows)
+	wantCost := Money(5_000_000_000_000_000_000)
+	if got.Total != wantCost || got.PricedTokens != 5_000_000_000 || got.UnpricedTokens != 5_000_000_000 {
+		t.Fatalf("overflowing row sum = %+v, want first row priced and second unpriced", got)
+	}
+}
+
 func TestEffectiveDateBoundaries(t *testing.T) {
 	table, err := Load()
 	if err != nil {

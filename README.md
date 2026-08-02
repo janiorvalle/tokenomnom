@@ -24,8 +24,9 @@ agents) answer "what did I work on in March" or "find where I said do not
 implement" without grepping raw transcript directories. The bundled agent
 skill teaches Codex and Claude Code to do exactly that.
 
-Those dollar figures are API list-price equivalents. They are not your actual
-Codex or Claude subscription bill.
+Those dollar figures are API list-price equivalents unless you configure a
+`user rate`. User-rate figures are estimates, not your actual Codex or Claude
+subscription bill.
 
 ## Install
 
@@ -427,7 +428,17 @@ replaces the complete entry list for each model it names:
 ```
 
 Rates are USD per million tokens. Keep secrets out of this file; pricing
-overrides are data and need no credentials.
+overrides are data and need no credentials. To add a local estimate without
+replacing the published table, use:
+
+```sh
+tokenomnom pricing set-rate MODEL --input 1.25 --output 8
+tokenomnom pricing set-rate MODEL --clear
+```
+
+User rates are stored in `user-rates.json` in the same config directory, take
+precedence over published rates, and are labeled `user rate` in reports and
+the dashboard. They are estimates, not API list-price equivalents.
 
 `--provider`, `--model`, `--since`, and `--until` narrow reports; `--year`
 selects a heatmap calendar year, and `--no-sync` reports stored data without a

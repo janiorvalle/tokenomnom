@@ -160,6 +160,16 @@ func TestModelsRollupsMarkPartialCosts(t *testing.T) {
 	}
 }
 
+func TestModelsRollupsShowUserRateProvenance(t *testing.T) {
+	data := ModelPageData{
+		Pricing: []ModelPricingRow{{Label: "user rate", Models: 1, Tokens: 100, Cost: pricing.Money(2_500_000_000), PricedTokens: 100}},
+	}
+	view := strings.Join(modelProviderLines(testRender(), data), "\n")
+	if !strings.Contains(view, "PRICING PROVENANCE") || !strings.Contains(view, "user rate") {
+		t.Fatalf("models rollup omitted user-rate provenance:\\n%s", view)
+	}
+}
+
 func TestModelsMasterListCapacityFollowsHeight(t *testing.T) {
 	data := modelsTestData()
 	for index := 10; index < 20; index++ {
@@ -191,6 +201,20 @@ func TestQuest148FrameSnapshots(t *testing.T) {
 	} {
 		t.Logf("FRAME: %s\nSource: internal/tui/pages/models_test.go::TestQuest148FrameSnapshots\nCommand: go test -v ./internal/tui/pages -run TestQuest148FrameSnapshots -count=1\n\n%s", test.name, RenderModels(testRender(), data, test.view))
 	}
+}
+
+func TestQuest185ModelsBeforeAfterFrame(t *testing.T) {
+	before := ModelPageData{
+		ScopeLabel: "ALL TIME",
+		Rows:       []ModelPageRow{{Provider: "codex", Model: "gpt-5.6-terra", Tokens: 298_100_000, UnpricedTokens: 298_100_000, Pricing: "unpriced", Days: 1, FirstDate: "2026-08-01", LastDate: "2026-08-01"}},
+	}
+	before.Total = ModelPageRow{Provider: "TOTAL", Model: "1 model", Tokens: 298_100_000, UnpricedTokens: 298_100_000, Pricing: "0 priced", Days: 1, FirstDate: "2026-08-01", LastDate: "2026-08-01"}
+	after := before
+	after.Rows = []ModelPageRow{{Provider: "codex", Model: "gpt-5.6-terra", Tokens: 298_100_000, Cost: pricing.Money(1_788_600_000_000), PricedTokens: 298_100_000, Pricing: "user rate", Days: 1, FirstDate: "2026-08-01", LastDate: "2026-08-01"}}
+	after.Total = ModelPageRow{Provider: "TOTAL", Model: "1 model", Tokens: 298_100_000, Cost: pricing.Money(1_788_600_000_000), PricedTokens: 298_100_000, Pricing: "1 priced", Days: 1, FirstDate: "2026-08-01", LastDate: "2026-08-01"}
+	after.Pricing = []ModelPricingRow{{Label: "user rate", Models: 1, Tokens: 298_100_000, Cost: pricing.Money(1_788_600_000_000), PricedTokens: 298_100_000}}
+	view := ModelsViewport{Width: 168, Height: 59, Wide: true, Tall: true}
+	t.Logf("BEFORE\n%s\nAFTER\n%s", RenderModels(testRender(), before, view), RenderModels(testRender(), after, view))
 }
 
 func modelsTestData() ModelPageData {

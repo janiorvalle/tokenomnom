@@ -342,7 +342,7 @@ func modelPricingText(render theme.Context, row ModelPageRow) string {
 	if value == "" {
 		value = "unpriced"
 	}
-	if value == "proxy" || value == "estimated" {
+	if value == "user rate" || value == "proxy" || value == "estimated" {
 		return render.Palette.Badge(value).Render(value)
 	}
 	if value == "unpriced" || value == "partial" {

@@ -54,7 +54,7 @@ func defaultCommandActions() []CommandAction {
 		{ID: CommandSyncFullID, Title: "Sync --full", Description: "Re-ingest every usage file", Invocation: "tokenomnom sync --full"},
 		{ID: CommandVaultVerifyID, Title: "Vault verify", Description: "Check archived transcript integrity", Invocation: "tokenomnom vault verify"},
 		{ID: CommandHistoryIndexID, Title: "History index", Description: "Refresh the transcript search index", Invocation: "tokenomnom history index"},
-		{ID: CommandPricingID, Title: "Pricing", Description: "Show effective API list rates", Invocation: "tokenomnom pricing"},
+		{ID: CommandPricingID, Title: "Pricing", Description: "Show effective API and user rates", Invocation: "tokenomnom pricing"},
 		{ID: CommandQuitID, Title: "Quit", Description: "Exit tokenomnom", Invocation: "q"},
 	}
 }

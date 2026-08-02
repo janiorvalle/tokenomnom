@@ -132,8 +132,12 @@ func (m Model) footerView(layout cockpitLayout) string {
 	hints := m.footerHintsView(layout.innerWidth)
 	badge := subtle.Render(sizeBadgeLabel(layout))
 	if layout.tiers.Width == WidthFloor {
-		disclaimer := subtle.Render("API list-price equivalents, not actual bills")
-		shortDisclaimer := subtle.Render("API prices, not actual bills")
+		disclaimer := subtle.Render("API list-price equivalents, not actual bills; user rate estimates")
+		shortText := "user rate est.; not bills"
+		if layout.innerWidth >= 72 {
+			shortText = "user rate estimates; not actual bills"
+		}
+		shortDisclaimer := subtle.Render(shortText)
 		helpAndQuit := m.footerHint(KeyBinding{FooterKey: "?", Footer: "help"}) + subtle.Render(" · ") + m.footerHint(KeyBinding{FooterKey: "q", Footer: "quit"})
 		quitHint := m.footerHint(KeyBinding{FooterKey: "q", Footer: "quit"})
 		for _, left := range []string{
@@ -151,7 +155,7 @@ func (m Model) footerView(layout cockpitLayout) string {
 		available := max(0, layout.innerWidth-lipgloss.Width(badge)-1)
 		return fitLine(joinFooterSegments(fitLine(disclaimer, available), badge, layout.innerWidth), layout.innerWidth)
 	}
-	disclaimer := subtle.Render("API list-price equivalents, not actual bills")
+	disclaimer := subtle.Render("API list-price equivalents, not actual bills; user rate estimates")
 	gap := layout.innerWidth - lipgloss.Width(disclaimer) - lipgloss.Width(badge)
 	disclaimerRow := fitRight(badge, layout.innerWidth)
 	if gap >= 1 {

@@ -27,7 +27,7 @@ Every JSON response is one object with these fields:
 | `generated_at` | string | RFC 3339 timestamp in UTC. |
 | `timezone` | string | Timezone used to bucket usage dates. This is an IANA name when the operating system exposes one; otherwise `Local` means the process system timezone. |
 | `filters` | object | `provider`, `model`, `since`, and `until`; each is a string or `null`. History queries may also include `cwd`, `repo`, `project`, `branch`, `source`, `cursor`, `limit`, and `thread_kind`. |
-| `disclaimer` | string | API list-price-equivalent disclaimer. |
+| `disclaimer` | string | API list-price-equivalent disclaimer; user rate figures are estimates, not actual bills. |
 | `warnings` | string[] | Human-readable pricing, classification, or freshness warnings. |
 | `data` | object | Command-specific data described below. |
 
@@ -96,7 +96,31 @@ use the selected nonzero metric and are bounded by `data.window`.
 `entries` array ordered by effective start. Entries contain the nullable
 USD-per-million-token rates `base_input`, `cache_read`, `write_5m`, `write_1h`,
 and `output`, plus `status`, nullable `effective_from`, nullable
-`effective_until`, `source`, `notes`, and `overridden`.
+`effective_until`, `source`, `notes`, `overridden`, and additive `provenance`.
+The machine provenance tier is `published`, `proxy`, `estimated`, or `user`;
+the human-facing label for `user` is `user rate`.
+
+User rate estimates are stored separately from the published pricing table and
+take precedence over every published, proxy, or estimated entry for the same
+model. Use these commands to manage them:
+
+```text
+tokenomnom pricing set-rate <model> --input <USD-per-1M> --output <USD-per-1M>
+tokenomnom pricing set-rate <model> --input <USD-per-1M> --output <USD-per-1M> [--cache-read <USD-per-1M>] [--cache-write <USD-per-1M>]
+tokenomnom pricing set-rate <model> --clear
+```
+
+The durable file is `user-rates.json` in the configured tokenomnom config
+directory. `input` and `output` are required; cache rates are optional, and a
+single `cache_write` rate applies to both cache-write buckets. Older binaries
+ignore this additive file. Set and clear return a normal report envelope in
+JSON mode. Usage totals and model rows add `provenance`; `user` means the
+displayed cost is a user-rate estimate, not an API list-price equivalent.
+
+JSON mutation errors use stable `data.error.code` values such as
+`UNKNOWN_MODEL`, `MISSING_RATE`, `INVALID_RATE`, and `INVALID_FLAGS`. The same
+object includes a receiver-ready `message`, a corrected `example`, and, for
+unknown models, up to three `suggestions`.
 
 ## Doctor
 

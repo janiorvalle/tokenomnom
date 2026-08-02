@@ -151,6 +151,15 @@ func TestLedgerMarksPartiallyPricedCosts(t *testing.T) {
 	}
 }
 
+func TestLedgerProvenanceSummaryLabelsUserRates(t *testing.T) {
+	view := ledgerProvenanceSummary(ledgerTestRender(), LedgerProvenance{
+		UserModels: 1, UserCost: pricing.Money(2_500_000_000), UserTokens: 1_000_000,
+	}, 120)
+	if !strings.Contains(view, "user rate 1") || !strings.Contains(view, "$2.50") {
+		t.Fatalf("ledger provenance omitted user-rate estimate:\\n%s", view)
+	}
+}
+
 func TestLedgerDayExpandsSessionsAndOpensSharedDetail(t *testing.T) {
 	first := "2026-07-14T09:30:00Z"
 	data := Data{

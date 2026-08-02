@@ -134,6 +134,7 @@ type LedgerProvenance struct {
 	PublishedModels int
 	ProxyModels     int
 	EstimatedModels int
+	UserModels      int
 	UnpricedModels  int
 	PublishedCost   pricing.Money
 	PublishedTokens int64
@@ -141,6 +142,8 @@ type LedgerProvenance struct {
 	ProxyTokens     int64
 	EstimatedCost   pricing.Money
 	EstimatedTokens int64
+	UserCost        pricing.Money
+	UserTokens      int64
 	Unpriced        []string
 }
 
@@ -1129,7 +1132,7 @@ func ledgerModelSummary(render theme.Context, models []LedgerModel, width int) s
 }
 
 func ledgerProvenanceSummary(render theme.Context, provenance LedgerProvenance, width int) string {
-	value := fmt.Sprintf("published %d %s  proxy %d %s  est %d %s  unpriced %d", provenance.PublishedModels, formatMoney(provenance.PublishedCost, provenance.PublishedTokens, false, false), provenance.ProxyModels, formatMoney(provenance.ProxyCost, provenance.ProxyTokens, false, false), provenance.EstimatedModels, formatMoney(provenance.EstimatedCost, provenance.EstimatedTokens, false, false), provenance.UnpricedModels)
+	value := fmt.Sprintf("user rate %d %s  published %d %s  proxy %d %s  est %d %s  unpriced %d", provenance.UserModels, formatMoney(provenance.UserCost, provenance.UserTokens, false, false), provenance.PublishedModels, formatMoney(provenance.PublishedCost, provenance.PublishedTokens, false, false), provenance.ProxyModels, formatMoney(provenance.ProxyCost, provenance.ProxyTokens, false, false), provenance.EstimatedModels, formatMoney(provenance.EstimatedCost, provenance.EstimatedTokens, false, false), provenance.UnpricedModels)
 	return fitLine(render.Palette.Subtle().Render(value), width)
 }
 
