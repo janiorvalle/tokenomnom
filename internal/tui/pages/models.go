@@ -386,7 +386,7 @@ func modelPercent(value float64, decimals int) string {
 
 func modelShareBar(render theme.Context, value float64, width int) string {
 	width = max(1, width)
-	value = min(1, max(0, value))
+	value = minFloat(1, maxFloat(0, value))
 	filled := int(math.Round(value * float64(width)))
 	filled = min(width, max(0, filled))
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
@@ -415,20 +415,6 @@ func modelSparkline(values []float64, width int) string {
 		result[index] = levels[min(len(levels)-1, max(0, level))]
 	}
 	return string(result) + strings.Repeat("·", max(0, width-len(result)))
-}
-
-func minFloat(left, right float64) float64 {
-	if left < right {
-		return left
-	}
-	return right
-}
-
-func maxFloat(left, right float64) float64 {
-	if left > right {
-		return left
-	}
-	return right
 }
 
 func renderModelAnalysis(render theme.Context, data ModelPageData, width, height int, wide bool) string {
@@ -520,7 +506,9 @@ func modelTokenCostLines(render theme.Context, data ModelPageData, width int) []
 	barWidth := max(8, min(24, (width-25)/2))
 	maximumTokens, maximumCost := int64(0), pricing.Money(0)
 	for _, row := range rows[:min(6, len(rows))] {
-		maximumTokens = max(maximumTokens, row.Tokens)
+		if row.Tokens > maximumTokens {
+			maximumTokens = row.Tokens
+		}
 		if row.Cost > maximumCost {
 			maximumCost = row.Cost
 		}
