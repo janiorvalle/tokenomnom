@@ -65,6 +65,20 @@ type CatalogSessionTimestamp struct {
 	Timestamp string
 }
 
+// CatalogModelSessionRow counts logical sessions whose indexed transcript
+// contains a model attribution. It is an availability-aware denominator for
+// dashboard model analytics, not a replacement for usage_daily billing data.
+type CatalogModelSessionRow struct {
+	Provider history.Provider
+	Model    string
+	Sessions int
+}
+
+type CatalogModelSessionStats struct {
+	Rows  []CatalogModelSessionRow
+	Total int
+}
+
 // FieldCoverage discloses known versus unknown metadata in the selected
 // provider/date/source/cwd population before project, repo, or branch filtering.
 type FieldCoverage struct {
@@ -415,6 +429,54 @@ func (s *Store) ListCatalogSessionTimestamps(query CatalogQuery) ([]CatalogSessi
 		return nil, fmt.Errorf("read history session timestamps: %w", err)
 	}
 	return result, nil
+
+}
+
+// ListCatalogModelSessions returns model/session denominators from the
+// existing history index. A session is counted once per provider/model pair.
+func (s *Store) ListCatalogModelSessions(query CatalogQuery) (CatalogModelSessionStats, error) {
+	if query.Source == "" {
+		query.Source = CatalogSourceAny
+	}
+	if !validCatalogSource(query.Source) {
+		return CatalogModelSessionStats{}, fmt.Errorf("invalid history source %q", query.Source)
+	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if !validThreadKindFilter(query.ThreadKind) {
+		return CatalogModelSessionStats{}, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
+	where, args := catalogWhere(query, false)
+	where = append(where, "p.model IS NOT NULL", "TRIM(p.model)<>''")
+	rows, err := s.runner.Query(`WITH model_sessions AS (
+		SELECT DISTINCT s.id, s.provider, TRIM(p.model) AS model
+		FROM sessions s JOIN prompts p ON p.session_id=s.id
+		WHERE `+strings.Join(where, " AND ")+`
+	)
+	SELECT provider, model, COUNT(*)
+	FROM model_sessions
+	GROUP BY provider, model
+	ORDER BY provider, model`, args...)
+	if err != nil {
+		return CatalogModelSessionStats{}, fmt.Errorf("list history model sessions: %w", err)
+	}
+	defer rows.Close()
+	stats := CatalogModelSessionStats{Rows: []CatalogModelSessionRow{}}
+	for rows.Next() {
+		var value CatalogModelSessionRow
+		if err := rows.Scan(&value.Provider, &value.Model, &value.Sessions); err != nil {
+			return CatalogModelSessionStats{}, fmt.Errorf("scan history model sessions: %w", err)
+		}
+		stats.Rows = append(stats.Rows, value)
+	}
+	if err := rows.Err(); err != nil {
+		return CatalogModelSessionStats{}, fmt.Errorf("read history model sessions: %w", err)
+	}
+	where, args = catalogWhere(query, false)
+	where = append(where, "p.model IS NOT NULL", "TRIM(p.model)<>''")
+	if err := s.runner.QueryRow("SELECT COUNT(*) FROM (SELECT DISTINCT s.id FROM sessions s JOIN prompts p ON p.session_id=s.id WHERE "+strings.Join(where, " AND ")+") model_sessions", args...).Scan(&stats.Total); err != nil {
+		return CatalogModelSessionStats{}, fmt.Errorf("count history sessions: %w", err)
+	}
+	return stats, nil
 }
 
 func scanCatalogSession(row rowScanner) (CatalogSession, error) {

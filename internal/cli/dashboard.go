@@ -212,7 +212,8 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}
 		defer database.Close()
 		if request.Initial && !request.Sync {
-			snapshot, err := dashboardSnapshot(database, request, render, location, syncer.Summary{})
+			modelSessions := loadDashboardModelSessionData(filepath.Join(stateDir, historystore.DatabaseName), request)
+			snapshot, err := dashboardSnapshotWithModelSessions(database, request, render, location, syncer.Summary{}, modelSessions)
 			if err != nil {
 				return tui.Snapshot{}, err
 			}
@@ -271,9 +272,10 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 				return tui.Snapshot{}, err
 			}
 		}
-		snapshot, err := dashboardSnapshotWithDailySessions(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
+		modelSessions := loadDashboardModelSessionData(filepath.Join(stateDir, historystore.DatabaseName), request)
+		snapshot, err := dashboardSnapshotWithDailySessionsAndModelSessions(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
 			return loadDashboardDailySessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, date, codexDir, claudeDir, &dailyCounts, &dailyPageSessions)
-		})
+		}, modelSessions)
 		snapshot.Ledger = loadDashboardLedgerHistory(filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location)
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
@@ -1267,6 +1269,35 @@ func dashboardHistoryStatus(cmd *cobra.Command, path string, roots []discover.Ro
 	return dashboardHistorySnapshot{Status: status, Sessions: health.Sessions}
 }
 
+type dashboardModelSessionData struct {
+	ByModel map[modelCostKey]int
+	Total   int
+}
+
+func loadDashboardModelSessionData(path string, request tui.Request) dashboardModelSessionData {
+	info, err := historystore.Inspect(path)
+	if err != nil || !info.Exists {
+		return dashboardModelSessionData{}
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		return dashboardModelSessionData{}
+	}
+	defer database.Close()
+	stats, err := database.ListCatalogModelSessions(historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider),
+		Source:   historystore.CatalogSourceAny,
+	})
+	if err != nil {
+		return dashboardModelSessionData{}
+	}
+	data := dashboardModelSessionData{ByModel: make(map[modelCostKey]int, len(stats.Rows)), Total: stats.Total}
+	for _, row := range stats.Rows {
+		data.ByModel[modelCostKey{Provider: discover.Provider(row.Provider), Model: row.Model}] = row.Sessions
+	}
+	return data
+}
+
 func dashboardVaultStatus(cmd *cobra.Command, database *store.Store, home string, roots []discover.Root) tui.VaultStatus {
 	cfg := appconfig.FromContext(cmd.Context()).Config
 	dir, err := configuredVaultDir(cfg, home)
@@ -1505,10 +1536,18 @@ func dashboardTimezone(value string) (*time.Location, string, error) {
 }
 
 func dashboardSnapshot(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary) (tui.Snapshot, error) {
-	return dashboardSnapshotWithDailySessions(database, request, render, location, syncSummary, nil)
+	return dashboardSnapshotWithDailySessionsAndModelSessions(database, request, render, location, syncSummary, nil, dashboardModelSessionData{})
 }
 
 func dashboardSnapshotWithDailySessions(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, loadDailySessions func(string) tuipages.DailySessionData) (tui.Snapshot, error) {
+	return dashboardSnapshotWithDailySessionsAndModelSessions(database, request, render, location, syncSummary, loadDailySessions, dashboardModelSessionData{})
+}
+
+func dashboardSnapshotWithModelSessions(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, modelSessions dashboardModelSessionData) (tui.Snapshot, error) {
+	return dashboardSnapshotWithDailySessionsAndModelSessions(database, request, render, location, syncSummary, nil, modelSessions)
+}
+
+func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, loadDailySessions func(string) tuipages.DailySessionData, modelSessions dashboardModelSessionData) (tui.Snapshot, error) {
 	info, err := database.Info()
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -1519,7 +1558,10 @@ func dashboardSnapshotWithDailySessions(database *store.Store, request tui.Reque
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	models, err := database.ByModel(filter)
+	modelFilter := filter
+	modelFilter.Since = ""
+	modelFilter.Until = ""
+	models, err := database.ByModel(modelFilter)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1531,6 +1573,11 @@ func dashboardSnapshotWithDailySessions(database *store.Store, request tui.Reque
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
+	modelUsage, err := database.FilteredUsageRows(modelFilter)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+	modelCosts := calculateReportCosts(pricingTable, modelUsage)
 	dailyRows, err := database.Daily(filter)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -1579,7 +1626,7 @@ func dashboardSnapshotWithDailySessions(database *store.Store, request tui.Reque
 		return tui.Snapshot{}, err
 	}
 	snapshot.Ledger.Location = location
-	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, costs, request, render)
+	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, modelCosts, modelUsage, pricingTable, request, dateOnly(now).Format(heatmapDateLayout), modelSessions, render)
 	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -2579,33 +2626,315 @@ func addLedgerProvider(row *tuipages.Row, provider discover.Provider, value prov
 	}
 }
 
-func dashboardModelsView(rows []store.ModelRow, costs reportCosts, request tui.Request, render theme.Context) string {
-	rows = append([]store.ModelRow(nil), rows...)
-	sort.SliceStable(rows, func(i, j int) bool {
-		leftKey := modelCostKey{Provider: rows[i].Provider, Model: rows[i].Model}
-		rightKey := modelCostKey{Provider: rows[j].Provider, Model: rows[j].Model}
-		switch request.ModelSort {
-		case 1:
-			return costs.ByModel[leftKey].Total > costs.ByModel[rightKey].Total
-		case 2:
-			return strings.ToLower(rows[i].Model) < strings.ToLower(rows[j].Model)
-		default:
-			return rows[i].Total > rows[j].Total
-		}
-	})
-	capacity := dashboardRowCapacity(request.Width, request.Height) + 5
-	start := min(max(0, request.ModelOffset), max(0, len(rows)-1))
-	end := min(len(rows), start+capacity)
-	rows = rows[start:end]
-	tableRows := make([][]string, 0, len(rows))
-	for _, row := range rows {
-		model := row.Model
-		if len([]rune(model)) > 28 {
-			model = string([]rune(model)[:27]) + "…"
-		}
-		tableRows = append(tableRows, []string{providerName(row.Provider), model, formatNumber(row.Total), formatCost(costs.ByModel[modelCostKey{Provider: row.Provider, Model: row.Model}])})
+func dashboardModelsView(rows []store.ModelRow, costs reportCosts, usage []store.Usage, table pricing.Table, request tui.Request, reportDate string, modelSessions dashboardModelSessionData, render theme.Context) string {
+	pageWidth := render.Width
+	if pageWidth <= 0 {
+		pageWidth = tui.ContentWidth(request.Width)
 	}
-	return renderStyledTable(render, []string{"PROVIDER", "MODEL", "TOKENS", "COST"}, tableRows, []bool{false, false, true, true}, tableStyle{hasProvider: true, providerCol: 0, moneyColumns: map[int]bool{3: true}})
+	data := dashboardModelPageData(rows, costs, usage, table, request.ModelSort, reportDate, modelSessions)
+	return tuipages.RenderModels(render, data, tuipages.ModelsViewport{
+		Width: pageWidth, Height: tui.ContentHeightFor(request.Width, request.Height),
+		Wide:     tui.WidthTierFor(request.Width) == tui.WidthWide,
+		Standard: tui.WidthTierFor(request.Width) == tui.WidthStandard,
+		Tall:     tui.HeightTierFor(request.Height) == tui.HeightTall,
+		Sort:     request.ModelSort, Offset: request.ModelOffset,
+	})
+}
+
+type dashboardModelPricingStats struct {
+	PricedTokens int64
+	Unpriced     bool
+	Statuses     map[string]int64
+}
+
+func dashboardModelPageData(rows []store.ModelRow, costs reportCosts, usage []store.Usage, table pricing.Table, sortMode int, reportDate string, modelSessions dashboardModelSessionData) tuipages.ModelPageData {
+	data := tuipages.ModelPageData{ScopeLabel: "ALL TIME"}
+	if len(rows) == 0 {
+		return data
+	}
+
+	dailyCosts := make(map[modelCostKey]map[string]pricing.Money, len(rows))
+	pricingStats := make(map[modelCostKey]dashboardModelPricingStats, len(rows))
+	dateSet := make(map[string]bool)
+	for _, value := range usage {
+		key := modelCostKey{Provider: value.Provider, Model: value.Model}
+		if dailyCosts[key] == nil {
+			dailyCosts[key] = make(map[string]pricing.Money)
+		}
+		breakdown := table.Cost(value)
+		dailyCosts[key][value.Date] += breakdown.Total
+		dateSet[value.Date] = true
+		stats := pricingStats[key]
+		if stats.Statuses == nil {
+			stats.Statuses = make(map[string]int64)
+		}
+		stats.PricedTokens += breakdown.PricedTokens
+		if breakdown.UnpricedTokens > 0 {
+			stats.Unpriced = true
+		}
+		if breakdown.PricedTokens > 0 {
+			entry, found := table.RateFor(value.Model, value.Date)
+			if found {
+				stats.Statuses[modelPricingStatus(entry.Status)] += breakdown.PricedTokens
+			}
+		}
+		pricingStats[key] = stats
+	}
+
+	dates := make([]string, 0, len(dateSet))
+	for date := range dateSet {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	recentDates := modelCalendarDates(dates)
+
+	var totalTokens int64
+	var totalCost pricing.Money
+	var totalPriced, totalUnpriced int64
+	for _, row := range rows {
+		key := modelCostKey{Provider: row.Provider, Model: row.Model}
+		value := costs.ByModel[key]
+		totalTokens += row.Total
+		totalCost += value.Total
+		totalPriced += value.PricedTokens
+		totalUnpriced += value.UnpricedTokens
+		stats := pricingStats[key]
+		modelRow := tuipages.ModelPageRow{
+			Provider: string(row.Provider), Model: row.Model, Tokens: row.Total,
+			Cost: value.Total, PricedTokens: value.PricedTokens, UnpricedTokens: value.UnpricedTokens,
+			Pricing: modelPricingLabel(stats), Sessions: modelSessions.ByModel[key],
+			Days: row.ActiveDays, FirstDate: row.FirstDate, LastDate: row.LastDate,
+		}
+		modelRow.Sparkline = modelSparklineValues(dailyCosts[key], recentDates)
+		data.Rows = append(data.Rows, modelRow)
+	}
+
+	for index := range data.Rows {
+		if totalTokens > 0 {
+			data.Rows[index].TokenShare = float64(data.Rows[index].Tokens) / float64(totalTokens)
+		}
+		if totalCost > 0 {
+			data.Rows[index].CostShare = float64(data.Rows[index].Cost) / float64(totalCost)
+		}
+	}
+	sort.SliceStable(data.Rows, func(left, right int) bool {
+		switch sortMode {
+		case 1:
+			if data.Rows[left].Cost != data.Rows[right].Cost {
+				return data.Rows[left].Cost > data.Rows[right].Cost
+			}
+		case 2:
+			if strings.ToLower(data.Rows[left].Model) != strings.ToLower(data.Rows[right].Model) {
+				return strings.ToLower(data.Rows[left].Model) < strings.ToLower(data.Rows[right].Model)
+			}
+		default:
+			if data.Rows[left].Tokens != data.Rows[right].Tokens {
+				return data.Rows[left].Tokens > data.Rows[right].Tokens
+			}
+		}
+		return data.Rows[left].Provider < data.Rows[right].Provider
+	})
+
+	totalTokenShare, totalCostShare := float64(0), float64(0)
+	if totalTokens > 0 {
+		totalTokenShare = 1
+	}
+	if totalCost > 0 {
+		totalCostShare = 1
+	}
+	data.Total = tuipages.ModelPageRow{
+		Provider: "TOTAL", Model: fmt.Sprintf("%d models", len(data.Rows)), Tokens: totalTokens,
+		Cost: totalCost, PricedTokens: totalPriced, UnpricedTokens: totalUnpriced,
+		TokenShare: totalTokenShare, CostShare: totalCostShare, Pricing: fmt.Sprintf("%d priced", countPricedModels(data.Rows)),
+		Sessions: modelSessions.Total,
+		Days:     len(dates),
+	}
+	if len(dates) > 0 {
+		data.Total.FirstDate, data.Total.LastDate = dates[0], dates[len(dates)-1]
+	}
+
+	providerTotals := make(map[string]*tuipages.ModelProviderRow)
+	pricingTotals := make(map[string]*tuipages.ModelPricingRow)
+	for _, row := range data.Rows {
+		provider := providerTotals[row.Provider]
+		if provider == nil {
+			provider = &tuipages.ModelProviderRow{Provider: row.Provider}
+			providerTotals[row.Provider] = provider
+		}
+		provider.Models++
+		provider.Tokens += row.Tokens
+		provider.Cost += row.Cost
+		provider.PricedTokens += row.PricedTokens
+		label := pricingProvenanceLabel(row.Pricing)
+		provenance := pricingTotals[label]
+		if provenance == nil {
+			provenance = &tuipages.ModelPricingRow{Label: label}
+			pricingTotals[label] = provenance
+		}
+		provenance.Models++
+		provenance.Tokens += row.Tokens
+		provenance.Cost += row.Cost
+		provenance.PricedTokens += row.PricedTokens
+		if row.PricedTokens > 0 {
+			data.Rates = append(data.Rates, tuipages.ModelRateRow{Model: row.Model, Cost: row.Cost, PricedTokens: row.PricedTokens})
+		}
+		if row.UnpricedTokens > 0 {
+			data.Unpriced = append(data.Unpriced, tuipages.ModelUnpricedRow{Model: row.Model, Tokens: row.UnpricedTokens})
+		}
+		data.PerSession = append(data.PerSession, tuipages.ModelPerSessionRow{Model: row.Model, Tokens: row.Tokens, Sessions: row.Sessions})
+	}
+	for _, value := range providerTotals {
+		if totalTokens > 0 {
+			value.TokenShare = float64(value.Tokens) / float64(totalTokens)
+		}
+		if totalCost > 0 {
+			value.CostShare = float64(value.Cost) / float64(totalCost)
+		}
+		data.Providers = append(data.Providers, *value)
+	}
+	for _, value := range pricingTotals {
+		data.Pricing = append(data.Pricing, *value)
+	}
+	sort.SliceStable(data.Providers, func(left, right int) bool { return data.Providers[left].Tokens > data.Providers[right].Tokens })
+	sort.SliceStable(data.Pricing, func(left, right int) bool { return data.Pricing[left].Label < data.Pricing[right].Label })
+	sort.SliceStable(data.Rates, func(left, right int) bool {
+		return modelRateValue(data.Rates[left]) > modelRateValue(data.Rates[right])
+	})
+	sort.SliceStable(data.Unpriced, func(left, right int) bool { return data.Unpriced[left].Tokens > data.Unpriced[right].Tokens })
+	latestDataDate := ""
+	if len(dates) > 0 {
+		latestDataDate = dates[len(dates)-1]
+	}
+	if reportDate == "" {
+		reportDate = latestDataDate
+	}
+	for _, row := range data.Rows {
+		data.Recency = append(data.Recency, tuipages.ModelRecencyRow{Model: row.Model, Days: dateDistance(reportDate, row.LastDate)})
+	}
+	sort.SliceStable(data.Recency, func(left, right int) bool { return data.Recency[left].Days < data.Recency[right].Days })
+	for index := range data.PerSession {
+		if data.PerSession[index].Sessions > 0 {
+			data.PerSession[index].TokensPerSession = data.PerSession[index].Tokens / int64(data.PerSession[index].Sessions)
+		}
+	}
+
+	for _, row := range data.Rows {
+		key := modelCostKey{Provider: discover.Provider(row.Provider), Model: row.Model}
+		var matrixCost pricing.Money
+		for _, date := range recentDates {
+			matrixCost += dailyCosts[key][date]
+		}
+		matrixRow := tuipages.ModelMatrixRow{Model: row.Model, Cost: matrixCost}
+		for _, date := range recentDates {
+			matrixRow.Values = append(matrixRow.Values, float64(dailyCosts[key][date]))
+		}
+		data.Matrix.Rows = append(data.Matrix.Rows, matrixRow)
+	}
+	data.Matrix.Dates = append([]string(nil), recentDates...)
+	return data
+}
+
+func modelCalendarDates(activeDates []string) []string {
+	if len(activeDates) == 0 {
+		return nil
+	}
+	latest := activeDates[len(activeDates)-1]
+	end, err := time.Parse(heatmapDateLayout, latest)
+	if err != nil {
+		start := max(0, len(activeDates)-30)
+		return append([]string(nil), activeDates[start:]...)
+	}
+	start := end.AddDate(0, 0, -29)
+	dates := make([]string, 0, 30)
+	for index := 0; index < 30; index++ {
+		dates = append(dates, start.AddDate(0, 0, index).Format(heatmapDateLayout))
+	}
+	return dates
+}
+
+func modelSparklineValues(daily map[string]pricing.Money, dates []string) []float64 {
+	if len(dates) == 0 {
+		return nil
+	}
+	values := make([]float64, 10)
+	for index, date := range dates {
+		bucket := index * len(values) / len(dates)
+		values[bucket] += float64(daily[date])
+	}
+	return values
+}
+
+func modelPricingStatus(status string) string {
+	switch status {
+	case "published":
+		return "live"
+	case "proxy":
+		return "proxy"
+	case "estimated":
+		return "estimated"
+	default:
+		return "unpriced"
+	}
+}
+
+func modelPricingLabel(stats dashboardModelPricingStats) string {
+	if stats.PricedTokens == 0 {
+		return "unpriced"
+	}
+	if stats.Unpriced {
+		return "partial"
+	}
+	best, bestTokens := "live", int64(0)
+	for status, tokens := range stats.Statuses {
+		if tokens > bestTokens {
+			best, bestTokens = status, tokens
+		}
+	}
+	return best
+}
+
+func pricingProvenanceLabel(status string) string {
+	switch status {
+	case "live":
+		return "live rates"
+	case "proxy":
+		return "proxy rates"
+	case "estimated":
+		return "estimated"
+	case "partial":
+		return "partial"
+	default:
+		return "unpriced"
+	}
+}
+
+func modelRateValue(row tuipages.ModelRateRow) float64 {
+	if row.PricedTokens <= 0 {
+		return 0
+	}
+	return float64(row.Cost) / float64(row.PricedTokens)
+}
+
+func countPricedModels(rows []tuipages.ModelPageRow) int {
+	count := 0
+	for _, row := range rows {
+		if row.PricedTokens > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func dateDistance(latest, previous string) int {
+	if latest == "" || previous == "" {
+		return 0
+	}
+	left, leftErr := time.Parse("2006-01-02", latest)
+	right, rightErr := time.Parse("2006-01-02", previous)
+	if leftErr != nil || rightErr != nil || right.After(left) {
+		return 0
+	}
+	return int(left.Sub(right).Hours() / 24)
 }
 
 func dashboardHeatmapView(database *store.Store, globalFilter store.Filter, request tui.Request, render theme.Context, location *time.Location) (string, error) {
