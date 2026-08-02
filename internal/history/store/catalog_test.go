@@ -84,6 +84,10 @@ func TestListCatalogPaginationCoverageAvailabilityAndPreviewBounds(t *testing.T)
 	if err != nil || len(vaultOnly.Sessions) != 1 || vaultOnly.Sessions[0].SessionID != codexResult.SessionID {
 		t.Fatalf("vault filter err=%v page=%+v", err, vaultOnly)
 	}
+	timestamps, err := database.ListCatalogSessionTimestamps(CatalogQuery{Source: CatalogSourceAny, Since: &olderTime, Until: &newerTime})
+	if err != nil || len(timestamps) != 2 || timestamps[0].Timestamp == "" || timestamps[1].Timestamp == "" {
+		t.Fatalf("session timestamps err=%v values=%+v", err, timestamps)
+	}
 
 	thirdSource := sourceRef("/provider/third.jsonl", history.LocationProviderArchive)
 	third := extraction("native:third", "third", thirdSource, prompt("native:t1", "t1", "third", 1))
@@ -92,6 +96,32 @@ func TestListCatalogPaginationCoverageAvailabilityAndPreviewBounds(t *testing.T)
 	}
 	if _, err := database.ListCatalog(CatalogQuery{Source: CatalogSourceAny, Cursor: first.NextCursor}); err == nil || !strings.Contains(err.Error(), "generation changed") {
 		t.Fatalf("stale cursor error = %v", err)
+	}
+}
+
+func TestListCatalogSessionTimestampsReturnsEachActiveDay(t *testing.T) {
+	database := openTestStore(t)
+	defer database.Close()
+	firstTime := time.Date(2026, 7, 20, 23, 55, 0, 0, time.UTC)
+	secondTime := time.Date(2026, 7, 21, 0, 5, 0, 0, time.UTC)
+	first := prompt("native:first", "first", "first", 1)
+	second := prompt("native:second", "second", "second", 2)
+	first.Timestamp, second.Timestamp = &firstTime, &secondTime
+	source := sourceRef("/provider/midnight.jsonl", history.LocationProviderLive)
+	extract := extraction("native:midnight", "midnight", source, first, second)
+	extract.Session.FirstTimestamp, extract.Session.LastTimestamp = &firstTime, &secondTime
+	if _, err := database.ApplySource(extract, head(source, "midnight", 20, 2), ApplyReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 21, 23, 59, 59, 0, time.UTC)
+	values, err := database.ListCatalogSessionTimestamps(CatalogQuery{Source: CatalogSourceAny, Since: &start, Until: &end})
+	if err != nil || len(values) != 2 {
+		t.Fatalf("midnight activity err=%v values=%+v", err, values)
+	}
+	if values[0].SessionID == "" || values[0].SessionID != values[1].SessionID || values[0].Timestamp == values[1].Timestamp {
+		t.Fatalf("midnight activity did not preserve both session-day timestamps: %+v", values)
 	}
 }
 

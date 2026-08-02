@@ -31,18 +31,20 @@ const (
 
 // CatalogQuery describes one bounded logical-session page.
 type CatalogQuery struct {
-	Provider   history.Provider
-	Since      *time.Time
-	Until      *time.Time
-	CWD        string
-	Repo       string
-	Project    string
-	ProjectSet bool
-	Branch     string
-	Source     CatalogSource
-	ThreadKind string
-	Limit      int
-	Cursor     string
+	Provider      history.Provider
+	Since         *time.Time
+	Until         *time.Time
+	ActivitySince *time.Time
+	ActivityUntil *time.Time
+	CWD           string
+	Repo          string
+	Project       string
+	ProjectSet    bool
+	Branch        string
+	Source        CatalogSource
+	ThreadKind    string
+	Limit         int
+	Cursor        string
 }
 
 // CatalogProjectStat is a bounded project population summary for ambient
@@ -52,6 +54,15 @@ type CatalogProjectStat struct {
 	Project       string
 	Sessions      int
 	TotalSessions int
+}
+
+// CatalogSessionTimestamp is one indexed activity timestamp for a logical
+// session. The catalog query emits the endpoints of each UTC-day bucket, which
+// is enough for callers to map activity into their presentation timezone.
+type CatalogSessionTimestamp struct {
+	SessionID string
+	Provider  history.Provider
+	Timestamp string
 }
 
 // FieldCoverage discloses known versus unknown metadata in the selected
@@ -150,22 +161,24 @@ type CatalogPage struct {
 }
 
 type catalogCursor struct {
-	Version    int           `json:"v"`
-	Generation int64         `json:"generation"`
-	Provider   string        `json:"provider"`
-	Since      string        `json:"since"`
-	Until      string        `json:"until"`
-	CWD        string        `json:"cwd"`
-	Repo       string        `json:"repo"`
-	Project    string        `json:"project"`
-	ProjectSet bool          `json:"project_set"`
-	Branch     string        `json:"branch"`
-	Source     CatalogSource `json:"source"`
-	ThreadKind string        `json:"thread_kind"`
-	Limit      int           `json:"limit"`
-	Unknown    bool          `json:"unknown"`
-	Timestamp  string        `json:"timestamp"`
-	SessionID  string        `json:"session_id"`
+	Version       int           `json:"v"`
+	Generation    int64         `json:"generation"`
+	Provider      string        `json:"provider"`
+	Since         string        `json:"since"`
+	Until         string        `json:"until"`
+	ActivitySince string        `json:"activity_since"`
+	ActivityUntil string        `json:"activity_until"`
+	CWD           string        `json:"cwd"`
+	Repo          string        `json:"repo"`
+	Project       string        `json:"project"`
+	ProjectSet    bool          `json:"project_set"`
+	Branch        string        `json:"branch"`
+	Source        CatalogSource `json:"source"`
+	ThreadKind    string        `json:"thread_kind"`
+	Limit         int           `json:"limit"`
+	Unknown       bool          `json:"unknown"`
+	Timestamp     string        `json:"timestamp"`
+	SessionID     string        `json:"session_id"`
 }
 
 // ListCatalog returns current logical sessions with stable IDs and aggregated
@@ -352,6 +365,58 @@ func (s *Store) ListCatalogProjectStats(query CatalogQuery, limit int) ([]Catalo
 	return stats, nil
 }
 
+// ListCatalogSessionTimestamps returns indexed activity timestamps for every
+// matching logical session. A session can appear more than once when it was
+// active on more than one day; callers deduplicate by session and date.
+func (s *Store) ListCatalogSessionTimestamps(query CatalogQuery) ([]CatalogSessionTimestamp, error) {
+	if query.Source == "" {
+		query.Source = CatalogSourceAny
+	}
+	if !validCatalogSource(query.Source) {
+		return nil, fmt.Errorf("invalid history source %q", query.Source)
+	}
+	query.ThreadKind = normalizedThreadKindFilter(query.ThreadKind)
+	if !validThreadKindFilter(query.ThreadKind) {
+		return nil, fmt.Errorf("invalid history thread kind %q", query.ThreadKind)
+	}
+	where, args := catalogWhere(query, false)
+	where = append(where, "p.timestamp IS NOT NULL AND p.timestamp<>''")
+	if query.Since != nil {
+		where = append(where, sqliteTimestampKey("p.timestamp")+">=?")
+		args = append(args, fixedCatalogTimestamp(*query.Since))
+	}
+	if query.Until != nil {
+		where = append(where, sqliteTimestampKey("p.timestamp")+"<=?")
+		args = append(args, fixedCatalogTimestamp(*query.Until))
+	}
+	timestampKey := sqliteTimestampKey("p.timestamp")
+	where = append(where, timestampKey+"<>''")
+	rows, err := s.runner.Query(
+		"SELECT s.public_id, s.provider, MIN("+timestampKey+"), MAX("+timestampKey+") FROM sessions s JOIN prompts p ON p.session_id=s.id WHERE "+strings.Join(where, " AND ")+" GROUP BY s.public_id, s.provider, substr("+timestampKey+",1,10)",
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list history session timestamps: %w", err)
+	}
+	defer rows.Close()
+	result := []CatalogSessionTimestamp{}
+	for rows.Next() {
+		var first, last CatalogSessionTimestamp
+		if err := rows.Scan(&first.SessionID, &first.Provider, &first.Timestamp, &last.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan history session timestamp: %w", err)
+		}
+		last.SessionID, last.Provider = first.SessionID, first.Provider
+		result = append(result, first)
+		if last.Timestamp != first.Timestamp {
+			result = append(result, last)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read history session timestamps: %w", err)
+	}
+	return result, nil
+}
+
 func scanCatalogSession(row rowScanner) (CatalogSession, error) {
 	var value CatalogSession
 	var native, first, last, cwd, repo, branch, threadEvidence, originator, sourceIDs, snapshotIDs, preview sql.NullString
@@ -412,6 +477,18 @@ func catalogWhere(query CatalogQuery, includeMetadataFilters bool) ([]string, []
 	if query.Until != nil {
 		where = append(where, "s.first_ts IS NOT NULL AND s.first_ts<>'' AND "+sqliteTimestampKey("s.first_ts")+"<=?")
 		args = append(args, fixedCatalogTimestamp(*query.Until))
+	}
+	if query.ActivitySince != nil || query.ActivityUntil != nil {
+		activityWhere := []string{"activity.session_id=s.id", "activity.timestamp IS NOT NULL", "activity.timestamp<>''"}
+		if query.ActivitySince != nil {
+			activityWhere = append(activityWhere, sqliteTimestampKey("activity.timestamp")+">=?")
+			args = append(args, fixedCatalogTimestamp(*query.ActivitySince))
+		}
+		if query.ActivityUntil != nil {
+			activityWhere = append(activityWhere, sqliteTimestampKey("activity.timestamp")+"<=?")
+			args = append(args, fixedCatalogTimestamp(*query.ActivityUntil))
+		}
+		where = append(where, "EXISTS (SELECT 1 FROM prompts activity WHERE "+strings.Join(activityWhere, " AND ")+")")
 	}
 	if query.CWD != "" {
 		where = append(where, "s.cwd=?")
@@ -520,6 +597,7 @@ func boundPreview(value string) string {
 func newCatalogCursor(query CatalogQuery, generation int64, timestamp, sessionID string) catalogCursor {
 	return catalogCursor{
 		Version: 1, Generation: generation, Provider: string(query.Provider), Since: cursorCatalogTime(query.Since), Until: cursorCatalogTime(query.Until),
+		ActivitySince: cursorCatalogTime(query.ActivitySince), ActivityUntil: cursorCatalogTime(query.ActivityUntil),
 		CWD: query.CWD, Repo: query.Repo, Project: query.Project, ProjectSet: query.ProjectSet, Branch: query.Branch, Source: query.Source, Limit: query.Limit,
 		ThreadKind: normalizedThreadKindFilter(query.ThreadKind),
 		Unknown:    timestamp == "", Timestamp: timestamp, SessionID: sessionID,
@@ -534,6 +612,7 @@ func (cursor catalogCursor) matches(query CatalogQuery, generation int64) error 
 		return errors.New("history cursor is stale because the index generation changed")
 	}
 	if cursor.Provider != string(query.Provider) || cursor.Since != cursorCatalogTime(query.Since) || cursor.Until != cursorCatalogTime(query.Until) ||
+		cursor.ActivitySince != cursorCatalogTime(query.ActivitySince) || cursor.ActivityUntil != cursorCatalogTime(query.ActivityUntil) ||
 		cursor.CWD != query.CWD || cursor.Repo != query.Repo || cursor.Project != query.Project || cursor.ProjectSet != query.ProjectSet || cursor.Branch != query.Branch || cursor.Source != query.Source ||
 		cursor.ThreadKind != normalizedThreadKindFilter(query.ThreadKind) {
 		return errors.New("history cursor does not match the requested filters")

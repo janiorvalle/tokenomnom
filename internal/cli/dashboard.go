@@ -156,6 +156,8 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string, render theme.Context) tui.Loader {
 	var ambient dashboardAmbientCache
 	var sessions dashboardSessionCache
+	var dailyCounts dashboardDailyCountsCache
+	var dailyPageSessions dashboardDailySessionCache
 	var pageCache dashboardPageCache
 
 	return func(request tui.Request) (tui.Snapshot, error) {
@@ -244,6 +246,8 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			if err != nil {
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)
 			}
+			dailyCounts.clear()
+			dailyPageSessions.clear()
 			if err := runDueBackup(cmd, database); err != nil {
 				backupWarning = fmt.Sprintf("backup usage: %v", err)
 			}
@@ -267,7 +271,9 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 				return tui.Snapshot{}, err
 			}
 		}
-		snapshot, err := dashboardSnapshot(database, request, render, location, syncSummary)
+		snapshot, err := dashboardSnapshotWithDailySessions(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
+			return loadDashboardDailySessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, date, codexDir, claudeDir, &dailyCounts, &dailyPageSessions)
+		})
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
 			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
 		})
@@ -388,6 +394,188 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
 		Warning: strings.Join(uniqueStrings(warnings), "; "), Location: location,
 	}
+}
+
+func loadDashboardDailySessions(cmd *cobra.Command, path string, request tui.Request, location *time.Location, date, codexDir, claudeDir string, dailyCounts *dashboardDailyCountsCache, sessionCache *dashboardDailySessionCache) tuipages.DailySessionData {
+	if strings.TrimSpace(date) == "" {
+		return tuipages.DailySessionData{}
+	}
+	if location == nil {
+		location = time.Local
+	}
+	if sessionCache != nil {
+		key := dashboardDailySessionCacheKey{provider: request.Provider, date: date, dateRange: request.Range, zone: location.String(), codexDir: codexDir, claudeDir: claudeDir}
+		if data, ok := sessionCache.get(key); ok {
+			return data
+		}
+	}
+	start, err := time.ParseInLocation(heatmapDateLayout, date, location)
+	if err != nil {
+		return tuipages.DailySessionData{Warning: fmt.Sprintf("The selected day %q could not be read; move the Daily cursor to another day.", date)}
+	}
+	end := start.AddDate(0, 0, 1).Add(-time.Nanosecond)
+	info, err := historystore.Inspect(path)
+	if err != nil || !info.Exists {
+		return tuipages.DailySessionData{Warning: "History index unavailable; run tokenomnom history index to populate the Daily sessions band."}
+	}
+	database, err := historystore.OpenReadOnly(path)
+	if err != nil {
+		return tuipages.DailySessionData{Warning: "History index unavailable; run tokenomnom history index to populate the Daily sessions band."}
+	}
+	defer database.Close()
+	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{Catalog: historystore.CatalogQuery{
+		Provider: historyProvider(request.Provider), Since: &start, Until: &end, ActivitySince: &start, ActivityUntil: &end,
+		Source: historystore.CatalogSourceAny, Limit: historystore.MaxSessionCostPageSize,
+	}})
+	if err != nil {
+		return tuipages.DailySessionData{Warning: "Indexed sessions for this day could not be read; press R to retry or run tokenomnom history index."}
+	}
+	trendSince, trendUntil := dashboardHistoryWindow(request.Range, location, time.Now())
+	if dailyCounts == nil {
+		dailyCounts = &dashboardDailyCountsCache{}
+	}
+	sessionCounts, _, _, _, trendCountErr := dailyCounts.load(database, historyProvider(request.Provider), trendSince, trendUntil, location)
+	_, providerCounts, selectedTotal, selectedTimes, selectedCountErr := dailyCounts.load(database, historyProvider(request.Provider), &start, &end, location)
+	displaySessionTimes := make(map[string]string, len(selectedTimes))
+	for key, timestamp := range selectedTimes {
+		displaySessionTimes[key] = dashboardDailyActivityTime(timestamp, location)
+	}
+	table, err := loadPricingTable()
+	if err != nil {
+		return tuipages.DailySessionData{Warning: "Session costs could not be priced; check the pricing override and press R to retry."}
+	}
+	result := tuipages.DailySessionData{
+		Total: len(page.Sessions), HasMore: page.Page.HasMore,
+		SessionCounts: sessionCounts, ProviderCounts: providerCounts, SessionTimes: displaySessionTimes,
+	}
+	warnings := uniqueStrings(page.Warnings)
+	if selectedCountErr == nil {
+		result.Total, result.TotalKnown = selectedTotal, true
+	}
+	if trendCountErr != nil || selectedCountErr != nil {
+		warnings = append(warnings, "Daily session counts could not be read; press R to retry or run tokenomnom history index.")
+	}
+	unavailable := 0
+	for _, session := range page.Sessions {
+		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
+		if priceErr != nil {
+			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
+		}
+		if row.AttributionStatus != "complete" {
+			unavailable++
+		}
+		model := ""
+		if len(row.Models) > 0 {
+			model = row.Models[0].Model
+		}
+		sessionTime := dashboardDailySessionTime(row.CatalogSession, location)
+		if activityTime := result.SessionTimes[dashboardDailySessionKey(row.Provider, row.SessionID)]; activityTime != "" {
+			sessionTime = activityTime
+		}
+		result.Rows = append(result.Rows, tuipages.DailySession{
+			Time: sessionTime, Provider: string(row.Provider),
+			Project: row.Project, SessionID: row.SessionID, Model: model, Tokens: row.Tokens.TotalTokens,
+			Cost: row.Tokens.cost, PricedTokens: row.Tokens.PricedTokens, Prompt: row.Preview,
+			PromptCount: row.LogicalPromptCount, AttributionStatus: row.AttributionStatus,
+		})
+	}
+	if unavailable > 0 {
+		if page.Page.HasMore {
+			warnings = append(warnings, fmt.Sprintf("Cost attribution unavailable for at least %d of %d loaded sessions; more sessions were not priced. Restore the source or vault snapshot, then rerun `tokenomnom history index`.", unavailable, len(page.Sessions)))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("Cost attribution unavailable for %d of %d sessions; restore the source or vault snapshot, then rerun `tokenomnom history index`.", unavailable, result.Total))
+		}
+	}
+	result.Warning = strings.Join(uniqueStrings(warnings), "; ")
+	if sessionCache != nil {
+		key := dashboardDailySessionCacheKey{provider: request.Provider, date: date, dateRange: request.Range, zone: location.String(), codexDir: codexDir, claudeDir: claudeDir}
+		sessionCache.set(key, result)
+	}
+	return result
+}
+
+func dashboardDailySessionCounts(database *historystore.Store, provider history.Provider, since, until *time.Time, location *time.Location) (map[string]int, map[string]int, int, map[string]string, error) {
+	values, err := database.ListCatalogSessionTimestamps(historystore.CatalogQuery{
+		Provider: provider, Since: since, Until: until,
+		Source: historystore.CatalogSourceAny,
+	})
+	if err != nil {
+		return nil, nil, 0, nil, err
+	}
+	sessionCounts := make(map[string]int)
+	providerCounts := make(map[string]int)
+	sessionTimes := make(map[string]string)
+	seenSessionDays := make(map[string]struct{})
+	seenProviderSessions := make(map[string]struct{})
+	for _, value := range values {
+		date := dashboardDailySessionDate(value.Timestamp, location)
+		if date == "" || value.SessionID == "" {
+			continue
+		}
+		providerKey := dashboardDailySessionKey(value.Provider, value.SessionID)
+		dayKey := providerKey + "\x00" + date
+		if _, ok := seenSessionDays[dayKey]; !ok {
+			seenSessionDays[dayKey] = struct{}{}
+			sessionCounts[date]++
+		}
+		if _, ok := seenProviderSessions[providerKey]; !ok {
+			seenProviderSessions[providerKey] = struct{}{}
+			providerCounts[string(value.Provider)]++
+		}
+		if existing := sessionTimes[providerKey]; existing == "" || dashboardDailyTimestampBefore(value.Timestamp, existing) {
+			sessionTimes[providerKey] = value.Timestamp
+		}
+	}
+	return sessionCounts, providerCounts, len(seenProviderSessions), sessionTimes, nil
+}
+
+func dashboardDailyTimestampBefore(candidate, existing string) bool {
+	candidateTime, candidateErr := time.Parse(time.RFC3339Nano, candidate)
+	existingTime, existingErr := time.Parse(time.RFC3339Nano, existing)
+	if candidateErr == nil && existingErr == nil {
+		return candidateTime.Before(existingTime)
+	}
+	return candidate < existing
+}
+
+func dashboardDailySessionKey(provider history.Provider, sessionID string) string {
+	return string(provider) + "\x00" + sessionID
+}
+
+func dashboardDailySessionTime(session historystore.CatalogSession, location *time.Location) string {
+	value := session.LastTimestamp
+	if value == nil || *value == "" {
+		value = session.FirstTimestamp
+	}
+	if value == nil || *value == "" {
+		return "--:--"
+	}
+	return dashboardDailyActivityTime(*value, location)
+}
+
+func dashboardDailyActivityTime(timestamp string, location *time.Location) string {
+	if timestamp == "" {
+		return "--:--"
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return "--:--"
+	}
+	if location != nil {
+		parsed = parsed.In(location)
+	}
+	return parsed.Format("15:04")
+}
+
+func dashboardDailySessionDate(timestamp string, location *time.Location) string {
+	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return ""
+	}
+	if location != nil {
+		parsed = parsed.In(location)
+	}
+	return parsed.Format(heatmapDateLayout)
 }
 
 func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.Data, request tui.Request, location *time.Location, codexDir, claudeDir string) tuipages.Data {
@@ -541,6 +729,103 @@ type dashboardSessionCache struct {
 	key         dashboardSessionCacheKey
 	data        tuipages.SessionPageData
 	initialized bool
+}
+
+type dashboardDailyCountsCache struct {
+	mu     sync.Mutex
+	values map[dashboardDailyCountsCacheKey]dashboardDailyCountsResult
+}
+
+type dashboardDailyCountsCacheKey struct {
+	provider string
+	since    string
+	until    string
+	zone     string
+}
+
+type dashboardDailyCountsResult struct {
+	sessionCounts  map[string]int
+	providerCounts map[string]int
+	total          int
+	sessionTimes   map[string]string
+}
+
+type dashboardDailySessionCache struct {
+	mu     sync.Mutex
+	values map[dashboardDailySessionCacheKey]tuipages.DailySessionData
+}
+
+type dashboardDailySessionCacheKey struct {
+	provider  tui.Provider
+	date      string
+	dateRange tui.Range
+	zone      string
+	codexDir  string
+	claudeDir string
+}
+
+func (cache *dashboardDailySessionCache) clear() {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.values = nil
+}
+
+func (cache *dashboardDailySessionCache) get(key dashboardDailySessionCacheKey) (tuipages.DailySessionData, bool) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	value, ok := cache.values[key]
+	return value, ok
+}
+
+func (cache *dashboardDailySessionCache) set(key dashboardDailySessionCacheKey, value tuipages.DailySessionData) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.values == nil {
+		cache.values = make(map[dashboardDailySessionCacheKey]tuipages.DailySessionData)
+	}
+	cache.values[key] = value
+}
+
+func (cache *dashboardDailyCountsCache) clear() {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.values = nil
+}
+
+func (cache *dashboardDailyCountsCache) load(database *historystore.Store, provider history.Provider, since, until *time.Time, location *time.Location) (map[string]int, map[string]int, int, map[string]string, error) {
+	key := dashboardDailyCountsCacheKey{
+		provider: string(provider), since: dashboardDailyCacheTime(since), until: dashboardDailyCacheTime(until),
+	}
+	if location != nil {
+		key.zone = location.String()
+	}
+	cache.mu.Lock()
+	if value, ok := cache.values[key]; ok {
+		cache.mu.Unlock()
+		return value.sessionCounts, value.providerCounts, value.total, value.sessionTimes, nil
+	}
+	cache.mu.Unlock()
+
+	sessionCounts, providerCounts, total, sessionTimes, err := dashboardDailySessionCounts(database, provider, since, until, location)
+	if err != nil {
+		return nil, nil, 0, nil, err
+	}
+	cache.mu.Lock()
+	if cache.values == nil {
+		cache.values = make(map[dashboardDailyCountsCacheKey]dashboardDailyCountsResult)
+	}
+	cache.values[key] = dashboardDailyCountsResult{
+		sessionCounts: sessionCounts, providerCounts: providerCounts, total: total, sessionTimes: sessionTimes,
+	}
+	cache.mu.Unlock()
+	return sessionCounts, providerCounts, total, sessionTimes, nil
+}
+
+func dashboardDailyCacheTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 // dashboardHistorySearchCache keeps repeated page visits from reopening the
@@ -915,6 +1200,10 @@ func dashboardTimezone(value string) (*time.Location, string, error) {
 }
 
 func dashboardSnapshot(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary) (tui.Snapshot, error) {
+	return dashboardSnapshotWithDailySessions(database, request, render, location, syncSummary, nil)
+}
+
+func dashboardSnapshotWithDailySessions(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, loadDailySessions func(string) tuipages.DailySessionData) (tui.Snapshot, error) {
 	info, err := database.Info()
 	if err != nil {
 		return tui.Snapshot{}, err
@@ -972,7 +1261,7 @@ func dashboardSnapshot(database *store.Store, request tui.Request, render theme.
 	}
 	snapshot.Summary = dashboardSummary(totals, costs)
 	snapshot.Rail = dashboardRailData(railRows, railCosts, now)
-	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render)
+	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render, loadDailySessions)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1124,6 +1413,7 @@ const (
 	dailyDetailSideBySideMinWidth = 90
 	dailyDetailMinWidth           = 32
 	dailyDetailGap                = 2
+	dashboardDailyChartPoints     = 30
 )
 
 type dashboardDailyDetail struct {
@@ -1138,46 +1428,214 @@ type dashboardDailyViewResult struct {
 	detailMaxOffset int
 }
 
-func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, pricingTable pricing.Table, request tui.Request, render theme.Context) (dashboardDailyViewResult, error) {
+func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter store.Filter, costs reportCosts, pricingTable pricing.Table, request tui.Request, render theme.Context, loadDailySessions func(string) tuipages.DailySessionData) (dashboardDailyViewResult, error) {
 	selectedIndex := dailyCursorIndex(allRows, request.DailyCursor)
 	capacity := dashboardRowCapacity(request.Width, request.Height)
 	windowStart := normalizedDailyWindowStart(allRows, selectedIndex, capacity, request.DailyWindowStart)
-	rows := windowDailyRows(allRows, windowStart, capacity)
 	selectedDate := ""
 	if selectedIndex >= 0 {
 		selectedDate = allRows[selectedIndex].Date
 	}
-	periods := make([]chartPeriod, 0, len(rows))
-	for _, row := range rows {
-		periods = append(periods, chartPeriod{
-			label: row.Date, values: costs.ByDateProvider[row.Date], selected: row.Date == selectedDate,
-		})
-	}
-	chartRender := render
-	if dailyDetailSideBySide(render.Width) {
-		chartRender.Width = dailyChartWidth(render.Width)
-	}
-	chart := ""
-	if len(periods) > 0 {
-		height := chartHeight
-		if !dailyDetailSideBySide(render.Width) {
-			height = dailyStackedChartHeight(chartRender, periods, chartUsesTokens(costs), tui.ContentHeightFor(request.Width, request.Height))
-		}
-		if height > 0 {
-			chart = renderPeriodChartWithHeight(chartRender, periods, "day", "days", chartUsesTokens(costs), height)
+	detail := dashboardDailyDetail{}
+	if selectedDate != "" {
+		var err error
+		detail, err = loadDashboardDailyDetail(database, filter, selectedDate, pricingTable)
+		if err != nil {
+			return dashboardDailyViewResult{}, err
 		}
 	}
-	if selectedDate == "" {
-		view, detailOffset, detailMaxOffset := composeDailyView(render, request.Width, chart, renderDailyEmptyDetail(render, "No active days in this range."), request.Height, request.DailyDetailOffset)
-		return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
+	sessions := tuipages.DailySessionData{}
+	if selectedDate != "" && loadDailySessions != nil {
+		sessions = loadDailySessions(selectedDate)
 	}
-	detail, err := loadDashboardDailyDetail(database, filter, selectedDate, pricingTable)
-	if err != nil {
-		return dashboardDailyViewResult{}, err
-	}
-	detailWidth := dailyDetailRenderWidth(render.Width)
-	view, detailOffset, detailMaxOffset := composeDailyView(render, request.Width, chart, renderDailyDetail(render, detail, detailWidth), request.Height, request.DailyDetailOffset)
+	data := dashboardDailyPageData(allRows, filter, costs, detail, selectedDate, sessions)
+	bodyHeight := tui.ContentHeightFor(request.Width, request.Height)
+	detailMaxOffset := tuipages.DailyDetailMaxOffset(data, render.Width, request.Width, request.Height, bodyHeight)
+	detailOffset := min(max(0, request.DailyDetailOffset), detailMaxOffset)
+	view := tuipages.RenderDaily(render, data, request.Width, request.Height, bodyHeight, detailOffset)
 	return dashboardDailyViewResult{view: view, windowStart: windowStart, detailOffset: detailOffset, detailMaxOffset: detailMaxOffset}, nil
+}
+
+func dashboardDailyPageData(allRows []store.DailyRow, filter store.Filter, costs reportCosts, detail dashboardDailyDetail, selectedDate string, sessions tuipages.DailySessionData) tuipages.DailyPageData {
+	trendRows := dashboardDailyPoints(allRows, filter, costs, sessions.SessionCounts)
+	for index := range trendRows {
+		trendRows[index].Selected = trendRows[index].Date == selectedDate
+	}
+	chartRows := trendRows
+	chartNotice := ""
+	if len(chartRows) > dashboardDailyChartPoints {
+		chartNotice = fmt.Sprintf("%d-day rollup", len(chartRows))
+		chartRows = compressDashboardDailyPoints(chartRows, dashboardDailyChartPoints)
+	}
+
+	var totalTokens int64
+	var totalSessions int
+	for _, row := range trendRows {
+		totalTokens += row.Total.Tokens
+		totalSessions += row.Total.Sessions
+	}
+	average := dashboardDailyPageValue(costs.Grand, totalTokens, totalSessions)
+	averageSessions := 0.0
+	if len(trendRows) > 0 {
+		averageSessions = float64(totalSessions) / float64(len(trendRows))
+		average.Cost /= pricing.Money(len(trendRows))
+		average.Tokens /= int64(len(trendRows))
+		average.UnpricedTokens /= int64(len(trendRows))
+		average.Sessions /= len(trendRows)
+		if costs.Grand.PricedTokens > 0 {
+			average.PricedTokens = 1
+		}
+	}
+	usesTokens := chartUsesTokens(costs)
+	peak, peakDate := peakDailyCostWithDate(costs.ByDate)
+	peakValue := dashboardDailyPageValue(peak, 0, 0)
+	if usesTokens {
+		peakValue, peakDate = tuipages.DailyValue{}, ""
+		for _, row := range trendRows {
+			if row.Total.Tokens > peakValue.Tokens {
+				peakValue, peakDate = row.Total, row.Date
+			}
+		}
+	} else if peakDate == "" {
+		for _, row := range trendRows {
+			if row.Total.Tokens > peakValue.Tokens {
+				peakValue, peakDate = row.Total, row.Date
+			}
+		}
+	}
+
+	page := tuipages.DailyPageData{
+		Rows: chartRows, TrendRows: trendRows, SelectedDate: selectedDate, Sessions: sessions,
+		Average: average, AverageSessions: averageSessions, Peak: peakValue, PeakDate: peakDate, UsesTokens: usesTokens, ChartNotice: chartNotice,
+		RangeStart: filter.Since, RangeEnd: filter.Until,
+	}
+	if detail.breakdown.Date != "" {
+		page.Detail = tuipages.DailyDetail{
+			Date:  detail.breakdown.Date,
+			Value: dashboardDailyPageValue(detail.costs.Grand, detail.breakdown.Total, sessions.Total),
+		}
+		page.DetailUsesTokens = chartUsesTokens(detail.costs) || detail.costs.Grand.Total == 0 && detail.breakdown.Total > 0
+		for _, provider := range detail.breakdown.Providers {
+			value := detail.costs.ByProvider[provider.Provider]
+			sessionCount := sessions.ProviderCounts[string(provider.Provider)]
+			if sessionCount == 0 {
+				sessionCount = dailySessionProviderCount(sessions.Rows, string(provider.Provider))
+			}
+			page.Detail.Providers = append(page.Detail.Providers, tuipages.DailyProvider{
+				Provider: string(provider.Provider),
+				Value:    dashboardDailyPageValue(value, provider.Total, sessionCount),
+			})
+		}
+		for _, model := range detail.breakdown.Models {
+			value := detail.costs.ByModel[modelCostKey{Provider: model.Provider, Model: model.Model}]
+			page.Detail.Models = append(page.Detail.Models, tuipages.DailyModel{
+				Provider: string(model.Provider), Model: model.Model,
+				Value: dashboardDailyPageValue(value, model.Total, 0),
+			})
+		}
+	}
+	return page
+}
+
+func dashboardDailyPoints(allRows []store.DailyRow, filter store.Filter, costs reportCosts, sessionCounts map[string]int) []tuipages.DailyPoint {
+	if len(allRows) == 0 {
+		return nil
+	}
+	byDate := make(map[string]store.DailyRow, len(allRows))
+	for _, row := range allRows {
+		byDate[row.Date] = row
+	}
+	dates := make([]string, 0, len(allRows))
+	if filter.Since != "" && filter.Until != "" {
+		start, startErr := time.Parse(heatmapDateLayout, filter.Since)
+		end, endErr := time.Parse(heatmapDateLayout, filter.Until)
+		if startErr == nil && endErr == nil && !end.Before(start) && end.Sub(start) <= 366*24*time.Hour {
+			for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
+				dates = append(dates, date.Format(heatmapDateLayout))
+			}
+		}
+	}
+	if len(dates) == 0 {
+		for _, row := range allRows {
+			dates = append(dates, row.Date)
+		}
+	}
+	points := make([]tuipages.DailyPoint, 0, len(dates))
+	for _, date := range dates {
+		row := byDate[date]
+		point := tuipages.DailyPoint{Date: date, Total: dashboardDailyPageValue(costs.ByDate[date], row.Total, sessionCounts[date])}
+		providerValues := costs.ByDateProvider[date]
+		codex := providerValues[discover.ProviderCodex]
+		claude := providerValues[discover.ProviderClaude]
+		point.Codex = dashboardDailyPageValue(codex.Cost, codex.Tokens, 0)
+		point.Codex.PricedTokens = codex.Cost.PricedTokens
+		point.Codex.UnpricedTokens = codex.Cost.UnpricedTokens
+		point.Claude = dashboardDailyPageValue(claude.Cost, claude.Tokens, 0)
+		point.Claude.PricedTokens = claude.Cost.PricedTokens
+		point.Claude.UnpricedTokens = claude.Cost.UnpricedTokens
+		points = append(points, point)
+	}
+	return points
+}
+
+func compressDashboardDailyPoints(points []tuipages.DailyPoint, limit int) []tuipages.DailyPoint {
+	if len(points) <= limit || limit <= 0 {
+		return points
+	}
+	bucketSize := (len(points) + limit - 1) / limit
+	result := make([]tuipages.DailyPoint, 0, limit)
+	for start := 0; start < len(points); start += bucketSize {
+		end := min(len(points), start+bucketSize)
+		bucket := tuipages.DailyPoint{Date: points[start].Date}
+		for _, point := range points[start:end] {
+			bucket.Total = addDashboardDailyPageValues(bucket.Total, point.Total)
+			bucket.Codex = addDashboardDailyPageValues(bucket.Codex, point.Codex)
+			bucket.Claude = addDashboardDailyPageValues(bucket.Claude, point.Claude)
+			bucket.Selected = bucket.Selected || point.Selected
+		}
+		bucket.Total = averageDashboardDailyPageValue(bucket.Total, end-start)
+		bucket.Codex = averageDashboardDailyPageValue(bucket.Codex, end-start)
+		bucket.Claude = averageDashboardDailyPageValue(bucket.Claude, end-start)
+		result = append(result, bucket)
+	}
+	return result
+}
+
+func averageDashboardDailyPageValue(value tuipages.DailyValue, count int) tuipages.DailyValue {
+	if count <= 1 {
+		return value
+	}
+	value.Cost /= pricing.Money(count)
+	value.Tokens /= int64(count)
+	value.UnpricedTokens /= int64(count)
+	value.Sessions /= count
+	if value.PricedTokens > 0 {
+		value.PricedTokens = 1
+	}
+	return value
+}
+
+func addDashboardDailyPageValues(left, right tuipages.DailyValue) tuipages.DailyValue {
+	left.Cost += right.Cost
+	left.Tokens += right.Tokens
+	left.PricedTokens += right.PricedTokens
+	left.UnpricedTokens += right.UnpricedTokens
+	left.Sessions += right.Sessions
+	return left
+}
+
+func dashboardDailyPageValue(cost aggregateCost, tokens int64, sessions int) tuipages.DailyValue {
+	return tuipages.DailyValue{Cost: cost.Total, Tokens: tokens, PricedTokens: cost.PricedTokens, UnpricedTokens: cost.UnpricedTokens, Sessions: sessions}
+}
+
+func dailySessionProviderCount(rows []tuipages.DailySession, provider string) int {
+	count := 0
+	for _, row := range rows {
+		if row.Provider == provider {
+			count++
+		}
+	}
+	return count
 }
 
 func loadDashboardDailyDetail(database *store.Store, filter store.Filter, date string, pricingTable pricing.Table) (dashboardDailyDetail, error) {

@@ -1,0 +1,36 @@
+Source: internal/tui/pages/daily_test.go::TestQuest146DailyFrames
+Command: go test ./internal/tui/pages -run TestQuest146DailyFrames -count=1 -v
+
+COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day                    
+ $300                                                                                 ██ ██ ██    
+                                                                             ██ ██ ██ ██ ██ ██    
+                                                                    ██ ██ ██ ██ ██ ██ ██ ██ ██    
+                                                              ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+                                                     ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+ $150                                       ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+                                   ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+     ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██  av
+                    ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+           ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+ $0.0██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
+     01       04       07       10       13       16       19       22       25       28    ^     
+avg $100.00 · peak 09                                                                             
+──────────────────────────────────────────────────────────────────────────────────────────────────
+DAY DETAIL · 2026-07-30 · $200.00 ──────────────  PROJECTS · 30-DAY TRENDS ───────────────────────
+TOTAL $200.00                                     PROJECTS                                        
+PROVIDER SPLIT · COST                             project-a          $18.10 20 ██████████████████ 
+codex     $120.00  60% █████████░░░░░░ 12,000,00                                                  
+claude    $80.00  40% ██████░░░░░░░░░░ 8,000,000  30-DAY TRENDS · 7d Δ                            
+TOP MODELS BY COST · 1                            cost/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███· +35.0% 
+gpt-test                          $120.00 60%     tokens/day ▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███ +35.0% 
+DAY vs 30-DAY AVERAGE                             sessions/day ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ —      
+cost        $200.00 vs    $100.00 +100.0%         claude share ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ +0.0%  
+tokens        20.0M vs      10.0M +100.0%                                                         
+sessions         20 vs         10 +100.0%                                                         
+SESSIONS · 2026-07-30 · top 3 by cost of 20                                                       
+TIME  PROV   PROJECT             TOKENS       COST  FIRST PROMPT                                  
+12:00  codex  project-a        10,000,000     $1.00  Synthetic prompt fixture                     
+12:00  codex  project-a         9,900,000     $0.99  Synthetic prompt fixture                     
+12:00  codex  project-a         9,800,000     $0.98  Synthetic prompt fixture                     
+↓ 17 more sessions · enter opens detail                                                           
+~ Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index.  
