@@ -1,0 +1,37 @@
+Quest 143: help overlay keyboard evidence
+
+Source: internal/tui/app_test.go::TestQuest143HelpEscClosesAndRestoresPageNavigation
+
+Before fix
+==========
+Command: go test -v ./internal/tui -run TestQuest143HelpEscClosesAndRestoresPageNavigation -count=1
+Result: FAIL (exit 1)
+
+Observed output:
+
+    -- after esc --
+    help=true page=daily
+
+    -- after page 2 --
+    help=true page=daily
+
+    app_test.go:851: esc did not close help
+
+After fix
+=========
+Command: go test -v ./internal/tui -run TestQuest143HelpEscClosesAndRestoresPageNavigation -count=1
+Result: PASS (exit 0)
+
+Observed output:
+
+    -- after esc --
+    help=false page=daily
+
+    -- after page 2 --
+    help=false page=ledger
+
+Rendered frame checkpoints from the passing run:
+
+    help before esc: Keys overlay; esc back to list; ? close help
+    after esc: tokenomnom / DAILY with the dashboard navigation visible
+    after page 2: tokenomnom / LEDGER with page 2 selected
