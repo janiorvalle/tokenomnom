@@ -1,0 +1,63 @@
+FRAME: Heatmap wide+tall · 192x66
+Source: internal/tui/pages/heatmap_test.go::TestQuest149HeatmapReferenceFrames
+Command: go test ./internal/tui/pages -run TestQuest149HeatmapReferenceFrames -count=1 -v
+
+YEAR GRID · 2026 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+             Feb         Mar         Apr         May            Jun         Jul         Aug            Sep         Oct            Nov         Dec             MONTH Σ
+SUN █  ▓  ▒  ▒  ·  █  ▓  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  ·  █  ▓  ▒  ▒  ·  █  ▓  ▒  ▓  ▒  ·  █   MONTH Σ
+MON ·  █  ▓  ▓  ▒  ·  █  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  ·  █  ▓  ▒  ▒  ·  █  ▓  ▒  ▓  ▒  ·  █  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▓  ▒  ·  █  ▓  █  ▓  ▒  ·   $84.00
+TUE ▒  ·  █  █  ▓  ▒  ·  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▓  ▒  ·  █  ▓  █  ▓  ▒  ·  ·  █  ▓  ▒  ▒  ·  █  ▓  ▒  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▒   24 activ
+WED ▓  ▒  ·  ·  █  ▓  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  ▒  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  ▓  ▒  ·  █  ▓  █  ▓  ▒  ·  ·  █  ▓  ▒  ▓  ▒  ·  █  ▓   Dec 2026
+THU █  ▓  ▒  ▒  ·  █  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  ▓  █  ▓  ▒  ·  ·  █  ▓  ▒  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  █  ▓  ▒  ·  █   6 streak
+FRI ·  █  ▓  ▓  ▒  ·  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ·  █  ▓  ▒  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  ·  █  ▓  ▒
+SAT ▒  ·  █  █  ▓  ▒  ·  █  ▓  ▒  ·  ·  █  ▓  ▒  ▓  ▒  ·  █  ▓  ▓  ▒  ·  █  ·  █  ▓  ▒  ▒  ·  █  ▓  ▒  ▒  ·  █  ▓  █  ▓  ▒  ·  █  █  ▓  ▒  ·  ▒  ·  █  ▓
+Less ·░▒▓█ More  ·  cost
+showing Jan 11 2026 - Dec 31 2026 of Jan 01 2026 - Dec 31 2026
+281 active days · total $514.65 · busiest 2026-12-31  $3.65 · longest streak 6 days
+ANALYSIS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+WEEKDAY PROFILE ──────────────────────────────────────  STREAKS & RECORDS ────────────────────────────────────  MONTH TABLE ────────────────────────────────────────────
+DAY  ACTIVE  COST                                       BUSIEST DAY     2026-12-31  $3.65                       MONTH       COST / TOKENS     ACTIVE DAYS
+Sun  40  $73.28                                         LONGEST STREAK  6 days                                  Jan 2026   $3.84             24
+Mon  40  $73.40                                         CURRENT STREAK   3 days                                 Feb 2026   $9.45             21
+Tue  40  $73.80                                         ACTIVE / TOTAL   281 / 365 days                         Mar 2026   $18.00            24
+Wed  40  $74.76                                         METRIC           COST                                   Apr 2026   $24.23            23
+Thu  41  $75.17                                                                                                 May 2026   $32.64            24
+Fri  40  $71.92                                         MONTH TABLE                                             Jun 2026   $38.26            23
+Sat  40  $72.32                                         MONTH       VALUE             ACTIVE                    Jul 2026   $47.28            24
+                                                        Jan 2026   $3.84             24d                        Aug 2026   $54.72            24
+RECENT DAILY ACTIVITY                                   Feb 2026   $9.45             21d                        Sep 2026   $59.42            23
+· Nov 27  $3.31                                         Mar 2026   $18.00            24d                        Oct 2026   $69.36            24
+  Nov 28  —                                             Apr 2026   $24.23            23d                        Nov 2026   $73.45            23
+· Nov 29  $3.33                                         May 2026   $32.64            24d                        Dec 2026   $84.00            24
+· Nov 30  $3.34                                         Jun 2026   $38.26            23d
+· Dec 01  $3.35                                         Jul 2026   $47.28            24d                        DAILY ACTIVITY
+· Dec 02  $3.36                                         Aug 2026   $54.72            24d                        · Dec 02  $3.36
+· Dec 03  $3.37                                         Sep 2026   $59.42            23d                        · Dec 03  $3.37
+  Dec 04  —                                             Oct 2026   $69.36            24d                          Dec 04  —
+· Dec 05  $3.39                                         Nov 2026   $73.45            23d                        · Dec 05  $3.39
+· Dec 06  $3.40                                         Dec 2026   $84.00            24d                        · Dec 06  $3.40
+· Dec 07  $3.41                                         · Dec 07  $3.41                                         · Dec 07  $3.41
+  Dec 08  —                                               Dec 08  —                                               Dec 08  —
+· Dec 09  $3.43                                         · Dec 09  $3.43                                         · Dec 09  $3.43
+· Dec 10  $3.44                                         · Dec 10  $3.44                                         · Dec 10  $3.44
+· Dec 11  $3.45                                         · Dec 11  $3.45                                         · Dec 11  $3.45
+  Dec 12  —                                               Dec 12  —                                               Dec 12  —
+· Dec 13  $3.47                                         · Dec 13  $3.47                                         · Dec 13  $3.47
+· Dec 14  $3.48                                         · Dec 14  $3.48                                         · Dec 14  $3.48
+· Dec 15  $3.49                                         · Dec 15  $3.49                                         · Dec 15  $3.49
+  Dec 16  —                                               Dec 16  —                                               Dec 16  —
+· Dec 17  $3.51                                         · Dec 17  $3.51                                         · Dec 17  $3.51
+· Dec 18  $3.52                                         · Dec 18  $3.52                                         · Dec 18  $3.52
+· Dec 19  $3.53                                         · Dec 19  $3.53                                         · Dec 19  $3.53
+  Dec 20  —                                               Dec 20  —                                               Dec 20  —
+· Dec 21  $3.55                                         · Dec 21  $3.55                                         · Dec 21  $3.55
+· Dec 22  $3.56                                         · Dec 22  $3.56                                         · Dec 22  $3.56
+· Dec 23  $3.57                                         · Dec 23  $3.57                                         · Dec 23  $3.57
+  Dec 24  —                                               Dec 24  —                                               Dec 24  —
+· Dec 25  $3.59                                         · Dec 25  $3.59                                         · Dec 25  $3.59
+· Dec 26  $3.60                                         · Dec 26  $3.60                                         · Dec 26  $3.60
+· Dec 27  $3.61                                         · Dec 27  $3.61                                         · Dec 27  $3.61
+  Dec 28  —                                               Dec 28  —                                               Dec 28  —
+· Dec 29  $3.63                                         · Dec 29  $3.63                                         · Dec 29  $3.63
+· Dec 30  $3.64                                         · Dec 30  $3.64                                         · Dec 30  $3.64
+· Dec 31  $3.65                                         · Dec 31  $3.65                                         · Dec 31  $3.65
