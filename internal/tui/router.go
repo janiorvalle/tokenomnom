@@ -310,12 +310,15 @@ func (sessionsPage) View(context PageContext) string {
 	return tuipages.RenderSessions(context.Render, context.Snapshot.Sessions, tuipages.SessionViewState{
 		SelectedIndex: context.Request.SessionOffset,
 		DetailID:      context.Request.SessionDetailID,
+		Costs:         context.Snapshot.Sessions.Costs,
+		PromptPages:   context.Snapshot.Sessions.PromptPages,
 		DetailOffset:  context.Request.SessionDetailOffset,
 		Provider:      context.Request.Provider.String(),
 		Project:       context.Request.SessionProject,
 		ProjectActive: context.Request.SessionProjectActive,
 		DateRange:     context.Request.Range.String(),
 		SelectLast:    context.Request.SessionReturnToEnd,
+		ViewportWidth: context.Request.Width, ViewportHeight: context.Request.Height,
 	}, context.Width, context.Height)
 }
 
@@ -352,7 +355,8 @@ func updateSessionsRequestWithContext(context PageContext, key string) (Request,
 			if !ok {
 				return request, false
 			}
-			maxOffset := tuipages.SessionDetailMaxOffset(context.Render, session, context.Width, context.Height, data.Location)
+			prompts := data.PromptPages[session.SessionID]
+			maxOffset := tuipages.SessionDetailMaxOffsetForViewportWithPrompts(context.Render, session, data.Costs[session.SessionID], prompts.Prompts, prompts.HasMore, context.Width, context.Height, data.Location, context.Request.Width, context.Request.Height)
 			nextOffset := request.SessionDetailOffset
 			switch key {
 			case "up":

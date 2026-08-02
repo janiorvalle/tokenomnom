@@ -16,7 +16,11 @@ import (
 // Raw transcript locations deliberately stay in the history store layer; the
 // page only needs stable metadata and the first-prompt preview.
 type SessionPageData struct {
-	Sessions     []historystore.CatalogSession
+	Sessions []historystore.CatalogSession
+	// Costs is populated only for a selected session. Keeping attribution out
+	// of the catalog list preserves the bounded, cheap dashboard load.
+	Costs        map[string]SessionCost
+	PromptPages  map[string]SessionPromptPage
 	Projects     []ProjectOption
 	ProjectStats []ProjectStat
 	HasMore      bool
@@ -49,28 +53,94 @@ type ProjectOption struct {
 type SessionViewState struct {
 	SelectedIndex int
 	DetailID      string
+	Costs         map[string]SessionCost
+	PromptPages   map[string]SessionPromptPage
 	Provider      string
 	Project       string
 	ProjectActive bool
 	DateRange     string
 	DetailOffset  int
 	SelectLast    bool
+	// Viewport dimensions classify the terminal, while width/height passed to
+	// the renderer describe the content pane inside the shell.
+	ViewportWidth  int
+	ViewportHeight int
 }
 
 // RenderSessions renders either the bounded session list or the shared detail
 // view for the selected session.
 func RenderSessions(render theme.Context, data SessionPageData, state SessionViewState, width, height int) string {
+	width = max(1, width)
+	height = max(1, height)
 	if state.DetailID != "" {
 		for _, session := range data.Sessions {
 			if session.SessionID == state.DetailID {
-				return RenderSessionDetail(render, session, width, height, data.Location, state.DetailOffset)
+				costs := data.Costs
+				promptPages := data.PromptPages
+				if len(state.Costs) > 0 {
+					costs = state.Costs
+				}
+				if len(state.PromptPages) > 0 {
+					promptPages = state.PromptPages
+				}
+				prompts := promptPages[session.SessionID]
+				return RenderSessionDetailForViewportWithPrompts(render, session, costs[session.SessionID], prompts.Prompts, prompts.HasMore, width, height, data.Location, state.DetailOffset, state.ViewportWidth, state.ViewportHeight)
 			}
 		}
 	}
 
+	viewportWidth, viewportHeight := state.ViewportWidth, state.ViewportHeight
+	if viewportWidth <= 0 {
+		viewportWidth = width
+	}
+	if viewportHeight <= 0 {
+		viewportHeight = height
+	}
+	wide := viewportWidth >= 160 && viewportHeight >= 50
+	if wide {
+		return renderWideSessions(render, data, state, width, height)
+	}
+	return renderSessionsTable(render, data, state, width, height)
+}
+
+func renderWideSessions(render theme.Context, data SessionPageData, state SessionViewState, width, height int) string {
+	const previewWidth = 57
+	if width < previewWidth+4 {
+		return renderSessionsTable(render, data, state, width, height)
+	}
+	selected := selectedSession(data.Sessions, state)
+	preview := "No session is selected."
+	costs := data.Costs
+	if len(state.Costs) > 0 {
+		costs = state.Costs
+	}
+	if selected != nil {
+		cost, ok := costs[selected.SessionID]
+		if !ok {
+			cost.Status = "deferred"
+		}
+		preview = RenderSessionPreview(render, *selected, cost, previewWidth, max(1, height-1), data.Location)
+	}
+	leftWidth := max(1, width-previewWidth-2)
+	return renderPageColumns(render, width, height,
+		"SESSIONS", renderSessionsTableContent(render, data, state, leftWidth, max(1, height-1)), leftWidth,
+		"SESSION PREVIEW", preview, previewWidth)
+}
+
+func renderSessionsTable(render theme.Context, data SessionPageData, state SessionViewState, width, height int) string {
+	lines := []string{render.Palette.Header().Render("SESSIONS")}
+	lines = append(lines, renderSessionsTableLines(render, data, state, width, max(1, height-1))...)
+	return strings.Join(lines, "\n")
+}
+
+func renderSessionsTableContent(render theme.Context, data SessionPageData, state SessionViewState, width, height int) string {
+	return strings.Join(renderSessionsTableLines(render, data, state, width, height), "\n")
+}
+
+func renderSessionsTableLines(render theme.Context, data SessionPageData, state SessionViewState, width, height int) []string {
 	width = max(1, width)
 	height = max(1, height)
-	lines := []string{render.Palette.Header().Render("SESSIONS")}
+	lines := []string{}
 	project := ""
 	if state.ProjectActive {
 		project = ProjectLabel(state.Project, data.Projects)
@@ -82,21 +152,21 @@ func RenderSessions(render theme.Context, data SessionPageData, state SessionVie
 	}
 	if data.Pending {
 		lines = append(lines, render.Palette.Subtle().Render(truncate("Loading sessions…", width)))
-		return strings.Join(lines, "\n")
+		return lines
 	}
 	if !data.IndexAvailable {
 		lines = append(lines,
 			render.Palette.Warning().Render(truncate("No history index is available.", width)),
 			render.Palette.Subtle().Render(truncate("Run tokenomnom history index to browse sessions.", width)),
 		)
-		return strings.Join(lines, "\n")
+		return lines
 	}
 	if len(data.Sessions) == 0 {
 		lines = append(lines,
 			render.Palette.Warning().Render(truncate("No indexed sessions match these filters.", width)),
 			render.Palette.Subtle().Render(truncate("Run tokenomnom history index to refresh the history index.", width)),
 		)
-		return strings.Join(lines, "\n")
+		return lines
 	}
 
 	count := fmt.Sprintf("%d sessions on this page", len(data.Sessions))
@@ -111,9 +181,8 @@ func RenderSessions(render theme.Context, data SessionPageData, state SessionVie
 	if state.SelectLast {
 		selected = len(data.Sessions) - 1
 	}
-	rowCapacity := max(1, height-len(lines)-3)
-	start := max(0, min(selected-rowCapacity+1, len(data.Sessions)-rowCapacity))
-	end := min(len(data.Sessions), start+rowCapacity)
+	rowCapacity := max(1, height-len(lines)-2)
+	start, end := sessionVisibleWindow(len(data.Sessions), selected, rowCapacity)
 	for index, session := range data.Sessions[start:end] {
 		actualIndex := start + index
 		lines = append(lines, renderSessionRow(render, session, actualIndex == selected, width, dateWidth, providerWidth, projectWidth, promptWidth, data.Location))
@@ -122,7 +191,29 @@ func RenderSessions(render theme.Context, data SessionPageData, state SessionVie
 		lines = append(lines, "", render.Palette.Subtle().Render(truncate("↓ more sessions", width)))
 	}
 	lines = append(lines, "", render.Palette.Subtle().Render(truncate("↑/↓ select  ·  enter open  ·  f project filter", width)))
-	return strings.Join(lines, "\n")
+	return lines
+}
+
+func selectedSession(sessions []historystore.CatalogSession, state SessionViewState) *historystore.CatalogSession {
+	if len(sessions) == 0 {
+		return nil
+	}
+	index := clampIndex(state.SelectedIndex, len(sessions))
+	if state.SelectLast {
+		index = len(sessions) - 1
+	}
+	selected := sessions[index]
+	return &selected
+}
+
+func sessionVisibleWindow(length, selected, capacity int) (int, int) {
+	capacity = max(1, capacity)
+	if length <= capacity {
+		return 0, length
+	}
+	selected = clampIndex(selected, length)
+	start := max(0, min(selected-capacity+1, length-capacity))
+	return start, start + capacity
 }
 
 func renderSessionRow(render theme.Context, session historystore.CatalogSession, selected bool, width, dateWidth, providerWidth, projectWidth, promptWidth int, location *time.Location) string {

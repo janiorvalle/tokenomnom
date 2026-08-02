@@ -278,7 +278,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}, modelSessions)
 		snapshot.Ledger = loadDashboardLedgerHistory(filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location)
 		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
-			return loadDashboardHistory(filepath.Join(stateDir, historystore.DatabaseName), request, location)
+			return loadDashboardHistoryWithCost(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, codexDir, claudeDir)
 		})
 		for _, project := range snapshot.Sessions.ProjectStats {
 			snapshot.Rail.Projects = append(snapshot.Rail.Projects, tui.RailProject{Label: project.Label, Share: project.Share})
@@ -332,6 +332,10 @@ const (
 )
 
 func loadDashboardHistory(path string, request tui.Request, location *time.Location) tuipages.SessionPageData {
+	return loadDashboardHistoryWithCost(nil, path, request, location, "", "")
+}
+
+func loadDashboardHistoryWithCost(cmd *cobra.Command, path string, request tui.Request, location *time.Location, codexDir, claudeDir string) tuipages.SessionPageData {
 	info, err := historystore.Inspect(path)
 	if err != nil {
 		return tuipages.SessionPageData{Warning: "History index unavailable; run tokenomnom history index to rebuild it."}
@@ -395,8 +399,46 @@ func loadDashboardHistory(path string, request tui.Request, location *time.Locat
 	if projectWarning != "" {
 		warnings = append(warnings, projectWarning)
 	}
+	var costs map[string]tuipages.SessionCost
+	var promptPages map[string]tuipages.SessionPromptPage
+	if request.SessionDetailID != "" {
+		prompts, promptErr := database.SessionPrompts(request.SessionDetailID, historystore.PromptQuery{
+			Role: "user", Source: historystore.CatalogSourceAny,
+		})
+		if promptErr != nil {
+			warnings = append(warnings, "Session prompts are unavailable; the indexed session overview is still available.")
+		} else {
+			presentHistoryPromptPage(&prompts, location)
+			promptPage := tuipages.SessionPromptPage{
+				Prompts: make([]tuipages.SessionPrompt, 0, len(prompts.Prompts)), HasMore: prompts.Page.HasMore,
+			}
+			for _, prompt := range prompts.Prompts {
+				promptPage.Prompts = append(promptPage.Prompts, tuipages.SessionPrompt{
+					PromptID: prompt.PromptID, Date: historyPageDate(prompt.Timestamp), Snippet: safePrettyPreview(prompt.Snippet),
+				})
+			}
+			promptPages = map[string]tuipages.SessionPromptPage{request.SessionDetailID: promptPage}
+		}
+	}
+	costSessionID := request.SessionDetailID
+	if costSessionID == "" && tui.WidthTierFor(request.Width) == tui.WidthWide && tui.HeightTierFor(request.Height) == tui.HeightTall && len(page.Sessions) > 0 {
+		selectedIndex := min(max(request.SessionOffset, 0), len(page.Sessions)-1)
+		if request.SessionReturnToEnd {
+			selectedIndex = len(page.Sessions) - 1
+		}
+		costSessionID = page.Sessions[selectedIndex].SessionID
+	}
+	if cmd != nil && costSessionID != "" {
+		cost, warning := loadDashboardSessionCost(cmd, database, costSessionID, codexDir, claudeDir)
+		if cost.Status != "" || len(cost.Models) > 0 {
+			costs = map[string]tuipages.SessionCost{costSessionID: cost}
+		}
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
 	return tuipages.SessionPageData{
-		Sessions: page.Sessions, Projects: projectOptions, ProjectStats: projectData,
+		Sessions: page.Sessions, Costs: costs, PromptPages: promptPages, Projects: projectOptions, ProjectStats: projectData,
 		HasMore: page.HasMore, NextCursor: page.NextCursor, IndexAvailable: true,
 		Warning: strings.Join(uniqueStrings(warnings), "; "), Location: location,
 	}
@@ -582,6 +624,35 @@ func dashboardDailySessionDate(timestamp string, location *time.Location) string
 		parsed = parsed.In(location)
 	}
 	return parsed.Format(heatmapDateLayout)
+}
+
+func loadDashboardSessionCost(cmd *cobra.Command, database *historystore.Store, sessionID, codexDir, claudeDir string) (tuipages.SessionCost, string) {
+	page, err := database.ListSessionCostSources(historystore.SessionCostQuery{SessionID: sessionID})
+	if err != nil || len(page.Sessions) == 0 {
+		return tuipages.SessionCost{Status: "unavailable"}, "Session cost attribution is unavailable; enter still opens the indexed detail."
+	}
+	table, err := loadPricingTable()
+	if err != nil {
+		return tuipages.SessionCost{Status: "unavailable"}, "Session cost attribution is unavailable; check pricing and retry."
+	}
+	row, err := priceHistorySession(cmd, page.Sessions[0], table, codexDir, claudeDir)
+	if err != nil {
+		return tuipages.SessionCost{Status: "unavailable"}, "Session cost attribution is unavailable; enter still opens the indexed detail."
+	}
+	cost := tuipages.SessionCost{
+		Status: row.AttributionStatus, TotalTokens: row.Tokens.TotalTokens, PricedTokens: row.Tokens.PricedTokens,
+		UnpricedTokens: row.Tokens.UnpricedTokens, CostUSD: row.Tokens.CostUSD,
+		Models: make([]tuipages.SessionModel, 0, len(row.Models)),
+	}
+	for _, model := range row.Models {
+		cost.Models = append(cost.Models, tuipages.SessionModel{
+			Date: model.Date, Provider: string(model.Provider), Model: model.Model,
+			InputTokens: model.InputTokens, CacheTokens: model.CacheReadTokens + model.CacheWriteTokens,
+			OutputTokens: model.OutputTokens, TotalTokens: model.TotalTokens, CostUSD: model.CostUSD,
+			PricedTokens: model.PricedTokens, UnpricedTokens: model.UnpricedTokens,
+		})
+	}
+	return cost, strings.Join(uniqueStrings(row.Warnings), "; ")
 }
 
 func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.Data, request tui.Request, location *time.Location, codexDir, claudeDir string) tuipages.Data {
@@ -1166,16 +1237,20 @@ func (cache *dashboardHistoryFreshnessCache) snapshot(force bool, probe func() [
 }
 
 type dashboardHistorySearchCacheKey struct {
-	query     string
-	sessionID string
-	provider  tui.Provider
-	dateRange tui.Range
+	query       string
+	sessionID   string
+	selectIndex int
+	provider    tui.Provider
+	dateRange   tui.Range
+	widthTier   tui.WidthTier
+	heightTier  tui.HeightTier
 }
 
 func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh func() (tuipages.HistorySearchData, error)) (tuipages.HistorySearchData, error) {
 	key := dashboardHistorySearchCacheKey{
-		query: request.HistoryQuery, sessionID: request.HistorySessionID,
+		query: request.HistoryQuery, sessionID: request.HistorySessionID, selectIndex: request.HistorySelect,
 		provider: request.Provider, dateRange: request.Range,
+		widthTier: tui.WidthTierFor(request.Width), heightTier: tui.HeightTierFor(request.Height),
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
