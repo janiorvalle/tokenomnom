@@ -1,0 +1,69 @@
+Source: internal/tui/quest150_test.go::TestQuest150Frames
+Command: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest150Frames -count=1 -v
+
+ tokenomnom  /  SEARCH                                                                                                                                                    LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                                                                                              
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  SEARCH RESULTS ──────────────────────────────────────────────────────────────────────────────────────────────  MATCH PREVIEW ─────────────────────────────────────────── 
+ 1  Daily           │  SEARCH /do not implement█                                                                                      ses_preview                                               
+ 2  Ledger          │  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────  SESSION OVERVIEW ──────────────────────────────────────── 
+ 3  Models          │    said do not implement prompt context 0                                                                       PROVIDER          codex                                   
+ 4  Heatmap         │      2026-07-21 · codex · tokenomnom                                                                            PROJECT           tokenomnom                              
+                    │    said do not implement prompt context 1                                                                       FIRST             2026-07-20                              
+ HISTORY            │      2026-07-21 · codex · tokenomnom                                                                            LAST              2026-07-21                              
+ 5  Sessions        │    said do not implement prompt context 2                                                                                                                                 
+ > 6  Search        │      2026-07-21 · codex · tokenomnom                                                                            MATCHED PROMPT ────────────────────────────────────────── 
+                    │    said do not implement prompt context 3                                                                         surrounding prompt 4 for the selected session           
+ FILTERS            │      2026-07-21 · codex · tokenomnom                                                                                                                                      
+ provider           │  › said do not implement prompt context 4                                                                       PROMPT CONTEXT ────────────────────────────────────────── 
+   all              │      2026-07-21 · codex · tokenomnom                                                                              2026-07-21  surrounding prompt 2 for the selected sess… 
+ range              │    said do not implement prompt context 5                                                                         2026-07-21  surrounding prompt 3 for the selected sess… 
+   30d              │      2026-07-21 · codex · tokenomnom                                                                            › 2026-07-21  surrounding prompt 4 for the selected sess… 
+ project            │    said do not implement prompt context 6                                                                         2026-07-21  surrounding prompt 5 for the selected sess… 
+   all              │      2026-07-21 · codex · tokenomnom                                                                              2026-07-21  surrounding prompt 6 for the selected sess… 
+                    │    said do not implement prompt context 7                                                                                                                                 
+ SNAPSHOT           │      2026-07-21 · codex · tokenomnom                                                                            enter opens full detail  ·  e export                      
+ today $2,209.23    │                                                                                                                                                                           
+ 7d $3,033.35       │  ↑/↓ select  ·  enter open  ·  e export  ·  / edit                                                                                                                        
+ 30d $3,033.35      │                                                                                                                                                                           
+ peak $2,209.23     │                                                                                                                                                                           
+   Jul 14           │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+ MIX · 30D          │                                                                                                                                                                           
+ Codex 72% ██████···│                                                                                                                                                                           
+ Claude 28% ██······│                                                                                                                                                                           
+                    │                                                                                                                                                                           
+ PROJECTS 30D       │                                                                                                                                                                           
+ alpha 50% █████····│                                                                                                                                                                           
+ beta 30% ███·······│                                                                                                                                                                           
+ other 20% ██·······│                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+                    │                                                                                                                                                                           
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                                                                                            ● idle  ·  last sync now  ·  2 sources  ·  2 models 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                                                                                                 
+ API list-price equivalents, not actual bills                                                                                                                              192x66 · wide + tall 

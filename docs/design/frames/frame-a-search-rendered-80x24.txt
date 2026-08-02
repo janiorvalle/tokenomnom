@@ -1,0 +1,27 @@
+Source: internal/tui/quest150_test.go::TestQuest150Frames
+Command: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest150Frames -count=1 -v
+
+ tokenomnom  /  SEARCH                                FLOOR 80x24  ·  1-8 pages 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68 
+ ────────────────────────────────────────────────────────────────────────────── 
+ FIND IN HISTORY                                                                
+ Search your indexed prompts by exact phrase.                                   
+                                                                                
+ SEARCH /do not implement█                                                      
+ ────────────────────────────────────────────────────────────────────────────── 
+ ↑ earlier results                                                              
+   said do not implement prompt context 1                                       
+     2026-07-21 · codex · tokenomnom                                            
+   said do not implement prompt context 2                                       
+     2026-07-21 · codex · tokenomnom                                            
+   said do not implement prompt context 3                                       
+     2026-07-21 · codex · tokenomnom                                            
+ › said do not implement prompt context 4                                       
+     2026-07-21 · codex · tokenomnom                                            
+ More results are available in `tokenomnom history search`.                     
+                                                                                
+ ↑/↓  enter open  e export  / edit  esc                                         
+                                                                                
+ ────────────────────────────────────────────────────────────────────────────── 
+                            ● idle  ·  last sync now  ·  2 sources  ·  2 models 
+ API list-price equivalents, not actual bills · ? help · q quit   80x24 · floor 

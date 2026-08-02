@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 )
 
@@ -115,11 +117,19 @@ func renderWideSessions(render theme.Context, data SessionPageData, state Sessio
 		costs = state.Costs
 	}
 	if selected != nil {
-		cost, ok := costs[selected.SessionID]
-		if !ok {
-			cost.Status = "deferred"
+		previewData := SessionPreviewFromCatalog(*selected)
+		previewData.Location = data.Location
+		if cost, ok := costs[selected.SessionID]; ok {
+			previewData.Tokens = cost.TotalTokens
+			previewData.Cost = pricing.Money(math.Round(cost.CostUSD * 1_000_000_000))
+			previewData.PricedTokens = cost.PricedTokens
+			previewData.UnpricedTokens = cost.UnpricedTokens
+			previewData.Attribution = cost.Status
+		} else {
+			previewData.Attribution = "deferred"
+			previewData.Warning = "Open detail to attribute session cost."
 		}
-		preview = RenderSessionPreview(render, *selected, cost, previewWidth, max(1, height-1), data.Location)
+		preview = RenderSessionPreview(render, previewData, previewWidth, max(1, height-1))
 	}
 	leftWidth := max(1, width-previewWidth-2)
 	return renderPageColumns(render, width, height,

@@ -276,46 +276,6 @@ func wideSessionMetadataLines(render theme.Context, session historystore.Catalog
 	return lines
 }
 
-// RenderSessionPreview is the compact right-hand preview shared by Sessions,
-// ledger drill-downs, and search results. It never renders raw transcript
-// paths or more text than the bounded pane can hold.
-func RenderSessionPreview(render theme.Context, session historystore.CatalogSession, cost SessionCost, width, height int, location *time.Location) string {
-	lines := sessionPreviewLines(render, session, cost, width, height, location)
-	return fitPageBlock(strings.Join(lines, "\n"), width, height)
-}
-
-func sessionPreviewLines(render theme.Context, session historystore.CatalogSession, cost SessionCost, width, height int, location *time.Location) []string {
-	preview := cleanText(session.Preview)
-	if strings.TrimSpace(preview) == "" {
-		preview = "No human prompt text is available."
-	}
-	lines := []string{
-		render.Palette.Emphasis().Render(session.SessionID),
-		pageSectionTitle(render, "FIRST PROMPT", width),
-	}
-	tail := []string{"", pageSectionTitle(render, "OVERVIEW", width),
-		metadataLine(render, "provider", string(session.Provider), width),
-		metadataLine(render, "project", fmt.Sprintf("%s (%s)", session.Project, session.ProjectSource), width),
-		metadataLine(render, "first", formatTimestamp(session.FirstTimestamp, location), width),
-		metadataLine(render, "last", formatTimestamp(session.LastTimestamp, location), width),
-		metadataLine(render, "prompts", fmt.Sprintf("%d logical", session.LogicalPromptCount), width),
-		"", pageSectionTitle(render, "COST & TOKENS", width)}
-	tail = append(tail, compactSessionCostLines(render, cost, width)...)
-	tail = append(tail, "", render.Palette.Subtle().Render("enter opens full detail"))
-	previewLines := strings.Split(indentWrapped(preview, max(1, width-2)), "\n")
-	previewCapacity := max(1, height-len(lines)-len(tail))
-	if len(previewLines) > previewCapacity {
-		if previewCapacity == 1 {
-			previewLines = []string{render.Palette.Subtle().Render("  …")}
-		} else {
-			previewLines = append(previewLines[:previewCapacity-1], render.Palette.Subtle().Render("  …"))
-		}
-	}
-	lines = append(lines, previewLines...)
-	lines = append(lines, tail...)
-	return lines
-}
-
 func sessionCostLines(render theme.Context, cost SessionCost, width int) []string {
 	lines := []string{pageSectionTitle(render, "COST & TOKENS", width)}
 	lines = append(lines, compactSessionCostLines(render, cost, width)...)

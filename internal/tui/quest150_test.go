@@ -42,7 +42,7 @@ func TestQuest150Frames(t *testing.T) {
 		search := model.View()
 		assertQuest150Frame(t, search, size.width, size.height, "search")
 
-		t.Logf("FRAME: sessions %dx%d\nSource: internal/tui/quest150_test.go::TestQuest150Frames\nCommand: go test ./internal/tui -run TestQuest150Frames -count=1 -v\n\n%s\n\nFRAME: search %dx%d\nSource: internal/tui/quest150_test.go::TestQuest150Frames\nCommand: go test ./internal/tui -run TestQuest150Frames -count=1 -v\n\n%s", size.width, size.height, sessions, size.width, size.height, search)
+		t.Logf("FRAME: sessions %dx%d\nSource: internal/tui/quest150_test.go::TestQuest150Frames\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest150Frames -count=1 -v\n\n%s\n\nFRAME: search %dx%d\nSource: internal/tui/quest150_test.go::TestQuest150Frames\nCommand: GOFLAGS=-buildvcs=false go test ./internal/tui -run TestQuest150Frames -count=1 -v\n\n%s", size.width, size.height, sessions, size.width, size.height, search)
 	}
 }
 

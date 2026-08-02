@@ -1270,20 +1270,30 @@ func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh 
 }
 
 type dashboardSessionCacheKey struct {
-	provider      tui.Provider
-	dateRange     tui.Range
-	project       string
-	projectActive bool
-	cursor        string
+	provider        tui.Provider
+	dateRange       tui.Range
+	project         string
+	projectActive   bool
+	cursor          string
+	selectedIndex   int
+	returnToEnd     bool
+	detailSessionID string
+	widthTier       tui.WidthTier
+	heightTier      tui.HeightTier
 }
 
 func (cache *dashboardSessionCache) snapshot(request tui.Request, refresh func() tuipages.SessionPageData) tuipages.SessionPageData {
 	key := dashboardSessionCacheKey{
-		provider:      request.Provider,
-		dateRange:     request.Range,
-		project:       request.SessionProject,
-		projectActive: request.SessionProjectActive,
-		cursor:        request.SessionCursor,
+		provider:        request.Provider,
+		dateRange:       request.Range,
+		project:         request.SessionProject,
+		projectActive:   request.SessionProjectActive,
+		cursor:          request.SessionCursor,
+		selectedIndex:   request.SessionOffset,
+		returnToEnd:     request.SessionReturnToEnd,
+		detailSessionID: request.SessionDetailID,
+		widthTier:       tui.WidthTierFor(request.Width),
+		heightTier:      tui.HeightTierFor(request.Height),
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
