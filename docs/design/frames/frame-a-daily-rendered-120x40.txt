@@ -1,36 +1,43 @@
-Source: internal/tui/pages/daily_test.go::TestQuest146DailyFrames
-Command: go test ./internal/tui/pages -run TestQuest146DailyFrames -count=1 -v
+Source: internal/tui/app_test.go::TestQuest146DailyFullWindowFrames
+Command: go test ./internal/tui -run TestQuest146DailyFullWindowFrames -count=1 -v
 
-COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day                    
- $300                                                                                 ██ ██ ██    
-                                                                             ██ ██ ██ ██ ██ ██    
-                                                                    ██ ██ ██ ██ ██ ██ ██ ██ ██    
-                                                              ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
-                                                     ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
- $150                                       ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
-                                   ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
-     ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██  av
-                    ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
-           ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
- $0.0██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    
-     01       04       07       10       13       16       19       22       25       28    ^     
-avg $100.00 · peak 09                                                                             
-──────────────────────────────────────────────────────────────────────────────────────────────────
-DAY DETAIL · 2026-07-30 · $200.00 ──────────────  PROJECTS · 30-DAY TRENDS ───────────────────────
-TOTAL $200.00                                     PROJECTS                                        
-PROVIDER SPLIT · COST                             project-a          $18.10 20 ██████████████████ 
-codex     $120.00  60% █████████░░░░░░ 12,000,00                                                  
-claude    $80.00  40% ██████░░░░░░░░░░ 8,000,000  30-DAY TRENDS · 7d Δ                            
-TOP MODELS BY COST · 1                            cost/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███· +35.0% 
-gpt-test                          $120.00 60%     tokens/day ▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███ +35.0% 
-DAY vs 30-DAY AVERAGE                             sessions/day ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ —      
-cost        $200.00 vs    $100.00 +100.0%         claude share ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ +0.0%  
-tokens        20.0M vs      10.0M +100.0%                                                         
-sessions         20 vs         10 +100.0%                                                         
-SESSIONS · 2026-07-30 · top 3 by cost of 20                                                       
-TIME  PROV   PROJECT             TOKENS       COST  FIRST PROMPT                                  
-12:00  codex  project-a        10,000,000     $1.00  Synthetic prompt fixture                     
-12:00  codex  project-a         9,900,000     $0.99  Synthetic prompt fixture                     
-12:00  codex  project-a         9,800,000     $0.98  Synthetic prompt fixture                     
-↓ 17 more sessions · enter opens detail                                                           
-~ Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index.  
+ tokenomnom  /  DAILY                                                                             LOCAL  ·  ALL  ·  30D 
+ TOTAL $3,033.35  ·  TOKENS 178,000,000  ·  ACTIVE DAYS 2  ·  AVG/DAY $1,516.68  ·  PEAK $2,209.23                      
+ ───────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────── 
+ SPEND              │  COST / DAY · 30 DAYS · Jul 03 – Aug 01 · peak $300.00 09 · cursor ^ · cost/day                   
+ > 1  Daily         │  $300┤                                                                                 ██ ██ ██   
+ 2  Ledger          │      ┤                                                                           ██ ██ ██ ██ ██   
+ 3  Models          │  $225┤                                                                  ██ ██ ██ ██ ██ ██ ██ ██   
+ 4  Heatmap         │      ┤                                                            ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+                    │      ┤                                                   ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+ HISTORY            │  $150┤                                             ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+ 5  Sessions        │      ┤                                    ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+                    │      ┤┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ┈┈ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+ FILTERS            │   $75┤                     ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+ provider           │      ┤               ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+   all              │      ┤      ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+ range              │  $0.0└██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   
+   30d              │       01       04       07       10       13       16       19       22       25       28    ^    
+ project            │  ──────────────────────────────────────────────────────────────────────────────────────────────── 
+   all              │  DAY DETAIL · 2026-07-30 · $200.00 ─────────────  PROJECTS · 30-DAY TRENDS ────────────────────── 
+                    │  TOTAL $200.00                                    PROJECTS                                        
+ SNAPSHOT           │  PROVIDER SPLIT · COST                            project-a          $5.92 8 ███████░░░░░░░░░░    
+ today $2,209.23    │  codex     $120.00  60% ████████░░░░░░ 12,000,00  project-b          $5.78 8 ███████░░░░░░░░░░    
+ 7d $3,033.35       │  claude    $80.00  40% ██████░░░░░░░░░ 8,000,000  project-c          $3.24 4 ████░░░░░░░░░░░░░    
+ 30d $3,033.35      │  TOP MODELS BY COST · 3                                                                           
+ peak $2,209.23     │  gpt-test                         $120.00 60%     30-DAY TRENDS · 7d Δ                            
+   Jul 14           │  gpt-mini                          $45.00 23%     cost/day ▁▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇███ +35.0%  
+                    │  claude-sonnet                     $35.00 18%     tokens/day ▁▁▂▂▂▂▃▃▃▃▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇██ +35.0%  
+ MIX · 30D          │  DAY vs 30-DAY AVERAGE                            sessions/day ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ —       
+ Codex 72% ██████···│  cost        $200.00 vs    $100.00 +100.0%        claude share ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ +0.0%   
+ Claude 28% ██······│  SESSIONS · 2026-07-30 · top 3 by cost of 20                                                      
+                    │  TIME  PROV   PROJECT             TOKENS       COST  FIRST PROMPT                                 
+ PROJECTS 30D       │  09:15  codex  project-a        10,000,000     $1.00  Investigate latency regression              
+ alpha 50% █████····│  10:40  claude project-b         9,850,000     $0.98  Prepare rollout plan                        
+ beta 30% ███·······│  12:00  codex  project-c         9,700,000     $0.96  Review query budget                         
+ other 20% ██·······│  ↓ 17 more sessions · enter opens detail                                                          
+                    │  ~ Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index. 
+ ───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────── 
+                                                                                      ● idle  ·  2 sources  ·  2 models 
+ tab views · p provider · r range · R refresh · ? help · q quit                                                         
+ API list-price equivalents, not actual bills                                                         120x40 · standard 

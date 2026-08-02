@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1445,6 +1446,92 @@ func loadedTestModel() Model {
 	ledgerRow := tuipages.Row{Key: "2026", Label: "2026", Codex: tuipages.ProviderTotals{Tokens: 100, PricedTokens: 100}}
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomYear, Rows: []tuipages.Row{ledgerRow}, Total: ledgerRow}
 	return model
+}
+
+func TestQuest146DailyFullWindowFrames(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{192, 66}, {120, 40}, {80, 24}} {
+		model := realisticEvidenceModel()
+		model.request.Width, model.request.Height = size.width, size.height
+		model.render.Width = size.width
+		model.snapshot.StatusBar.LastSyncUnix = 0
+		layout := newCockpitLayout(size.width, size.height)
+		render := model.render
+		render.Width = layout.paneWidth
+		model.snapshot.Views[0] = tuipages.RenderDaily(render, quest146DailyFrameData(), size.width, size.height, layout.bodyHeight, 0)
+		view := model.View()
+		lines := strings.Split(view, "\n")
+		if len(lines) != size.height {
+			t.Fatalf("%dx%d rendered %d rows, want %d:\n%s", size.width, size.height, len(lines), size.height, view)
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width != size.width {
+				t.Fatalf("%dx%d row %d width=%d, want %d:\n%s", size.width, size.height, index+1, width, size.width, view)
+			}
+		}
+		fragments := []string{"tokenomnom", "COST / DAY", "idle"}
+		if size.width >= 100 {
+			fragments = append(fragments, "DAILY", "SESSIONS")
+		} else {
+			fragments = append(fragments, "DAY DETAIL")
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(view, fragment) {
+				t.Fatalf("%dx%d full window missing %q:\n%s", size.width, size.height, fragment, view)
+			}
+		}
+		t.Logf("FRAME: Daily full window %dx%d\nSource: internal/tui/app_test.go::TestQuest146DailyFullWindowFrames\nCommand: go test ./internal/tui -run TestQuest146DailyFullWindowFrames -count=1 -v\n\n%s", size.width, size.height, view)
+	}
+}
+
+func quest146DailyFrameData() tuipages.DailyPageData {
+	rows := make([]tuipages.DailyPoint, 0, 30)
+	for index := 0; index < 30; index++ {
+		day := index + 1
+		rows = append(rows, tuipages.DailyPoint{
+			Date:   fmt.Sprintf("2026-07-%02d", day),
+			Total:  tuipages.DailyValue{Cost: pricing.Money((index + 1) * 10_000_000_000), Tokens: int64((index + 1) * 1_000_000), PricedTokens: 1},
+			Codex:  tuipages.DailyValue{Cost: pricing.Money((index + 1) * 6_000_000_000), Tokens: int64((index + 1) * 600_000), PricedTokens: 1},
+			Claude: tuipages.DailyValue{Cost: pricing.Money((index + 1) * 4_000_000_000), Tokens: int64((index + 1) * 400_000), PricedTokens: 1},
+		})
+	}
+	rows[len(rows)-1].Selected = true
+	models := []tuipages.DailyModel{
+		{Provider: "codex", Model: "gpt-test", Value: tuipages.DailyValue{Cost: pricing.Money(120_000_000_000), Tokens: 12_000_000, PricedTokens: 1}},
+		{Provider: "codex", Model: "gpt-mini", Value: tuipages.DailyValue{Cost: pricing.Money(45_000_000_000), Tokens: 4_500_000, PricedTokens: 1}},
+		{Provider: "claude", Model: "claude-sonnet", Value: tuipages.DailyValue{Cost: pricing.Money(35_000_000_000), Tokens: 3_500_000, PricedTokens: 1}},
+	}
+	providers := []string{"codex", "claude", "codex", "claude", "codex"}
+	projects := []string{"project-a", "project-b", "project-c", "project-a", "project-b"}
+	sessionModels := []string{"gpt-test", "claude-sonnet", "gpt-mini", "gpt-test", "claude-sonnet"}
+	times := []string{"09:15", "10:40", "12:00", "14:45", "16:20"}
+	prompts := []string{"Investigate latency regression", "Prepare rollout plan", "Review query budget", "Compare provider mix", "Summarize release notes"}
+	sessions := make([]tuipages.DailySession, 0, 20)
+	for index := 0; index < 20; index++ {
+		sessions = append(sessions, tuipages.DailySession{
+			Time: times[index%len(times)], Provider: providers[index%len(providers)], Project: projects[index%len(projects)],
+			SessionID: fmt.Sprintf("ses_demo%02d", index+1), Model: sessionModels[index%len(sessionModels)],
+			Tokens: int64(10_000_000 - index*150_000), Cost: pricing.Money(1_000_000_000 - int64(index)*20_000_000), PricedTokens: 1,
+			Prompt: prompts[index%len(prompts)], PromptCount: index + 1, AttributionStatus: "complete",
+		})
+	}
+	sessions[18].AttributionStatus = "incomplete"
+	sessions[19].AttributionStatus = "incomplete"
+	return tuipages.DailyPageData{
+		Rows: rows, TrendRows: rows, SelectedDate: rows[len(rows)-1].Date,
+		Detail: tuipages.DailyDetail{
+			Date:  rows[len(rows)-1].Date,
+			Value: tuipages.DailyValue{Cost: pricing.Money(200_000_000_000), Tokens: 20_000_000, PricedTokens: 1, Sessions: 20},
+			Providers: []tuipages.DailyProvider{
+				{Provider: "codex", Value: tuipages.DailyValue{Cost: pricing.Money(120_000_000_000), Tokens: 12_000_000, PricedTokens: 1, Sessions: 14}},
+				{Provider: "claude", Value: tuipages.DailyValue{Cost: pricing.Money(80_000_000_000), Tokens: 8_000_000, PricedTokens: 1, Sessions: 6}},
+			},
+			Models: models,
+		},
+		Sessions: tuipages.DailySessionData{Rows: sessions, Total: 20, TotalKnown: true, Warning: "Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index."},
+		Average:  tuipages.DailyValue{Cost: pricing.Money(100_000_000_000), Tokens: 10_000_000, PricedTokens: 1}, AverageSessions: 10,
+		Peak: tuipages.DailyValue{Cost: pricing.Money(300_000_000_000), Tokens: 30_000_000, PricedTokens: 1}, PeakDate: "2026-07-09",
+		RangeStart: "2026-07-03", RangeEnd: "2026-08-01",
+	}
 }
 
 func realisticEvidenceModel() Model {

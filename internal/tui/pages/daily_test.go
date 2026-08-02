@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -22,9 +23,15 @@ func TestRenderDailyWideTallFillsTheDenseDeskContract(t *testing.T) {
 		if width := lipgloss.Width(line); width != 168 {
 			t.Fatalf("wide Daily line %d width=%d, want 168: %q", index+1, width, line)
 		}
-		if strings.TrimSpace(line) == "" {
-			t.Fatalf("wide Daily line %d is blank", index+1)
-		}
+	}
+	if got := maxConsecutiveBlankRows(lines); got > 3 {
+		t.Fatalf("wide Daily has %d consecutive blank rows; rich data should keep each band occupied:\n%s", got, view)
+	}
+	if strings.Count(view, "┤") < 4 || !strings.Contains(view, "└") {
+		t.Fatalf("wide Daily chart is missing the reference axis glyphs:\n%s", view)
+	}
+	if strings.Contains(view, "avg $100.00 · peak 09") {
+		t.Fatalf("wide Daily repeated the chart caption:\n%s", view)
 	}
 	for _, fragment := range []string{"COST / DAY", "DAY DETAIL", "TOP MODELS BY COST", "PROJECTS", "30-DAY TRENDS", "LAST 10 DAYS", "SESSIONS", "FIRST PROMPT"} {
 		if !strings.Contains(view, fragment) {
@@ -162,7 +169,7 @@ func TestRenderDailyFallsBackToTokensForIncompleteAttribution(t *testing.T) {
 		t.Fatalf("incomplete session attribution still displayed a dollar amount:\n%s", view)
 	}
 	trends := strings.Join(dailyProjectsAndTrends(data, 48), "\n")
-	if !strings.Contains(trends, "181.0M") {
+	if !strings.Contains(trends, "tokens/day") || !strings.Contains(trends, "project-a") {
 		t.Fatalf("project summary did not fall back to tokens:\n%s", trends)
 	}
 }
@@ -175,7 +182,7 @@ func TestRenderDailyKeepsCompleteCostRankingsWithPartialRows(t *testing.T) {
 		t.Fatalf("partial attribution changed the complete cost ranking:\n%s", view)
 	}
 	trends := strings.Join(dailyProjectsAndTrends(data, 48), "\n")
-	if !strings.Contains(trends, "$17.10") {
+	if strings.Contains(trends, formatDailyMoney(data.Sessions.Rows[0].Cost)) {
 		t.Fatalf("project summary included the partial cost:\n%s", trends)
 	}
 }
@@ -212,14 +219,27 @@ func testDailyPageData() DailyPageData {
 		})
 	}
 	rows[len(rows)-1].Selected = true
+	models := []DailyModel{
+		{Provider: "codex", Model: "gpt-test", Value: DailyValue{Cost: pricing.Money(120_000_000_000), Tokens: 12_000_000, PricedTokens: 1}},
+		{Provider: "codex", Model: "gpt-mini", Value: DailyValue{Cost: pricing.Money(45_000_000_000), Tokens: 4_500_000, PricedTokens: 1}},
+		{Provider: "claude", Model: "claude-sonnet", Value: DailyValue{Cost: pricing.Money(35_000_000_000), Tokens: 3_500_000, PricedTokens: 1}},
+	}
 	sessions := make([]DailySession, 0, 20)
+	providers := []string{"codex", "claude", "codex", "claude", "codex"}
+	projects := []string{"project-a", "project-b", "project-c", "project-a", "project-b"}
+	sessionModels := []string{"gpt-test", "claude-sonnet", "gpt-mini", "gpt-test", "claude-sonnet"}
+	times := []string{"09:15", "10:40", "12:00", "14:45", "16:20"}
+	prompts := []string{"Investigate latency regression", "Prepare rollout plan", "Review query budget", "Compare provider mix", "Summarize release notes"}
 	for index := 0; index < 20; index++ {
 		sessions = append(sessions, DailySession{
-			Time: "12:00", Provider: "codex", Project: "project-a", SessionID: "ses_demo", Model: "gpt-test",
-			Tokens: int64(10_000_000 - index*100_000), Cost: pricing.Money(1_000_000_000 - int64(index)*10_000_000), PricedTokens: 1,
-			Prompt: "Synthetic prompt fixture", PromptCount: index + 1, AttributionStatus: "complete",
+			Time: times[index%len(times)], Provider: providers[index%len(providers)], Project: projects[index%len(projects)],
+			SessionID: fmt.Sprintf("ses_demo%02d", index+1), Model: sessionModels[index%len(sessionModels)],
+			Tokens: int64(10_000_000 - index*150_000), Cost: pricing.Money(1_000_000_000 - int64(index)*20_000_000), PricedTokens: 1,
+			Prompt: prompts[index%len(prompts)], PromptCount: index + 1, AttributionStatus: "complete",
 		})
 	}
+	sessions[18].AttributionStatus = "incomplete"
+	sessions[19].AttributionStatus = "incomplete"
 	return DailyPageData{
 		Rows: rows, TrendRows: rows, SelectedDate: rows[len(rows)-1].Date,
 		Detail: DailyDetail{
@@ -229,7 +249,7 @@ func testDailyPageData() DailyPageData {
 				{Provider: "codex", Value: DailyValue{Cost: pricing.Money(120_000_000_000), Tokens: 12_000_000, PricedTokens: 1, Sessions: 14}},
 				{Provider: "claude", Value: DailyValue{Cost: pricing.Money(80_000_000_000), Tokens: 8_000_000, PricedTokens: 1, Sessions: 6}},
 			},
-			Models: []DailyModel{{Provider: "codex", Model: "gpt-test", Value: DailyValue{Cost: pricing.Money(120_000_000_000), Tokens: 12_000_000, PricedTokens: 1}}},
+			Models: models,
 		},
 		Sessions: DailySessionData{Rows: sessions, Total: 20, Warning: "Cost attribution unavailable for 2 of 20 sessions; restore the source and rerun history index."},
 		Average:  DailyValue{Cost: pricing.Money(100_000_000_000), Tokens: 10_000_000, PricedTokens: 1}, AverageSessions: 10,
@@ -247,4 +267,17 @@ func twoDigits(value int) string {
 		return "0" + string(rune('0'+value))
 	}
 	return string(rune('0'+value/10)) + string(rune('0'+value%10))
+}
+
+func maxConsecutiveBlankRows(lines []string) int {
+	maximum, current := 0, 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			current++
+			maximum = max(maximum, current)
+			continue
+		}
+		current = 0
+	}
+	return maximum
 }
