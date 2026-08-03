@@ -55,7 +55,7 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 					release()
 				}
 			}()
-			database, err := store.Open(databasePath)
+			database, err := openUsageStore(cmd, databasePath)
 			if err != nil {
 				return err
 			}

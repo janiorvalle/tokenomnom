@@ -13,6 +13,7 @@ import (
 )
 
 func TestDoctorReportsFixtureDirectories(t *testing.T) {
+	isolateTokenomnomDirs(t)
 	tempDir := t.TempDir()
 	codexDir := filepath.Join(tempDir, "codex")
 	claudeDir := filepath.Join(tempDir, "claude")
@@ -86,6 +87,7 @@ func TestDoctorAllowsNoProviders(t *testing.T) {
 }
 
 func TestDoctorUsesTokenomnomEnvironment(t *testing.T) {
+	isolateTokenomnomDirs(t)
 	tempDir := t.TempDir()
 	codexDir := filepath.Join(tempDir, "env-codex")
 	claudeDir := filepath.Join(tempDir, "env-claude")

@@ -17,6 +17,8 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
+	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 	_ "modernc.org/sqlite"
 )
 
@@ -40,6 +42,15 @@ var ErrStoreNeedsMigration = errors.New("usage store requires migration")
 // ErrStoreNeedsInitialization indicates that a read-only consumer found a
 // database file without schema metadata and must hand it to a writer.
 var ErrStoreNeedsInitialization = errors.New("usage store requires initialization")
+
+// ErrDevMigrationBlocked indicates that a development build refused to alter
+// the default user store without an explicit opt-in.
+var ErrDevMigrationBlocked = errors.New("development usage-store migration blocked")
+
+// OpenOptions controls safeguards applied while opening a usage store.
+type OpenOptions struct {
+	AllowDevMigration bool
+}
 
 // Checkpoint records the last complete JSONL position processed for a file.
 type Checkpoint struct {
@@ -113,6 +124,16 @@ type Info struct {
 
 // Open creates or opens a usage database and initializes the current schema.
 func Open(path string) (*Store, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+// OpenWithOptions creates or opens a usage database with explicit migration
+// policy. Development builds may only migrate the default user store when
+// AllowDevMigration is true; an explicit TOKENOMNOM_STATE_DIR is always safe.
+func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
+	if err := refuseUnsafeDevMigration(path, options); err != nil {
+		return nil, err
+	}
 	stateDir := filepath.Dir(path)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
@@ -146,6 +167,61 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	return store, nil
+}
+
+func refuseUnsafeDevMigration(path string, options OpenOptions) error {
+	if options.AllowDevMigration || version.Version != "dev" || !isDefaultStorePath(path) {
+		return nil
+	}
+	requiresMigration, err := usageStoreRequiresMigration(path)
+	if err != nil {
+		return fmt.Errorf("%w: could not inspect %q before migration; no store changes were made; use TOKENOMNOM_STATE_DIR for an isolated store or retry with --allow-migrate: %v", ErrDevMigrationBlocked, path, err)
+	}
+	if !requiresMigration {
+		return nil
+	}
+	return fmt.Errorf("%w [TOKENOMNOM_DEV_MIGRATION_BLOCKED]: development build %q cannot migrate the default usage store %q; no store changes were made; set TOKENOMNOM_STATE_DIR to an isolated path or retry with --allow-migrate", ErrDevMigrationBlocked, version.Version, path)
+}
+
+func usageStoreRequiresMigration(path string) (bool, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, fmt.Errorf("stat usage store: %w", err)
+	}
+	dsn, err := usageStoreDSN(path, true)
+	if err != nil {
+		return false, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return false, fmt.Errorf("open usage store read-only: %w", err)
+	}
+	defer db.Close()
+	persisted, _, err := sqliteutil.SchemaVersion(db, "usage store")
+	if err != nil {
+		return false, err
+	}
+	return persisted < SchemaVersion, nil
+}
+
+func isDefaultStorePath(path string) bool {
+	if os.Getenv("TOKENOMNOM_STATE_DIR") != "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(absPath) == filepath.Join(filepath.Clean(stateDir), DatabaseName)
 }
 
 // OpenReadOnly opens an existing current-schema usage database without

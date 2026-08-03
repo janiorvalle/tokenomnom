@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janiorvalle/tokenomnom/internal/config"
+	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/theme"
 	"github.com/janiorvalle/tokenomnom/internal/version"
 )
@@ -24,6 +25,7 @@ func newRootCommand(renderOptions theme.ResolveOptions) *cobra.Command {
 	var timezone string
 	var format string
 	var noColor bool
+	var allowMigrate bool
 
 	cmd := &cobra.Command{
 		Use:   "tokenomnom",
@@ -123,6 +125,7 @@ list-price equivalents or user rate estimates, not actual bills.`,
 	cmd.PersistentFlags().StringVar(&timezone, "tz", "", "bucket usage in an IANA timezone (default: system local)")
 	cmd.PersistentFlags().StringVar(&format, "format", "pretty", "output format (pretty or json)")
 	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable styled output")
+	cmd.PersistentFlags().BoolVar(&allowMigrate, "allow-migrate", false, "allow a development build to migrate the default usage store")
 	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSyncCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSummaryCommand(&codexDir, &claudeDir, &timezone))
@@ -139,6 +142,25 @@ list-price equivalents or user rate estimates, not actual bills.`,
 	cmd.AddCommand(newScheduleCommand())
 
 	return cmd
+}
+
+func openUsageStore(cmd *cobra.Command, path string) (*store.Store, error) {
+	options, err := usageStoreOpenOptions(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return store.OpenWithOptions(path, options)
+}
+
+func usageStoreOpenOptions(cmd *cobra.Command) (store.OpenOptions, error) {
+	if cmd.Flags().Lookup("allow-migrate") == nil {
+		return store.OpenOptions{}, nil
+	}
+	allowMigrate, err := cmd.Flags().GetBool("allow-migrate")
+	if err != nil {
+		return store.OpenOptions{}, fmt.Errorf("read --allow-migrate: %w", err)
+	}
+	return store.OpenOptions{AllowDevMigration: allowMigrate}, nil
 }
 
 // Execute runs the tokenomnom CLI.

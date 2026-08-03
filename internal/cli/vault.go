@@ -380,7 +380,7 @@ func openVault(cmd *cobra.Command, codexDir, claudeDir string) (*vault.Vault, *s
 	if err != nil {
 		return nil, nil, err
 	}
-	database, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	database, err := openUsageStore(cmd, filepath.Join(stateDir, store.DatabaseName))
 	if err != nil {
 		return nil, nil, err
 	}

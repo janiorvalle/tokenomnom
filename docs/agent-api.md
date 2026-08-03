@@ -16,6 +16,31 @@ Token counts are JSON integers. `cost_usd` and pricing rates are JSON numbers.
 Costs are rounded to cents; agents that need exact arithmetic should use the
 token counts and the rates returned by `pricing`.
 
+## Development Isolation
+
+Agents and tests must not use the developer's live tokenomnom directories. Set
+all three overrides to paths under one temporary root before running a dev
+binary or test:
+
+```sh
+root=$(mktemp -d)
+export TOKENOMNOM_STATE_DIR="$root/state"
+export TOKENOMNOM_DATA_DIR="$root/data"
+export TOKENOMNOM_CONFIG_DIR="$root/config"
+```
+
+`TOKENOMNOM_STATE_DIR` contains the durable usage and history databases,
+`TOKENOMNOM_DATA_DIR` contains backups and other generated data, and
+`TOKENOMNOM_CONFIG_DIR` contains user configuration and rate overrides. Keep
+the overrides set even for commands such as `doctor` that appear read-only;
+health checks may open the usage store and scheduled maintenance may write
+backups or metadata.
+
+When `version` is `dev`, tokenomnom refuses to migrate the default user usage
+store. Use the isolation overrides above, or pass `--allow-migrate` only when
+you intentionally want that development binary to change the default store.
+Released builds do not require this flag.
+
 ## Envelope
 
 Every JSON response is one object with these fields:

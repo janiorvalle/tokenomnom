@@ -66,7 +66,7 @@ func writeDoctorReport(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout())
-	offer, err := storedSkillOffer(databasePath)
+	offer, err := storedSkillOffer(cmd, databasePath)
 	if err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func collectDoctorData(cmd *cobra.Command, roots []discover.Root, databasePath, 
 	if err == nil {
 		data.Store.Exists = true
 		data.Store.SizeBytes = fileInfo.Size()
-		database, openErr := store.Open(databasePath)
+		database, openErr := openUsageStore(cmd, databasePath)
 		if openErr != nil {
 			return data, "", nil, fmt.Errorf("inspect usage store: %w", openErr)
 		}
@@ -444,7 +444,7 @@ func doctorVault(cmd *cobra.Command, roots []discover.Root, databasePath string,
 		}
 		return result, err
 	}
-	database, err := store.Open(databasePath)
+	database, err := openUsageStore(cmd, databasePath)
 	if err != nil {
 		return result, err
 	}
@@ -536,7 +536,7 @@ func doctorBackups(cmd *cobra.Command, databasePath string) (jsonDoctorBackups, 
 		result.NewestFile = &value
 	}
 	if _, err := os.Stat(databasePath); err == nil {
-		database, err := store.Open(databasePath)
+		database, err := openUsageStore(cmd, databasePath)
 		if err != nil {
 			return jsonDoctorBackups{}, fmt.Errorf("inspect usage store backups: %w", err)
 		}
@@ -571,14 +571,14 @@ func writeSkillsReport(cmd *cobra.Command, roots []discover.Root, offer string) 
 	}
 }
 
-func storedSkillOffer(databasePath string) (string, error) {
+func storedSkillOffer(cmd *cobra.Command, databasePath string) (string, error) {
 	if _, err := os.Stat(databasePath); err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", fmt.Errorf("stat usage store: %w", err)
 	}
-	database, err := store.Open(databasePath)
+	database, err := openUsageStore(cmd, databasePath)
 	if err != nil {
 		return "", fmt.Errorf("inspect usage store: %w", err)
 	}
@@ -637,7 +637,7 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 		}
 		return fmt.Errorf("stat usage store: %w", err)
 	}
-	database, err := store.Open(databasePath)
+	database, err := openUsageStore(cmd, databasePath)
 	if err != nil {
 		return fmt.Errorf("inspect usage store: %w", err)
 	}

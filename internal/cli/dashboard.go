@@ -45,7 +45,11 @@ var runDashboardProgram = func(cmd *cobra.Command, model tui.Model) error {
 func runDashboard(cmd *cobra.Command, codexDir, claudeDir, timezone *string) error {
 	render := theme.FromContext(cmd.Context())
 	loader := newDashboardLoader(cmd, *codexDir, *claudeDir, *timezone, render)
-	offer := newDashboardSkillOffer(*codexDir, *claudeDir)
+	options, err := usageStoreOpenOptions(cmd)
+	if err != nil {
+		return err
+	}
+	offer := newDashboardSkillOfferWithOptions(*codexDir, *claudeDir, options)
 	commands := newDashboardCommandRegistry(cmd, *codexDir, *claudeDir)
 	provider := tui.AllProviders
 	switch appconfig.FromContext(cmd.Context()).Config.Reports.DefaultProvider {
@@ -76,15 +80,26 @@ func runDashboardSubcommand(parent *cobra.Command, args ...string) (tui.CommandR
 	command := NewRootCommand()
 	command.SetContext(parent.Context())
 	command.SetIn(parent.InOrStdin())
+	options, err := usageStoreOpenOptions(parent)
+	if err != nil {
+		return tui.CommandResult{}, err
+	}
+	if options.AllowDevMigration {
+		args = append([]string{"--allow-migrate"}, args...)
+	}
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
 	command.SetArgs(args)
-	err := command.Execute()
+	err = command.Execute()
 	return tui.CommandResult{Output: output.String()}, err
 }
 
 func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
+	return newDashboardSkillOfferWithOptions(codexDir, claudeDir, store.OpenOptions{})
+}
+
+func newDashboardSkillOfferWithOptions(codexDir, claudeDir string, options store.OpenOptions) tui.SkillOffer {
 	return tui.SkillOffer{
 		Check: func() (tui.SkillOfferCheck, error) {
 			home, roots, err := resolveSkillRoots(codexDir, claudeDir)
@@ -95,7 +110,7 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 			if err != nil {
 				return tui.SkillOfferCheck{}, err
 			}
-			database, err := store.Open(databasePath)
+			database, err := store.OpenWithOptions(databasePath, options)
 			if err != nil {
 				return tui.SkillOfferCheck{}, err
 			}
@@ -148,7 +163,7 @@ func newDashboardSkillOffer(codexDir, claudeDir string) tui.SkillOffer {
 			case tui.SkillOfferPreinstalled:
 				value = skill.OfferPreinstalled
 			}
-			return setSkillOffer(home, value)
+			return setSkillOfferWithOptions(home, value, options)
 		},
 	}
 }
@@ -184,12 +199,12 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			if errors.Is(err, os.ErrNotExist) {
 				release, err = store.Lock(databasePath)
 				if err == nil {
-					database, err = store.Open(databasePath)
+					database, err = openUsageStore(cmd, databasePath)
 				}
 			} else if errors.Is(err, store.ErrStoreNeedsMigration) || errors.Is(err, store.ErrStoreNeedsInitialization) {
 				release, err = store.Lock(databasePath)
 				if err == nil {
-					database, err = store.Open(databasePath)
+					database, err = openUsageStore(cmd, databasePath)
 				}
 			}
 		} else {
@@ -199,7 +214,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 					return tui.Snapshot{}, err
 				}
 			}
-			database, err = store.Open(databasePath)
+			database, err = openUsageStore(cmd, databasePath)
 		}
 		if err != nil {
 			if release != nil {
