@@ -21,6 +21,7 @@ import (
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	historyfreshness "github.com/janiorvalle/tokenomnom/internal/history/freshness"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
+	"github.com/janiorvalle/tokenomnom/internal/ingest"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
 	"github.com/janiorvalle/tokenomnom/internal/skill"
 	"github.com/janiorvalle/tokenomnom/internal/store"
@@ -522,11 +523,18 @@ func loadDashboardDailySessions(cmd *cobra.Command, path string, request tui.Req
 	}
 	unavailable := 0
 	active := 0
-	for _, session := range page.Sessions {
-		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
+	cacheStats := &historySessionCostCacheStats{}
+	cache := newHistorySessionCostCache(cmd, database, table, start, end, codexDir, claudeDir, cacheStats)
+	rows, _ := priceHistorySessionsParallel(page.Sessions, func(session historystore.SessionCostSession) (historySessionCostRow, error) {
+		row, priceErr := priceHistorySessionMatchingCached(cmd, session, table, codexDir, claudeDir, func(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {
+			return historyUsageEventsForWindow(events, start, end)
+		}, cache)
 		if priceErr != nil {
-			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
+			return historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}, nil
 		}
+		return row, nil
+	})
+	for _, row := range rows {
 		if historySessionCostRowIsActive(row) {
 			active++
 		} else if row.AttributionStatus != "complete" && row.AttributionStatus != "settled_missing" {
@@ -658,7 +666,7 @@ func loadDashboardSessionCost(cmd *cobra.Command, database *historystore.Store, 
 	if err != nil {
 		return tuipages.SessionCost{Status: "unavailable"}, "Session cost attribution is unavailable; check pricing and retry."
 	}
-	row, err := priceHistorySession(cmd, page.Sessions[0], table, codexDir, claudeDir)
+	row, err := priceHistorySessionMatchingCached(cmd, page.Sessions[0], table, codexDir, claudeDir, allHistoryUsageEvents, newHistorySessionCostCache(cmd, database, table, time.Time{}, time.Time{}, codexDir, claudeDir, &historySessionCostCacheStats{}))
 	if err != nil {
 		return tuipages.SessionCost{Status: "unavailable"}, "Session cost attribution is unavailable; enter still opens the indexed detail."
 	}
@@ -767,11 +775,18 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	unavailable := 0
 	incomplete := 0
 	active := 0
-	for _, session := range page.Sessions {
-		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
+	cacheStats := &historySessionCostCacheStats{}
+	cache := newHistorySessionCostCache(cmd, database, table, start, end, codexDir, claudeDir, cacheStats)
+	rows, _ := priceHistorySessionsParallel(page.Sessions, func(session historystore.SessionCostSession) (historySessionCostRow, error) {
+		row, priceErr := priceHistorySessionMatchingCached(cmd, session, table, codexDir, claudeDir, func(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {
+			return historyUsageEventsForWindow(events, start, end)
+		}, cache)
 		if priceErr != nil {
-			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
+			return historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}, nil
 		}
+		return row, nil
+	})
+	for _, row := range rows {
 		if historySessionCostRowIsActive(row) {
 			active++
 		} else if row.AttributionStatus == "unavailable" {

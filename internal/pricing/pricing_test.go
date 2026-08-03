@@ -29,6 +29,26 @@ func TestEmbeddedTable(t *testing.T) {
 	}
 }
 
+func TestFingerprintIncludesEffectiveUserRates(t *testing.T) {
+	first, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := first.Fingerprint()
+	if baseline == "" || baseline != second.Fingerprint() {
+		t.Fatalf("stable pricing fingerprints = %q and %q", baseline, second.Fingerprint())
+	}
+	input, output := Rate(1234), Rate(5678)
+	changed := first.ApplyUserRates(map[string]UserRate{"gpt-5.2": {Input: &input, Output: &output}})
+	if changed.Fingerprint() == baseline {
+		t.Fatal("user-rate change did not invalidate pricing fingerprint")
+	}
+}
+
 func TestFormatRatePadsToTwoDecimals(t *testing.T) {
 	whole := Rate(12_500)
 	tenth := Rate(100)

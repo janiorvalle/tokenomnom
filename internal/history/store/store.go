@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	SchemaVersion = 12
+	SchemaVersion = 14
 	DatabaseName  = "history.db"
 )
 
@@ -29,10 +30,12 @@ var ErrStoreInUse = errors.New("history store is busy")
 
 // Store owns one history database connection.
 type Store struct {
-	db     *sql.DB
-	runner sqlRunner
-	readTx *sql.Tx
-	path   string
+	db      *sql.DB
+	runner  sqlRunner
+	readTx  *sql.Tx
+	path    string
+	cacheMu sync.Mutex
+	cacheDB *sql.DB
 }
 
 type sqlRunner interface {
@@ -480,6 +483,43 @@ UPDATE meta SET value='0' WHERE key='sampling_ready';
 			12: `
 ALTER TABLE source_heads ADD COLUMN settled_missing INTEGER NOT NULL DEFAULT 0 CHECK (settled_missing IN (0, 1));
 `,
+			13: `
+CREATE TABLE IF NOT EXISTS session_cost_cache (
+	session_id TEXT NOT NULL,
+	location_id TEXT NOT NULL,
+	content_sha256 TEXT NOT NULL,
+	content_size INTEGER NOT NULL CHECK (content_size >= 0),
+	pricing_fingerprint TEXT NOT NULL,
+	window_since TEXT NOT NULL DEFAULT '',
+	window_until TEXT NOT NULL DEFAULT '',
+	payload BLOB NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY(session_id, location_id, content_sha256, content_size, pricing_fingerprint, window_since, window_until)
+);
+CREATE INDEX IF NOT EXISTS session_cost_cache_session_idx ON session_cost_cache(session_id);
+`,
+			14: `
+DROP INDEX IF EXISTS session_cost_cache_session_idx;
+ALTER TABLE session_cost_cache RENAME TO session_cost_cache_v13;
+CREATE TABLE session_cost_cache (
+	session_id TEXT NOT NULL,
+	location_id TEXT NOT NULL,
+	content_sha256 TEXT NOT NULL,
+	content_size INTEGER NOT NULL CHECK (content_size >= 0),
+	pricing_fingerprint TEXT NOT NULL,
+	candidate_context TEXT NOT NULL,
+	window_since TEXT NOT NULL DEFAULT '',
+	window_until TEXT NOT NULL DEFAULT '',
+	payload BLOB NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY(session_id, location_id, content_sha256, content_size, pricing_fingerprint, candidate_context, window_since, window_until)
+);
+INSERT INTO session_cost_cache(session_id,location_id,content_sha256,content_size,pricing_fingerprint,candidate_context,window_since,window_until,payload,created_at)
+	SELECT session_id,location_id,content_sha256,content_size,pricing_fingerprint,'',window_since,window_until,payload,created_at
+	FROM session_cost_cache_v13;
+DROP TABLE session_cost_cache_v13;
+CREATE INDEX session_cost_cache_session_idx ON session_cost_cache(session_id);
+`,
 		},
 		AfterStep: func(tx sqliteutil.MigrationExecer, version int) error {
 			if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES
@@ -605,6 +645,10 @@ func validateSchema(db sqlRunner) error {
 			return fmt.Errorf("history schema missing FTS trigger %s", name)
 		}
 	}
+	var cacheTable bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_cost_cache')`).Scan(&cacheTable); err != nil || !cacheTable {
+		return fmt.Errorf("history schema missing session cost cache table")
+	}
 	return nil
 }
 
@@ -632,7 +676,14 @@ func (s *Store) Close() error {
 			txErr = nil
 		}
 	}
-	return errors.Join(txErr, s.db.Close())
+	s.cacheMu.Lock()
+	var cacheErr error
+	if s.cacheDB != nil {
+		cacheErr = s.cacheDB.Close()
+		s.cacheDB = nil
+	}
+	s.cacheMu.Unlock()
+	return errors.Join(txErr, cacheErr, s.db.Close())
 }
 
 // Meta returns one history metadata value or an empty string when absent.

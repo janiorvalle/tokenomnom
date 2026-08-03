@@ -12,6 +12,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historyindexer "github.com/janiorvalle/tokenomnom/internal/history/indexer"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/ingest"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
@@ -62,6 +63,138 @@ func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
 	}
 	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.DefaultSessionsPerPage != 20 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
 		t.Fatalf("session cost bounds/page = %+v / %+v", data.Bounds, data.Page)
+	}
+	if data.Cache.Hits != 0 || data.Cache.Misses != 1 || data.Cache.Stores != 1 || data.Cache.StoreErrors != 0 {
+		t.Fatalf("cold session cost cache receipt = %+v", data.Cache)
+	}
+
+	warmOutput, err := executeReport([]string{"history", "costs", "--limit", "1", "--cwd", "/repo", "--project", "repo", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warmData historySessionCostData
+	if err := json.Unmarshal(decodeEnvelope(t, warmOutput).Data, &warmData); err != nil {
+		t.Fatal(err)
+	}
+	if warmData.Cache.Hits != 1 || warmData.Cache.Misses != 0 || warmData.Cache.Stores != 0 || warmData.Cache.StoreErrors != 0 {
+		t.Fatalf("warm session cost cache receipt = %+v", warmData.Cache)
+	}
+
+	info, err := os.Stat(filepath.Join(codexDir, "sessions", "cost.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(fixture, `"input_tokens":100000`, `"input_tokens":200000`, -1)
+	if len(mutated) != len(fixture) {
+		t.Fatal("same-size transcript mutation changed the fixture size")
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "sessions", "cost.jsonl"), []byte(mutated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(codexDir, "sessions", "cost.jsonl"), info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	staleOutput, err := executeReport([]string{"history", "costs", "--limit", "1", "--cwd", "/repo", "--project", "repo", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleData historySessionCostData
+	if err := json.Unmarshal(decodeEnvelope(t, staleOutput).Data, &staleData); err != nil {
+		t.Fatal(err)
+	}
+	if staleData.Cache.Hits != 0 || staleData.Cache.Misses != 1 || staleData.Cache.Stores != 0 || staleData.Cache.StoreErrors != 0 {
+		t.Fatalf("same-size rewritten transcript cache receipt = %+v", staleData.Cache)
+	}
+	if len(staleData.Sessions) != 1 || staleData.Sessions[0].AttributionStatus != "unavailable" {
+		t.Fatalf("same-size rewritten transcript row = %+v", staleData.Sessions)
+	}
+
+	if err := os.WriteFile(filepath.Join(codexDir, "sessions", "cost.jsonl"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(codexDir, "sessions", "cost.jsonl"), info.ModTime().Add(time.Second), info.ModTime().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	changedOutput, err := executeReport([]string{"history", "costs", "--limit", "1", "--cwd", "/repo", "--project", "repo", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changedData historySessionCostData
+	if err := json.Unmarshal(decodeEnvelope(t, changedOutput).Data, &changedData); err != nil {
+		t.Fatal(err)
+	}
+	if changedData.Cache.Hits != 0 || changedData.Cache.Misses != 1 || changedData.Cache.Stores != 0 || changedData.Cache.StoreErrors != 0 {
+		t.Fatalf("stat-changed transcript cache receipt = %+v", changedData.Cache)
+	}
+	if len(changedData.Sessions) != 1 || changedData.Sessions[0].AttributionStatus != "complete" || changedData.Sessions[0].Tokens.InputTokens != 100000 {
+		t.Fatalf("stat-changed transcript row = %+v", changedData.Sessions)
+	}
+}
+
+func TestHistoryCostCacheDoesNotUseFallbackBeforePreferredCandidate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, historystore.DatabaseName)
+	preferredPath := filepath.Join(root, "preferred.jsonl")
+	fallbackPath := filepath.Join(root, "fallback.jsonl")
+	writeTextFixture(t, preferredPath, "preferred")
+	writeTextFixture(t, fallbackPath, "fallback")
+	database, err := historystore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	applySource := func(sourcePath, content, kind string) historystore.ApplyResult {
+		t.Helper()
+		source := history.SourceReference{Provider: history.ProviderCodex, Kind: history.LocationKind(kind), Path: sourcePath}
+		digest := sha256.Sum256([]byte(content))
+		result, applyErr := database.ApplySource(history.Extraction{
+			Provider: history.ProviderCodex, Source: source,
+			Session: history.Session{IdentityKey: "cache-order", NativeSessionID: "cache-order", ThreadKind: history.ThreadRoot, Confidence: history.ConfidenceExact},
+		}, history.SourceHead{
+			Source: source, ContentSHA256: hex.EncodeToString(digest[:]), Size: int64(len(content)),
+			ModTimeUnix: time.Now().UnixNano(), CompleteOffset: int64(len(content)), LineCount: 1, Available: true,
+		}, historystore.ApplyReplace)
+		if applyErr != nil {
+			t.Fatal(applyErr)
+		}
+		return result
+	}
+	preferredResult := applySource(preferredPath, "preferred", string(history.LocationProviderLive))
+	fallbackResult := applySource(fallbackPath, "fallback", string(history.LocationProviderArchive))
+	preferredInfo, err := os.Stat(preferredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackInfo, err := os.Stat(fallbackPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preferredDigest := sha256.Sum256([]byte("preferred"))
+	fallbackDigest := sha256.Sum256([]byte("fallback"))
+	preferredID := preferredResult.SourceID
+	fallbackID := fallbackResult.SourceID
+	session := historystore.SessionCostSession{CatalogSession: historystore.CatalogSession{SessionID: preferredResult.SessionID, Provider: history.ProviderCodex}, Candidates: []historystore.RawCandidate{
+		{Kind: "provider_live", SourceHeadID: &preferredID, SourcePath: preferredPath, ContentSHA256: hex.EncodeToString(preferredDigest[:]), Size: preferredInfo.Size(), ModTimeUnix: preferredInfo.ModTime().UnixNano()},
+		{Kind: "provider_archive", SourceHeadID: &fallbackID, SourcePath: fallbackPath, ContentSHA256: hex.EncodeToString(fallbackDigest[:]), Size: fallbackInfo.Size(), ModTimeUnix: fallbackInfo.ModTime().UnixNano()},
+	}}
+	table, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := newHistorySessionCostCache(&cobra.Command{}, database, table, time.Time{}, time.Time{}, "", "", &historySessionCostCacheStats{})
+	payload, err := json.Marshal(historySessionCostCacheValue{AttributionStatus: "complete", TokenSource: "indexed_exact_transcript"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutSessionCostCache(cache.key(session, session.Candidates[1]), payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cache.load(session); ok {
+		t.Fatal("cache returned a lower-priority candidate before checking the preferred candidate")
+	}
+	receipt := cache.stats.snapshot()
+	if receipt.Hits != 0 || receipt.Misses != 1 || receipt.StoreErrors != 0 {
+		t.Fatalf("fallback cache receipt = %+v", receipt)
 	}
 }
 
@@ -119,6 +252,10 @@ func TestHistoryCostsKeepsActiveFallbackIncomplete(t *testing.T) {
 	writeTextFixture(t, preferredPath, initial+`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still active"}}`+"\n")
 	writeTextFixture(t, fallbackPath, initial)
 	digest := sha256.Sum256([]byte(initial))
+	prefix, err := historyindexer.PrefixFingerprint(preferredPath, int64(len(initial)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	table, err := pricing.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +263,7 @@ func TestHistoryCostsKeepsActiveFallbackIncomplete(t *testing.T) {
 	row, err := priceHistorySessionMatching(&cobra.Command{}, historystore.SessionCostSession{
 		CatalogSession: historystore.CatalogSession{Provider: history.ProviderCodex},
 		Candidates: []historystore.RawCandidate{
-			{Kind: "provider_live", SourcePath: preferredPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
+			{Kind: "provider_live", SourcePath: preferredPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:]), PrefixFingerprint: prefix},
 			{Kind: "provider_archive", SourcePath: fallbackPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
 		},
 	}, table, "", "", allHistoryUsageEvents)
@@ -143,12 +280,17 @@ func TestActiveHistoryWarningRequiresIndexedPrefix(t *testing.T) {
 	path := filepath.Join(root, "rewritten.jsonl")
 	indexed := historyCodexFixture("indexed", "before rewrite")
 	current := historyCodexFixture("rewritten", "different prefix") + "extra bytes\n"
+	writeTextFixture(t, path, indexed)
+	prefix, err := historyindexer.PrefixFingerprint(path, int64(len(indexed)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeTextFixture(t, path, current)
 	digest := sha256.Sum256([]byte(indexed))
 	if warning := activeHistorySessionWarning([]historystore.RawCandidate{{
-		Kind: "provider_live", SourcePath: path, Size: int64(len(indexed)), ContentSHA256: hex.EncodeToString(digest[:]),
+		Kind: "provider_live", SourcePath: path, Size: int64(len(indexed)), ContentSHA256: hex.EncodeToString(digest[:]), PrefixFingerprint: prefix,
 	}}); warning != "" {
-		t.Fatalf("rewritten transcript was classified as active: %q", warning)
+		t.Fatalf("changed transcript warning = %q", warning)
 	}
 }
 

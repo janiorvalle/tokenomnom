@@ -15,15 +15,17 @@ var ErrNoAvailableRawLocation = errors.New("no available exact raw location")
 
 // RawCandidate is an indexed exact-byte location in preferred retrieval order.
 type RawCandidate struct {
-	Kind          string  `json:"kind"`
-	SourceHeadID  *string `json:"source_head_id"`
-	SnapshotID    *string `json:"snapshot_id"`
-	SourcePath    string  `json:"source_path,omitempty"`
-	Archive       string  `json:"archive,omitempty"`
-	RelativePath  string  `json:"relative_path,omitempty"`
-	VaultVersion  int     `json:"vault_version,omitempty"`
-	ContentSHA256 string  `json:"content_sha256"`
-	Size          int64   `json:"size"`
+	Kind              string  `json:"kind"`
+	SourceHeadID      *string `json:"source_head_id"`
+	SnapshotID        *string `json:"snapshot_id"`
+	SourcePath        string  `json:"source_path,omitempty"`
+	Archive           string  `json:"archive,omitempty"`
+	RelativePath      string  `json:"relative_path,omitempty"`
+	VaultVersion      int     `json:"vault_version,omitempty"`
+	ContentSHA256     string  `json:"content_sha256"`
+	Size              int64   `json:"size"`
+	ModTimeUnix       int64   `json:"-"`
+	PrefixFingerprint string  `json:"-"`
 }
 
 const maxExportTreeDepth = 16
@@ -354,9 +356,9 @@ func (s *Store) RawCandidates(sessionID, snapshotID string) ([]RawCandidate, err
 		}
 		whereSnapshot = " AND ps.public_id=?"
 	}
-	statement := `SELECT kind,source_id,snapshot_id,source_path,archive,relative_path,vault_version,content_sha256,size FROM (
+	statement := `SELECT kind,source_id,snapshot_id,source_path,archive,relative_path,vault_version,content_sha256,size,mod_time_unix,prefix_fingerprint FROM (
 		SELECT l.kind,sh.public_id AS source_id,NULL AS snapshot_id,l.source_path,l.archive,l.relative_path,l.vault_version,
-			sh.current_sha256 AS content_sha256,sh.size,CASE l.kind WHEN 'provider_live' THEN 0 ELSE 1 END AS preference,
+			sh.current_sha256 AS content_sha256,sh.size,sh.mtime_unix AS mod_time_unix,sh.prefix_fingerprint,CASE l.kind WHEN 'provider_live' THEN 0 ELSE 1 END AS preference,
 			sh.indexed_at AS recency
 		FROM source_heads sh JOIN sessions s ON s.id=sh.session_id JOIN locations l ON l.source_head_id=sh.id
 		WHERE s.public_id=? AND l.available=1 AND sh.available=1 AND sh.current_sha256<>'' AND sh.complete_offset=sh.size`
@@ -365,7 +367,7 @@ func (s *Store) RawCandidates(sessionID, snapshotID string) ([]RawCandidate, err
 	}
 	statement += ` UNION ALL
 		SELECT l.kind,NULL,ps.public_id,l.source_path,l.archive,l.relative_path,l.vault_version,
-			ps.content_sha256,ps.size,2 AS preference,ps.created_at AS recency
+			ps.content_sha256,ps.size,0 AS mod_time_unix,'' AS prefix_fingerprint,2 AS preference,ps.created_at AS recency
 		FROM preserved_snapshots ps JOIN sessions s ON s.id=ps.session_id JOIN locations l ON l.snapshot_id=ps.id
 		WHERE s.public_id=? AND l.available=1` + whereSnapshot + `)
 		ORDER BY preference,recency DESC,vault_version DESC,source_path,archive,relative_path`
@@ -382,7 +384,7 @@ func (s *Store) RawCandidates(sessionID, snapshotID string) ([]RawCandidate, err
 	for rows.Next() {
 		var value RawCandidate
 		var source, snapshot sql.NullString
-		if err := rows.Scan(&value.Kind, &source, &snapshot, &value.SourcePath, &value.Archive, &value.RelativePath, &value.VaultVersion, &value.ContentSHA256, &value.Size); err != nil {
+		if err := rows.Scan(&value.Kind, &source, &snapshot, &value.SourcePath, &value.Archive, &value.RelativePath, &value.VaultVersion, &value.ContentSHA256, &value.Size, &value.ModTimeUnix, &value.PrefixFingerprint); err != nil {
 			return nil, fmt.Errorf("scan raw history location: %w", err)
 		}
 		value.SourceHeadID, value.SnapshotID = optionalCatalogString(source), optionalCatalogString(snapshot)

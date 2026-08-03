@@ -866,6 +866,12 @@ func prefixFingerprint(path string, size int64) (string, error) {
 	return prefixFingerprintFile(file, size)
 }
 
+// PrefixFingerprint returns the bounded fingerprint used to confirm that a
+// changed provider file still contains its indexed prefix.
+func PrefixFingerprint(path string, size int64) (string, error) {
+	return prefixFingerprint(path, size)
+}
+
 func prefixFingerprintFile(file *os.File, size int64) (string, error) {
 	if size < 0 {
 		return "", fmt.Errorf("invalid prefix fingerprint size %d for %q", size, file.Name())

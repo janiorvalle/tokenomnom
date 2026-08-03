@@ -353,6 +353,24 @@ bucket, output, reasoning, total, priced, unpriced, unknown-model, and rounded
 model, with a maximum of 32 detail rows; session totals include omitted detail
 rows.
 
+`data.cache` receipts report `hits`, `misses`, `stores`, and `store_errors` for
+the page. A cached row is reusable only for the same session, physical indexed
+location and content digest/size, versioned pricing/attribution fingerprint
+(including effective user rates), ordered candidate context, and attribution
+window. Provider cache hits first require a matching indexed size and mtime and
+the same provider file identity; the digest recorded by the index is then
+trusted, while immutable vault locations are not re-read. A changed provider
+stat or file identity causes a miss. Size changes are skipped before opening a
+large file, while an mtime-only change gets a cold exact-byte read. Cold
+pricing and raw/export commands still verify exact bytes before parsing or
+returning them. Platforms without a reliable provider file identity fall back
+to digest verification on a cache hit. Vault hits validate the immutable
+archive's stat/file identity and that it is not marked broken; unchanged vault
+hits do not re-read compressed bytes. Growing provider files are called active
+only when their bounded indexed-prefix fingerprint still matches; other stat
+drift reports a neutral changed-since-index warning.
+Changing a pricing/user-rate entry selects a new cache key.
+
 Costs are calculated from exact indexed transcript bytes. The bytes are
 re-read only from indexed locations and must still match the indexed size and
 SHA-256 before provider usage parsing. `attribution_status` is `complete`,

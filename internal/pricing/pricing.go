@@ -3,7 +3,9 @@
 package pricing
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -298,6 +300,15 @@ func (t Table) Models() []string {
 	}
 	sort.Strings(models)
 	return models
+}
+
+// Fingerprint returns a stable digest of every effective pricing fact. It is
+// part of persisted attribution cache keys, so user-rate and table changes
+// naturally invalidate older priced rows.
+func (t Table) Fingerprint() string {
+	payload, _ := json.Marshal(t.Entries())
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 // ProvenanceLabel returns the human-facing label for a pricing tier.
