@@ -73,10 +73,13 @@ type DailySession struct {
 
 // DailySessionData is a bounded cursor-day session query result.
 type DailySessionData struct {
-	Rows           []DailySession
-	Total          int
-	HasMore        bool
-	TotalKnown     bool
+	Rows       []DailySession
+	Total      int
+	HasMore    bool
+	TotalKnown bool
+	// Pending distinguishes the first store-only frame from an indexed day with
+	// no sessions.
+	Pending        bool
 	SessionCounts  map[string]int
 	ProviderCounts map[string]int
 	SessionTimes   map[string]string
@@ -390,7 +393,9 @@ func renderDailyFloorDetail(render theme.Context, data DailyPageData, width, hei
 		lines = append(lines, modelTitle+" · "+truncateDaily(cleanDaily(model.Model), max(8, width-24))+" "+formatDailyValue(model.Value, usesTokens))
 	}
 	fullLines := dailyDetailLines(data, width, false)
-	if data.Sessions.Warning != "" {
+	if data.Sessions.Pending {
+		lines = append(lines, render.Palette.Subtle().Render("Loading sessions…"))
+	} else if data.Sessions.Warning != "" {
 		lines = append(lines, compactDailyWarning(data.Sessions.Warning, width))
 	} else if len(fullLines) > height {
 		lines = append(lines, render.Palette.Subtle().Render("↓ more below"))
@@ -522,7 +527,11 @@ func dailyDetailLines(data DailyPageData, width int, compact bool) []string {
 		} else {
 			lines = append(lines, dailyComparisonLine("cost", detail.Value, data.Average, false), dailyComparisonLine("tokens", detail.Value, data.Average, true))
 		}
-		lines = append(lines, dailySessionsComparisonLine(detail.Value, dailyAverageSessions(data)))
+		if data.Sessions.Pending {
+			lines = append(lines, fmt.Sprintf("%-8s %10s", "sessions", "Loading…"))
+		} else {
+			lines = append(lines, dailySessionsComparisonLine(detail.Value, dailyAverageSessions(data)))
+		}
 	}
 	return lines
 }
@@ -559,6 +568,12 @@ func formatDailyDetailTotal(detail DailyDetail, tokens bool) string {
 }
 
 func dailyProjectsTitle(data DailyPageData) string {
+	if data.Sessions.Pending {
+		if data.Detail.Date == "" {
+			return "PROJECTS · Loading…"
+		}
+		return fmt.Sprintf("PROJECTS · %s · Loading…", data.Detail.Date)
+	}
 	count := dailySessionTotalLabel(data.Sessions)
 	if data.Detail.Date == "" {
 		return "PROJECTS"
@@ -599,7 +614,9 @@ func dailyAverageRangeLabel(data DailyPageData) string {
 
 func dailyProjectsAndTrends(render theme.Context, data DailyPageData, width int) []string {
 	lines := []string{"PROJECTS"}
-	if data.Sessions.HasMore {
+	if data.Sessions.Pending {
+		lines = append(lines, "Loading sessions…")
+	} else if data.Sessions.HasMore {
 		lines = append(lines, "Project ranking unavailable; session page is bounded.")
 	} else {
 		projectTokens := dailySessionMetricUsesTokens(data)
@@ -648,6 +665,10 @@ func dailyProjectsAndTrends(render theme.Context, data DailyPageData, width int)
 		})},
 	}
 	for _, trend := range trends {
+		if data.Sessions.Pending && trend.label == "sessions/day" {
+			lines = append(lines, truncateDaily(trend.label+"  Loading…", width))
+			continue
+		}
 		lineWidth := max(1, width-lipgloss.Width(trend.label)-9)
 		spark := dailySparkline(trend.values, lineWidth)
 		switch {
@@ -702,6 +723,9 @@ func renderDailySessions(render theme.Context, data DailyPageData, width, height
 	date := data.Detail.Date
 	if date != "" {
 		heading += " · " + date
+	}
+	if data.Sessions.Pending {
+		return fitDailyBlock(strings.Join([]string{heading + " · Loading…", render.Palette.Subtle().Render("Loading sessions…")}, "\n"), width, height)
 	}
 	rows := append([]DailySession(nil), data.Sessions.Rows...)
 	sessionTokens := dailySessionMetricUsesTokens(data)
@@ -793,6 +817,9 @@ func renderDailySessions(render theme.Context, data DailyPageData, width, height
 }
 
 func dailySessionTotalLabel(data DailySessionData) string {
+	if data.Pending {
+		return "Loading…"
+	}
 	total := data.Total
 	if total == 0 && len(data.Rows) > 0 {
 		total = len(data.Rows)
