@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,7 +12,10 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/ingest"
+	"github.com/janiorvalle/tokenomnom/internal/pricing"
+	"github.com/spf13/cobra"
 )
 
 func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
@@ -57,6 +62,93 @@ func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
 	}
 	if data.Page.Limit != 1 || data.Generation == 0 || data.Bounds.DefaultSessionsPerPage != 20 || data.Bounds.MaxSessionsPerPage != 100 || !strings.Contains(data.Bounds.NapkinMath, "12 pages") {
 		t.Fatalf("session cost bounds/page = %+v / %+v", data.Bounds, data.Page)
+	}
+}
+
+func TestHistoryCostsSoftensWarningForTranscriptThatGrewSinceIndex(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir := filepath.Join(root, "codex")
+	claudeDir := filepath.Join(root, "claude")
+	sourcePath := filepath.Join(codexDir, "sessions", "active.jsonl")
+	fixture := strings.Join([]string{
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"active-session","thread_source":"user","cwd":"/repo"}}`,
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}`,
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":30},"last_token_usage":{"input_tokens":100,"output_tokens":30}}}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, sourcePath, fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = append(content, []byte(`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still working"}}`+"\n")...)
+	if err := os.WriteFile(sourcePath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeReport([]string{"history", "costs", "--provider", "codex", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := decodeEnvelope(t, output)
+	warnings := strings.Join(envelope.Warnings, "\n")
+	if !strings.Contains(warnings, historyActiveSessionWarning) || strings.Contains(warnings, "restore the source or vault snapshot") {
+		t.Fatalf("active transcript warnings = %#v", envelope.Warnings)
+	}
+	var data historySessionCostData
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Sessions) != 1 || data.Sessions[0].AttributionStatus != "unavailable" || len(data.Sessions[0].Warnings) != 1 || data.Sessions[0].Warnings[0] != historyActiveSessionWarning {
+		t.Fatalf("active transcript cost row = %+v", data.Sessions)
+	}
+}
+
+func TestHistoryCostsKeepsActiveFallbackIncomplete(t *testing.T) {
+	root := t.TempDir()
+	preferredPath := filepath.Join(root, "preferred.jsonl")
+	fallbackPath := filepath.Join(root, "fallback.jsonl")
+	initial := historyCodexFixture("active-fallback", "before fallback") +
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":2},"last_token_usage":{"input_tokens":10,"output_tokens":2}}}}` + "\n"
+	writeTextFixture(t, preferredPath, initial+`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still active"}}`+"\n")
+	writeTextFixture(t, fallbackPath, initial)
+	digest := sha256.Sum256([]byte(initial))
+	table, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := priceHistorySessionMatching(&cobra.Command{}, historystore.SessionCostSession{
+		CatalogSession: historystore.CatalogSession{Provider: history.ProviderCodex},
+		Candidates: []historystore.RawCandidate{
+			{Kind: "provider_live", SourcePath: preferredPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
+			{Kind: "provider_archive", SourcePath: fallbackPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
+		},
+	}, table, "", "", allHistoryUsageEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.AttributionStatus != "incomplete" || !historySessionCostRowIsActive(row) || strings.Contains(strings.Join(row.Warnings, " "), "restore the source or vault snapshot") {
+		t.Fatalf("active fallback cost row = %+v", row)
+	}
+}
+
+func TestActiveHistoryWarningRequiresIndexedPrefix(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rewritten.jsonl")
+	indexed := historyCodexFixture("indexed", "before rewrite")
+	current := historyCodexFixture("rewritten", "different prefix") + "extra bytes\n"
+	writeTextFixture(t, path, current)
+	digest := sha256.Sum256([]byte(indexed))
+	if warning := activeHistorySessionWarning([]historystore.RawCandidate{{
+		Kind: "provider_live", SourcePath: path, Size: int64(len(indexed)), ContentSHA256: hex.EncodeToString(digest[:]),
+	}}); warning != "" {
+		t.Fatalf("rewritten transcript was classified as active: %q", warning)
 	}
 }
 

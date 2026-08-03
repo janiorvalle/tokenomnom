@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +24,8 @@ import (
 )
 
 const maxHistorySessionCostModels = 32
+
+const historyActiveSessionWarning = "session active since last index; refreshes on next index"
 
 type historySessionCostFlags struct {
 	provider   string
@@ -302,6 +308,7 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 	var events []ingest.UsageEvent
 	var selectedKind string
 	fallbackUsed := false
+	preferredActive := len(session.Candidates) > 0 && historyCandidateIsGrowing(session.Candidates[0])
 	for candidateIndex, candidate := range session.Candidates {
 		staged, err := readHistoryRawCandidate(cmd, candidate, codexDir, claudeDir)
 		if err != nil {
@@ -319,7 +326,11 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 	}
 	if selectedKind == "" {
 		row.AttributionStatus = "unavailable"
-		row.Warnings = append(row.Warnings, "indexed transcript bytes could not be read or parsed; restore the source or vault snapshot and rerun `tokenomnom history index`")
+		warning := "indexed transcript bytes could not be read or parsed; restore the source or vault snapshot and rerun `tokenomnom history index`"
+		if activeHistorySessionWarning(session.Candidates) != "" {
+			warning = historyActiveSessionWarning
+		}
+		row.Warnings = append(row.Warnings, warning)
 		return row, nil
 	}
 	events, selectionWarnings := selectEvents(events)
@@ -327,7 +338,11 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 	row.attributionTimestamp = firstHistoryUsageTimestamp(events)
 	row.RawLocationKind = selectedKind
 	if fallbackUsed {
-		row.Warnings = append(row.Warnings, "the preferred exact transcript location was unavailable; cost uses a fallback indexed location and may omit newer usage; restore the source and rerun `tokenomnom history index`")
+		if preferredActive {
+			row.Warnings = append(row.Warnings, historyActiveSessionWarning)
+		} else {
+			row.Warnings = append(row.Warnings, "the preferred exact transcript location was unavailable; cost uses a fallback indexed location and may omit newer usage; restore the source and rerun `tokenomnom history index`")
+		}
 	}
 	usageRows, unknownDateRows, usageWarnings := aggregateHistoryUsage(events, session.Provider)
 	row.Warnings = append(row.Warnings, usageWarnings...)
@@ -360,6 +375,42 @@ func priceHistorySessionMatching(cmd *cobra.Command, session historystore.Sessio
 		row.Warnings = append(row.Warnings, fmt.Sprintf("%d tokens came from an unknown model; re-index after model metadata is available", row.Tokens.UnknownModelTokens))
 	}
 	return row, nil
+}
+
+func historySessionCostRowIsActive(row historySessionCostRow) bool {
+	for _, warning := range row.Warnings {
+		if warning == historyActiveSessionWarning {
+			return true
+		}
+	}
+	return false
+}
+
+func activeHistorySessionWarning(candidates []historystore.RawCandidate) string {
+	for _, candidate := range candidates {
+		if historyCandidateIsGrowing(candidate) {
+			return historyActiveSessionWarning
+		}
+	}
+	return ""
+}
+
+func historyCandidateIsGrowing(candidate historystore.RawCandidate) bool {
+	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
+		return false
+	}
+	info, err := os.Stat(candidate.SourcePath)
+	if err != nil || info.Size() <= candidate.Size || candidate.Size < 0 || candidate.ContentSHA256 == "" {
+		return false
+	}
+	source, err := os.Open(candidate.SourcePath)
+	if err != nil {
+		return false
+	}
+	defer source.Close()
+	hash := sha256.New()
+	written, err := io.CopyN(hash, source, candidate.Size)
+	return err == nil && written == candidate.Size && hex.EncodeToString(hash.Sum(nil)) == candidate.ContentSHA256
 }
 
 func allHistoryUsageEvents(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {

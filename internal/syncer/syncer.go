@@ -33,6 +33,7 @@ type Options struct {
 	Timezone            string
 	TimezoneFingerprint string
 	Full                bool
+	SettleMissing       bool
 	Now                 func() time.Time
 	LockHeld            bool
 	Progress            func(Progress)
@@ -62,6 +63,8 @@ type Summary struct {
 	FilesAppended                int
 	FilesRewritten               int
 	FilesMissing                 int
+	SettledMissingFiles          int
+	UnsettledMissingFiles        int
 	EventsApplied                int
 	UsageRows                    int
 	UnknownModelTokens           int64
@@ -217,6 +220,7 @@ func Sync(options Options) (Summary, error) {
 					checkpoint.Size = file.Size
 					checkpoint.ModTimeUnix = file.ModTime.UnixNano()
 					checkpoint.Missing = false
+					checkpoint.SettledMissing = false
 					checkpoint.LastSyncedUnix = now().Unix()
 					if err := options.Store.Transaction(func(tx *store.Tx) error { return tx.PutCheckpoint(checkpoint) }); err != nil {
 						return summary, err
@@ -319,8 +323,9 @@ func Sync(options Options) (Summary, error) {
 				}
 			}
 			if aliasOf != "" && kind == fileUnchanged {
-				if checkpoint.Missing {
+				if checkpoint.Missing || checkpoint.SettledMissing {
 					checkpoint.Missing = false
+					checkpoint.SettledMissing = false
 					checkpoint.LastSyncedUnix = now().Unix()
 					if err := options.Store.Transaction(func(tx *store.Tx) error { return tx.PutCheckpoint(checkpoint) }); err != nil {
 						return summary, err
@@ -397,8 +402,9 @@ func Sync(options Options) (Summary, error) {
 		}
 		if kind == fileUnchanged {
 			summary.FilesSkipped++
-			if checkpoint.Missing {
+			if checkpoint.Missing || checkpoint.SettledMissing {
 				checkpoint.Missing = false
+				checkpoint.SettledMissing = false
 				checkpoint.LastSyncedUnix = now().Unix()
 				if err := options.Store.Transaction(func(tx *store.Tx) error { return tx.PutCheckpoint(checkpoint) }); err != nil {
 					return summary, err
@@ -494,6 +500,13 @@ func Sync(options Options) (Summary, error) {
 	}
 
 	finished := now()
+	if options.SettleMissing {
+		settled, err := options.Store.SettleMissingFiles()
+		if err != nil {
+			return summary, err
+		}
+		summary.SettledMissingFiles = settled
+	}
 	if err := options.Store.Transaction(func(tx *store.Tx) error {
 		if err := tx.SetMeta("timezone", options.Timezone); err != nil {
 			return err
@@ -516,6 +529,7 @@ func Sync(options Options) (Summary, error) {
 		return summary, err
 	}
 	summary.UsageRows = info.UsageRows
+	summary.UnsettledMissingFiles = info.UnsettledMissingFiles
 	summary.Duration = time.Since(started)
 	return summary, nil
 }
@@ -539,6 +553,7 @@ func promoteCodexAlias(database *store.Store, file discover.SourceFile, alias st
 	newOwner := alias
 	newOwner.ParserState = string(newOwnerJSON)
 	newOwner.Missing = false
+	newOwner.SettledMissing = false
 
 	ownerAlias := owner
 	var oldOwnerState codex.State
@@ -753,6 +768,7 @@ func reconcileCodexMoves(database *store.Store, files []discover.SourceFile, see
 			delete(checkpoints, oldPath)
 			checkpoint.Path = file.Path
 			checkpoint.Missing = false
+			checkpoint.SettledMissing = false
 			checkpoints[file.Path] = checkpoint
 			repointCheckpointAliases(checkpoints, oldPath, file.Path)
 			continue
@@ -774,6 +790,7 @@ func reconcileCodexMoves(database *store.Store, files []discover.SourceFile, see
 				delete(checkpoints, owner)
 				checkpoint.Path = file.Path
 				checkpoint.Missing = false
+				checkpoint.SettledMissing = false
 				checkpoints[file.Path] = checkpoint
 				repointCheckpointAliases(checkpoints, owner, file.Path)
 				if err := putAliasCheckpoint(database, sources[owner], checkpoint, file.Path, checkpoints); err != nil {
@@ -888,6 +905,7 @@ func aliasCheckpoint(aliasFile discover.SourceFile, owner store.Checkpoint, owne
 	alias.ModTimeUnix = aliasFile.ModTime.UnixNano()
 	alias.ParserState = string(encoded)
 	alias.Missing = false
+	alias.SettledMissing = false
 	return alias, nil
 }
 
@@ -943,6 +961,7 @@ func splitCheckpoint(path string, owner store.Checkpoint, ownerPath string) (sto
 	checkpoint.Size = owner.ByteOffset
 	checkpoint.ModTimeUnix = 0
 	checkpoint.Missing = false
+	checkpoint.SettledMissing = false
 	if checkpoint.ParserState == "" {
 		return store.Checkpoint{}, fmt.Errorf("missing Codex owner parser state %q", ownerPath)
 	}

@@ -130,7 +130,8 @@ unknown models, up to three `suggestions`.
 `jsonl_files`, `total_bytes`, nullable `oldest`, nullable `newest`, and
 `walk_errors`. `data.store` contains `path`, `exists`, `size_bytes`, nullable
 `schema_version`, nullable `timezone`, nullable `last_sync`, `usage_rows`,
-`distinct_models`, `date_range`, `missing_files`, and `lock`. `lock` contains
+`distinct_models`, `date_range`, `missing_files`, `settled_missing_files`,
+`unsettled_missing_files`, and `lock`. `lock` contains
 the persistent lock `path`, `exists`, `held`, `stale`, `owner_known`,
 `released`, nullable `pid`, nullable `started`, and nullable `pid_alive`. A
 stale lock is safe to reclaim by retrying tokenomnom after confirming the
@@ -154,9 +155,12 @@ no longer present. It is a usage-store denominator, not a history-index count.
 last explicit deep verification. Routine doctor output does not hash the
 transcript corpus; run `vault status` to refresh reclaimability.
 
-When `data.store.missing_files` is nonzero, doctor warns that retained usage is
-unchanged and raw transcript availability depends on vault coverage. A missing
-optional provider root alone does not produce that warning.
+When `data.store.unsettled_missing_files` is nonzero, doctor warns that retained
+usage is unchanged and raw transcript availability depends on vault coverage. A
+missing optional provider root alone does not produce that warning. The total
+`missing_files` count remains visible in doctor after acknowledgement; use
+`tokenomnom sync --settle-missing --format json` only when the source files are
+permanently gone. Settlement is idempotent and a later successful sync clears it.
 
 `data.schedule` contains `installed`, `definition_exists`, `mechanism`, `unit_path`, optional `task_name`, `binary_path`,
 `binary_exists`, `configured_interval`, nullable `installed_interval`,
@@ -710,10 +714,11 @@ contains the effective `discovery`, `sync`, `reports`, `backup`, `vault`,
 
 ## Sync
 
-`tokenomnom sync --format json`
+`tokenomnom sync [--settle-missing] --format json`
 
 `data` contains `files_scanned`, `files_skipped`, `files_appended`,
-`files_rewritten`, `files_missing`, `events_applied`, `usage_rows`,
+`files_rewritten`, `files_missing`, `settled_missing_files`,
+`unsettled_missing_files`, `events_applied`, `usage_rows`,
 `unknown_model_tokens`, `unclassified_cache_write_tokens`, `full_reingest`, and
 `duration_ms`, `scheduled`, `skipped`, optional `skip_reason`, and optional
 `auto_vault`, and optional scheduled `auto_history`. Auto-vault data contains

@@ -67,7 +67,7 @@ func TestOpenMigratesSchemaV1ToCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer migrated.Close()
-	if got, err := migrated.Meta("schema_version"); err != nil || got != "3" {
+	if got, err := migrated.Meta("schema_version"); err != nil || got != "4" {
 		t.Fatalf("schema version = %q, %v", got, err)
 	}
 	if files, err := migrated.VaultFiles(); err != nil || len(files) != 0 {
@@ -207,7 +207,7 @@ func TestOpenReadOnlyDoesNotCreateOrMigrate(t *testing.T) {
 	if err := readOnly.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if info.SchemaVersion != 3 {
+	if info.SchemaVersion != 4 {
 		t.Fatalf("read-only schema version = %d", info.SchemaVersion)
 	}
 }

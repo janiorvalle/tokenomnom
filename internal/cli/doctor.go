@@ -124,17 +124,19 @@ type jsonDoctorProvider struct {
 }
 
 type jsonDoctorStore struct {
-	Path           string         `json:"path"`
-	Exists         bool           `json:"exists"`
-	SizeBytes      int64          `json:"size_bytes"`
-	SchemaVersion  *int           `json:"schema_version"`
-	Timezone       *string        `json:"timezone"`
-	LastSync       *string        `json:"last_sync"`
-	UsageRows      int            `json:"usage_rows"`
-	DistinctModels int            `json:"distinct_models"`
-	DateRange      jsonDateRange  `json:"date_range"`
-	MissingFiles   int            `json:"missing_files"`
-	Lock           jsonDoctorLock `json:"lock"`
+	Path                  string         `json:"path"`
+	Exists                bool           `json:"exists"`
+	SizeBytes             int64          `json:"size_bytes"`
+	SchemaVersion         *int           `json:"schema_version"`
+	Timezone              *string        `json:"timezone"`
+	LastSync              *string        `json:"last_sync"`
+	UsageRows             int            `json:"usage_rows"`
+	DistinctModels        int            `json:"distinct_models"`
+	DateRange             jsonDateRange  `json:"date_range"`
+	MissingFiles          int            `json:"missing_files"`
+	SettledMissingFiles   int            `json:"settled_missing_files"`
+	UnsettledMissingFiles int            `json:"unsettled_missing_files"`
+	Lock                  jsonDoctorLock `json:"lock"`
 }
 
 type jsonDoctorLock struct {
@@ -289,7 +291,9 @@ func collectDoctorData(cmd *cobra.Command, roots []discover.Root, databasePath, 
 		data.Store.DistinctModels = info.DistinctModels
 		data.Store.DateRange = jsonDateRange{FirstDate: optionalString(info.OldestDate), LastDate: optionalString(info.NewestDate)}
 		data.Store.MissingFiles = info.MissingFiles
-		if warning := missingFilesWarning(info.MissingFiles); warning != "" {
+		data.Store.SettledMissingFiles = info.SettledMissingFiles
+		data.Store.UnsettledMissingFiles = info.UnsettledMissingFiles
+		if warning := missingFilesWarning(info.UnsettledMissingFiles); warning != "" {
 			warnings = append(warnings, warning)
 		}
 		data.Offer = optionalString(info.SkillOffer)
@@ -651,8 +655,10 @@ func writeStoreReport(cmd *cobra.Command, databasePath string) error {
 	fmt.Fprintf(writer, "  %-17s %d\n", "Distinct models:", info.DistinctModels)
 	fmt.Fprintf(writer, "  %-17s %s\n", "Date range:", dateRange(info.OldestDate, info.NewestDate))
 	fmt.Fprintf(writer, "  %-45s %d\n", "Synced transcript files no longer present:", info.MissingFiles)
+	fmt.Fprintf(writer, "  %-45s %d\n", "Acknowledged missing transcript files:", info.SettledMissingFiles)
+	fmt.Fprintf(writer, "  %-45s %d\n", "Pending missing transcript files:", info.UnsettledMissingFiles)
 	writeStoreLockReport(cmd, lock)
-	if warning := missingFilesWarning(info.MissingFiles); warning != "" {
+	if warning := missingFilesWarning(info.UnsettledMissingFiles); warning != "" {
 		writeWarningLine(cmd, "WARNING: "+warning)
 	}
 	return nil

@@ -152,6 +152,10 @@ as anomalies. Add `--settle-missing` with `--source provider` or `--source all`
 when an indexed provider file is permanently gone. The command reports how
 many source heads were acknowledged; they remain visible in `history status`
 and `doctor`, and a later successful index clears the acknowledgement.
+The usage store has the same explicit acknowledgement path: run
+`tokenomnom sync --settle-missing` only when a synced transcript is permanently
+gone. Its retained usage stays in the totals and doctor keeps the missing-file
+count; a later sync clears the acknowledgement when the file returns.
 Add `--verbose` only when you need the bounded path-and-line details in
 `data.warnings`. Source and integrity failures remain individually listed in
 `data.errors` in either mode.

@@ -147,7 +147,7 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute doctor after sync: %v", err)
 	}
-	for _, fragment := range []string{"Store\n", "Path:             " + filepath.Join(stateDir, "usage.db"), "Exists:           yes", "Schema version:   3", "Timezone:         UTC", "Usage rows:       1", "Distinct models:  1", "Date range:       2026-07-18 to 2026-07-18", "Backups\n", "Enabled:      yes", "Last backup:", "Vault\n", "Format:          v1, none", "Schedule\n", "Mechanism:"} {
+	for _, fragment := range []string{"Store\n", "Path:             " + filepath.Join(stateDir, "usage.db"), "Exists:           yes", "Schema version:   4", "Timezone:         UTC", "Usage rows:       1", "Distinct models:  1", "Date range:       2026-07-18 to 2026-07-18", "Backups\n", "Enabled:      yes", "Last backup:", "Vault\n", "Format:          v1, none", "Schedule\n", "Mechanism:"} {
 		if !strings.Contains(output.String(), fragment) {
 			t.Errorf("doctor output missing %q:\n%s", fragment, output.String())
 		}
@@ -185,6 +185,64 @@ func TestSyncSummaryAndDoctorStoreSection(t *testing.T) {
 	envelope := decodeEnvelope(t, jsonOutput)
 	if !strings.Contains(strings.Join(envelope.Warnings, "\n"), warning) {
 		t.Fatalf("doctor JSON warnings = %#v", envelope.Warnings)
+	}
+
+	output.Reset()
+	cmd = NewRootCommand()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"sync", "--tz", "UTC", "--settle-missing", "--codex-dir", codexDir, "--claude-dir", claudeDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sync settlement: %v", err)
+	}
+	if !strings.Contains(output.String(), "Settled missing:") || !strings.Contains(output.String(), "Pending missing:") {
+		t.Fatalf("sync settlement receipt missing:\n%s", output.String())
+	}
+
+	output.Reset()
+	cmd = NewRootCommand()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"doctor", "--codex-dir", codexDir, "--claude-dir", claudeDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor after settlement: %v", err)
+	}
+	if !strings.Contains(output.String(), "Synced transcript files no longer present:    1") ||
+		!strings.Contains(output.String(), "Acknowledged missing transcript files:        1") ||
+		!strings.Contains(output.String(), "Pending missing transcript files:             0") ||
+		strings.Contains(output.String(), warning) {
+		t.Fatalf("doctor settlement state was not quiet:\n%s", output.String())
+	}
+
+	jsonOutput, err = executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope = decodeEnvelope(t, jsonOutput)
+	var doctorData jsonDoctorData
+	if err := json.Unmarshal(envelope.Data, &doctorData); err != nil {
+		t.Fatal(err)
+	}
+	if doctorData.Store.MissingFiles != 1 || doctorData.Store.SettledMissingFiles != 1 || doctorData.Store.UnsettledMissingFiles != 0 || strings.Contains(strings.Join(envelope.Warnings, "\n"), warning) {
+		t.Fatalf("settled doctor JSON = data=%+v warnings=%#v", doctorData.Store, envelope.Warnings)
+	}
+
+	writeTextFixture(t, filepath.Join(codexDir, "sessions", "one.jsonl"),
+		"{\"timestamp\":\"2026-07-18T09:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-test\"}}\n"+
+			"{\"timestamp\":\"2026-07-18T10:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":5,\"output_tokens\":2},\"last_token_usage\":{\"input_tokens\":5,\"output_tokens\":2}}}}\n")
+	if _, err := executeReport([]string{"sync", "--tz", "UTC", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	jsonOutput, err = executeReport([]string{"doctor", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope = decodeEnvelope(t, jsonOutput)
+	if err := json.Unmarshal(envelope.Data, &doctorData); err != nil {
+		t.Fatal(err)
+	}
+	if doctorData.Store.MissingFiles != 0 || doctorData.Store.SettledMissingFiles != 0 || doctorData.Store.UnsettledMissingFiles != 0 {
+		t.Fatalf("reappeared doctor JSON = %+v", doctorData.Store)
 	}
 }
 
