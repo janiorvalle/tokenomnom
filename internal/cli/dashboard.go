@@ -506,12 +506,15 @@ func loadDashboardDailySessions(cmd *cobra.Command, path string, request tui.Req
 		warnings = append(warnings, "Daily session counts could not be read; press R to retry or run tokenomnom history index.")
 	}
 	unavailable := 0
+	active := 0
 	for _, session := range page.Sessions {
 		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
 		if priceErr != nil {
 			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
 		}
-		if row.AttributionStatus != "complete" && row.AttributionStatus != "settled_missing" {
+		if historySessionCostRowIsActive(row) {
+			active++
+		} else if row.AttributionStatus != "complete" && row.AttributionStatus != "settled_missing" {
 			unavailable++
 		}
 		model := ""
@@ -528,6 +531,9 @@ func loadDashboardDailySessions(cmd *cobra.Command, path string, request tui.Req
 			Cost: row.Tokens.cost, PricedTokens: row.Tokens.PricedTokens, Prompt: row.Preview,
 			PromptCount: row.LogicalPromptCount, AttributionStatus: row.AttributionStatus,
 		})
+	}
+	if active > 0 {
+		warnings = append(warnings, fmt.Sprintf("Cost attribution unavailable for %d active session(s); %s.", active, historyActiveSessionWarning))
 	}
 	if unavailable > 0 {
 		if page.Page.HasMore {
@@ -745,12 +751,15 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 	projectCounts := make(map[string]int)
 	unavailable := 0
 	incomplete := 0
+	active := 0
 	for _, session := range page.Sessions {
 		row, priceErr := priceHistorySessionForWindow(cmd, session, table, codexDir, claudeDir, start, end)
 		if priceErr != nil {
 			row = historySessionCostRow{CatalogSession: session.CatalogSession, AttributionStatus: "unavailable"}
 		}
-		if row.AttributionStatus == "unavailable" {
+		if historySessionCostRowIsActive(row) {
+			active++
+		} else if row.AttributionStatus == "unavailable" {
 			unavailable++
 		}
 		if row.AttributionStatus != "complete" {
@@ -798,6 +807,9 @@ func loadDashboardLedgerSessions(cmd *cobra.Command, path string, data tuipages.
 		data.DaySessionCount = len(data.Sessions)
 	}
 	warnings := uniqueStrings(page.Warnings)
+	if active > 0 {
+		warnings = append(warnings, fmt.Sprintf("Cost attribution unavailable for %d active session(s); %s.", active, historyActiveSessionWarning))
+	}
 	if unavailable > 0 {
 		warnings = append(warnings, fmt.Sprintf("Cost attribution is unavailable for %d of %d sessions.", unavailable, len(data.Sessions)))
 	}
@@ -1629,9 +1641,9 @@ func dashboardSystemPageData(data jsonDoctorData, table pricing.Table, warnings 
 	if data.Store.Exists {
 		storeState = tuipages.FindingOK
 		storeValue = fmt.Sprintf("ready · %d rows · %d models · %s", data.Store.UsageRows, data.Store.DistinctModels, humanBytes(data.Store.SizeBytes))
-		if data.Store.MissingFiles > 0 {
+		if data.Store.UnsettledMissingFiles > 0 {
 			storeState = tuipages.FindingWarning
-			storeValue = fmt.Sprintf("%d missing transcript(s)", data.Store.MissingFiles)
+			storeValue = fmt.Sprintf("%d missing transcript(s)", data.Store.UnsettledMissingFiles)
 		}
 	}
 	findings = append(findings, tuipages.SystemFinding{Name: "Store", Value: storeValue, State: storeState})

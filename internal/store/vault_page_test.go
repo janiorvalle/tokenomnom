@@ -22,7 +22,7 @@ func TestOpenMigratesV2ManifestToV3(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer migrated.Close()
-	if got, err := migrated.Meta("schema_version"); err != nil || got != "3" {
+	if got, err := migrated.Meta("schema_version"); err != nil || got != "4" {
 		t.Fatalf("schema version = %q, %v", got, err)
 	}
 	files, err := migrated.VaultFiles()

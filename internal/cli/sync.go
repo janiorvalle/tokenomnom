@@ -18,6 +18,7 @@ import (
 
 func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 	var full bool
+	var settleMissing bool
 	var scheduled bool
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -76,7 +77,7 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 			}
 			summary, err := syncer.Sync(syncer.Options{
 				Store: database, Roots: roots, Location: location, Timezone: name,
-				TimezoneFingerprint: timezoneFingerprint(location), Full: full, LockHeld: true,
+				TimezoneFingerprint: timezoneFingerprint(location), Full: full, SettleMissing: settleMissing, LockHeld: true,
 			})
 			if err != nil {
 				return fmt.Errorf("sync usage: %w", err)
@@ -134,6 +135,7 @@ func newSyncCommand(codexDir, claudeDir, timezone *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&full, "full", false, "re-ingest all files while retaining vanished history")
+	cmd.Flags().BoolVar(&settleMissing, "settle-missing", false, "acknowledge missing transcript files without hiding them from doctor")
 	cmd.Flags().BoolVar(&scheduled, "scheduled", false, "run as a quiet OS-scheduled maintenance tick")
 	return cmd
 }
@@ -144,6 +146,8 @@ type jsonSyncData struct {
 	FilesAppended                int                `json:"files_appended"`
 	FilesRewritten               int                `json:"files_rewritten"`
 	FilesMissing                 int                `json:"files_missing"`
+	SettledMissingFiles          int                `json:"settled_missing_files"`
+	UnsettledMissingFiles        int                `json:"unsettled_missing_files"`
 	EventsApplied                int                `json:"events_applied"`
 	UsageRows                    int                `json:"usage_rows"`
 	UnknownModelTokens           int64              `json:"unknown_model_tokens"`
@@ -183,6 +187,7 @@ func writeSyncJSON(cmd *cobra.Command, summary syncer.Summary, timezone, backupW
 		FilesScanned: summary.FilesScanned, FilesSkipped: summary.FilesSkipped,
 		FilesAppended: summary.FilesAppended, FilesRewritten: summary.FilesRewritten,
 		FilesMissing: summary.FilesMissing, EventsApplied: summary.EventsApplied,
+		SettledMissingFiles: summary.SettledMissingFiles, UnsettledMissingFiles: summary.UnsettledMissingFiles,
 		UsageRows: summary.UsageRows, UnknownModelTokens: summary.UnknownModelTokens,
 		UnclassifiedCacheWriteTokens: summary.UnclassifiedCacheWriteTokens,
 		FullReingest:                 summary.FullReingest, DurationMS: summary.Duration.Milliseconds(),
@@ -212,6 +217,8 @@ func writeSyncSummary(cmd *cobra.Command, summary syncer.Summary) {
 	fmt.Fprintf(writer, "  %-19s %d\n", "Files appended:", summary.FilesAppended)
 	fmt.Fprintf(writer, "  %-19s %d\n", "Files rewritten:", summary.FilesRewritten)
 	fmt.Fprintf(writer, "  %-19s %d\n", "Files missing:", summary.FilesMissing)
+	fmt.Fprintf(writer, "  %-19s %d\n", "Settled missing:", summary.SettledMissingFiles)
+	fmt.Fprintf(writer, "  %-19s %d\n", "Pending missing:", summary.UnsettledMissingFiles)
 	fmt.Fprintf(writer, "  %-19s %d\n", "Events applied:", summary.EventsApplied)
 	fmt.Fprintf(writer, "  %-19s %d\n", "Usage rows:", summary.UsageRows)
 	fmt.Fprintf(writer, "  %-19s %s\n", "Duration:", summary.Duration.Round(time.Millisecond))

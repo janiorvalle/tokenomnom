@@ -117,6 +117,21 @@ func TestStatusBarWarningFitsTheCockpit(t *testing.T) {
 	}
 }
 
+func TestStatusBarShowsActiveSessionRefreshHint(t *testing.T) {
+	model := loadedTestModel()
+	model.request.Width = 180
+	model.warning = "Cost attribution unavailable for 1 active session(s); session active since last index; refreshes on next index."
+
+	view := model.View()
+	t.Log("\n" + view)
+	if !strings.Contains(view, "session active since last index; refreshes on next index") {
+		t.Fatalf("active session refresh hint missing from status bar:\n%s", view)
+	}
+	if strings.Contains(view, "restore the source or vault snapshot") {
+		t.Fatalf("active session warning still asked for source restoration:\n%s", view)
+	}
+}
+
 func TestQuest110AfterSnapshot(t *testing.T) {
 	model := loadedTestModel()
 	model.syncFresh = true

@@ -31,7 +31,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Set a rate estimate: `tokenomnom pricing set-rate MODEL --input USD_PER_1M --output USD_PER_1M [--cache-read USD_PER_1M] [--cache-write USD_PER_1M] --format json`; clear it with `tokenomnom pricing set-rate MODEL --clear --format json`. Read the mutation receipt in `data` and branch on `data.error.code` for JSON errors.
 - Full data export: `tokenomnom export --format json`; read `data.rows` and the diagnostic token counters.
 - Discovery and store health: `tokenomnom doctor --format json`; read `data.providers`, `data.skills`, and `data.store`.
-- Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`.
+- Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`. Use `--settle-missing` only for transcript files that are permanently gone; read `settled_missing_files` and `unsettled_missing_files` and confirm the total remains visible in doctor.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 - Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets and compact provenance, then retrieve selected evidence with `history show`. Add `--all-occurrences` only when every bounded location is needed.
@@ -65,8 +65,10 @@ Provider, model, and explicit date filters are available on report commands.
   suppresses cost-attribution warnings but keeps the source head visible in
   doctor. A successful re-index clears the settlement.
 - Doctor's `store.missing_files` means synced transcript files no longer
-  present. History's `missing_sources` means indexed source heads whose file is
-  gone; do not compare the counts as if they shared a denominator.
+  present; `settled_missing_files` and `unsettled_missing_files` split that
+  count. History's `missing_sources` means indexed source heads whose file is
+  gone. Settle only permanent loss, and do not compare usage-store counts with
+  history's `missing_sources` as if they shared a denominator.
 
 ## Mining
 

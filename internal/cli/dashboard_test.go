@@ -432,6 +432,39 @@ func TestLoadDashboardLedgerSessionsPricesSelectedDay(t *testing.T) {
 	}
 }
 
+func TestLoadDashboardDailySessionsSoftensActiveTranscriptWarning(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
+	codexDir, claudeDir := filepath.Join(root, "codex"), filepath.Join(root, "claude")
+	sourcePath := filepath.Join(codexDir, "sessions", "daily-active.jsonl")
+	fixture := strings.Join([]string{
+		`{"timestamp":"2026-07-20T12:00:00Z","type":"session_meta","payload":{"id":"daily-active","thread_source":"user","cwd":"/repo"}}`,
+		`{"timestamp":"2026-07-20T12:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}`,
+		`{"timestamp":"2026-07-20T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":30},"last_token_usage":{"input_tokens":100,"output_tokens":30}}}}`,
+		`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still working"}}`,
+	}, "\n") + "\n"
+	writeTextFixture(t, sourcePath, fixture)
+	if _, err := executeReport([]string{"history", "index", "--source", "provider", "--format", "json"}, codexDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = append(content, []byte(`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still working"}}`+"\n")...)
+	if err := os.WriteFile(sourcePath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	data := loadDashboardDailySessions(NewRootCommand(), filepath.Join(stateDir, historystore.DatabaseName), tui.Request{Provider: tui.CodexProvider}, time.UTC, "2026-07-20", codexDir, claudeDir, nil, nil)
+	if !strings.Contains(data.Warning, historyActiveSessionWarning) || strings.Contains(data.Warning, "Restore the source or vault snapshot") {
+		t.Fatalf("daily active-session data = %+v warning=%q", data, data.Warning)
+	}
+}
+
 func TestLoadDashboardLedgerSessionsMissingIndexKeepsDayAndHintState(t *testing.T) {
 	request := tui.Request{Ledger: tuipages.State{ExpandedDay: "2026-07-20"}}
 	data := loadDashboardLedgerSessions(NewRootCommand(), filepath.Join(t.TempDir(), historystore.DatabaseName), tuipages.Data{}, request, time.UTC, "", "")
@@ -769,6 +802,28 @@ func TestDashboardPageDataMapsVaultAndSystemHealth(t *testing.T) {
 	}
 	if len(systemData.Sources) != 1 || systemData.Sources[0].Name != "Codex" || systemData.Sources[0].Files != 2 || systemData.Schedule.Mechanism == "" {
 		t.Fatalf("system source/schedule data = %#v", systemData)
+	}
+	missingWarning := missingFilesWarning(1)
+	pendingStore := dashboardSystemPageData(jsonDoctorData{
+		Store: jsonDoctorStore{Exists: true, MissingFiles: 1, UnsettledMissingFiles: 1},
+	}, table, []string{missingWarning})
+	if pendingStore.Findings[0].State != tuipages.FindingWarning {
+		t.Fatalf("pending usage store finding = %#v", pendingStore.Findings[0])
+	}
+	settledStore := dashboardSystemPageData(jsonDoctorData{
+		Store: jsonDoctorStore{Exists: true, MissingFiles: 1, SettledMissingFiles: 1},
+	}, table, nil)
+	if settledStore.Findings[0].State != tuipages.FindingOK || len(settledStore.Warnings) != 0 {
+		t.Fatalf("settled usage store finding = %#v warnings=%#v", settledStore.Findings[0], settledStore.Warnings)
+	}
+	pendingView := tuipages.RenderSystem(styledRenderContext(136), pendingStore, 136, 20, 0)
+	settledView := tuipages.RenderSystem(styledRenderContext(136), settledStore, 136, 20, 0)
+	t.Log("\n--- System warnings before settlement ---\n" + pendingView + "\n--- System warnings after settlement ---\n" + settledView)
+	if !strings.Contains(pendingView, "1 missing transcript(s)") || !strings.Contains(pendingView, "synced transcript files") {
+		t.Fatalf("pending System frame omitted the missing transcript state:\n%s", pendingView)
+	}
+	if !strings.Contains(settledView, "No warnings.") || strings.Contains(settledView, "synced transcript files") {
+		t.Fatalf("settled System frame still showed a pending warning:\n%s", settledView)
 	}
 }
 

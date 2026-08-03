@@ -22,7 +22,7 @@ import (
 
 const (
 	// SchemaVersion is the current usage database schema.
-	SchemaVersion = 3
+	SchemaVersion = 4
 	// DatabaseName is the filename within tokenomnom's state directory.
 	DatabaseName = "usage.db"
 )
@@ -51,6 +51,7 @@ type Checkpoint struct {
 	TailHash       string
 	ParserState    string
 	Missing        bool
+	SettledMissing bool
 	LastSyncedUnix int64
 }
 
@@ -94,18 +95,20 @@ type VaultFile struct {
 
 // Info summarizes persisted state for doctor and sync output.
 type Info struct {
-	SchemaVersion       int
-	Timezone            string
-	TimezoneFingerprint string
-	PendingTimezone     string
-	PendingFingerprint  string
-	LastSyncUnix        int64
-	UsageRows           int
-	DistinctModels      int
-	OldestDate          string
-	NewestDate          string
-	MissingFiles        int
-	SkillOffer          string
+	SchemaVersion         int
+	Timezone              string
+	TimezoneFingerprint   string
+	PendingTimezone       string
+	PendingFingerprint    string
+	LastSyncUnix          int64
+	UsageRows             int
+	DistinctModels        int
+	OldestDate            string
+	NewestDate            string
+	MissingFiles          int
+	SettledMissingFiles   int
+	UnsettledMissingFiles int
+	SkillOffer            string
 }
 
 // Open creates or opens a usage database and initializes the current schema.
@@ -223,8 +226,16 @@ func (s *Store) initialize() error {
 		Current:  SchemaVersion,
 		FreshSQL: schemaSQL + vaultPaginationIndexesSQL,
 		Steps: map[int]string{
-			2: schemaSQL,
+			2: baseSchemaSQL,
 			3: vaultPaginationIndexesSQL,
+			4: `CREATE TABLE IF NOT EXISTS files (
+  path TEXT PRIMARY KEY, provider TEXT NOT NULL,
+  size INTEGER NOT NULL, mtime_unix INTEGER NOT NULL,
+  byte_offset INTEGER NOT NULL, tail_hash TEXT NOT NULL,
+  parser_state TEXT, missing INTEGER NOT NULL DEFAULT 0,
+  last_synced_unix INTEGER NOT NULL
+);
+ALTER TABLE files ADD COLUMN settled_missing INTEGER NOT NULL DEFAULT 0 CHECK (settled_missing IN (0, 1));`,
 		},
 	})
 }
@@ -574,9 +585,9 @@ func (s *Store) PromoteAlias(aliasPath, ownerPath string, newOwner, oldOwnerAlia
 		if _, err := tx.tx.Exec(`DELETE FROM files WHERE path = ?`, aliasPath); err != nil {
 			return err
 		}
-		if _, err := tx.tx.Exec(`UPDATE files SET path=?, provider=?, size=?, mtime_unix=?, byte_offset=?, tail_hash=?, parser_state=?, missing=?, last_synced_unix=? WHERE path=?`,
+		if _, err := tx.tx.Exec(`UPDATE files SET path=?, provider=?, size=?, mtime_unix=?, byte_offset=?, tail_hash=?, parser_state=?, missing=?, settled_missing=?, last_synced_unix=? WHERE path=?`,
 			newOwner.Path, newOwner.Provider, newOwner.Size, newOwner.ModTimeUnix, newOwner.ByteOffset,
-			newOwner.TailHash, newOwner.ParserState, newOwner.Missing, newOwner.LastSyncedUnix, ownerPath); err != nil {
+			newOwner.TailHash, newOwner.ParserState, newOwner.Missing, newOwner.SettledMissing, newOwner.LastSyncedUnix, ownerPath); err != nil {
 			return err
 		}
 		if err := mergeFileContributions(tx, ownerPath, aliasPath); err != nil {
@@ -597,7 +608,7 @@ func (s *Store) ResetFileContribution(path string) error {
 
 // Checkpoints loads all file checkpoints keyed by absolute path.
 func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
-	rows, err := s.db.Query(`SELECT path, provider, size, mtime_unix, byte_offset, tail_hash, COALESCE(parser_state, ''), missing, last_synced_unix FROM files`)
+	rows, err := s.db.Query(`SELECT path, provider, size, mtime_unix, byte_offset, tail_hash, COALESCE(parser_state, ''), missing, settled_missing, last_synced_unix FROM files`)
 	if err != nil {
 		return nil, fmt.Errorf("query file checkpoints: %w", err)
 	}
@@ -605,7 +616,7 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 	result := make(map[string]Checkpoint)
 	for rows.Next() {
 		var checkpoint Checkpoint
-		if err := rows.Scan(&checkpoint.Path, &checkpoint.Provider, &checkpoint.Size, &checkpoint.ModTimeUnix, &checkpoint.ByteOffset, &checkpoint.TailHash, &checkpoint.ParserState, &checkpoint.Missing, &checkpoint.LastSyncedUnix); err != nil {
+		if err := rows.Scan(&checkpoint.Path, &checkpoint.Provider, &checkpoint.Size, &checkpoint.ModTimeUnix, &checkpoint.ByteOffset, &checkpoint.TailHash, &checkpoint.ParserState, &checkpoint.Missing, &checkpoint.SettledMissing, &checkpoint.LastSyncedUnix); err != nil {
 			return nil, fmt.Errorf("scan file checkpoint: %w", err)
 		}
 		result[checkpoint.Path] = checkpoint
@@ -617,7 +628,7 @@ func (s *Store) Checkpoints() (map[string]Checkpoint, error) {
 // Codex session is moved from the live sessions tree into the archive.
 func (s *Store) MoveFile(oldPath, newPath string) error {
 	return s.Transaction(func(tx *Tx) error {
-		if _, err := tx.tx.Exec(`UPDATE files SET path = ?, missing = 0 WHERE path = ?`, newPath, oldPath); err != nil {
+		if _, err := tx.tx.Exec(`UPDATE files SET path = ?, missing = 0, settled_missing = 0 WHERE path = ?`, newPath, oldPath); err != nil {
 			return fmt.Errorf("move file checkpoint: %w", err)
 		}
 		if _, err := tx.tx.Exec(`UPDATE file_daily SET path = ? WHERE path = ?`, newPath, oldPath); err != nil {
@@ -731,6 +742,26 @@ func (s *Store) MarkMissing(seen map[string]bool) (int, error) {
 	return count, err
 }
 
+// SettleMissingFiles acknowledges missing source files without removing their
+// retained usage or hiding them from doctor. A later successful sync clears
+// the acknowledgement.
+func (s *Store) SettleMissingFiles() (int, error) {
+	settled := 0
+	err := s.Transaction(func(tx *Tx) error {
+		result, err := tx.tx.Exec(`UPDATE files SET settled_missing = 1 WHERE missing = 1 AND settled_missing = 0`)
+		if err != nil {
+			return fmt.Errorf("settle missing usage source files: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count settled usage source files: %w", err)
+		}
+		settled = int(rowsAffected)
+		return nil
+	})
+	return settled, err
+}
+
 // Info returns database diagnostics.
 func (s *Store) Info() (Info, error) {
 	var info Info
@@ -753,7 +784,44 @@ func (s *Store) Info() (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("query store diagnostics: %w", err)
 	}
+	info.UnsettledMissingFiles = info.MissingFiles
+	hasSettledMissing, err := s.hasSettledMissingColumn()
+	if err != nil {
+		return Info{}, err
+	}
+	if !hasSettledMissing {
+		return info, nil
+	}
+	if err := s.db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM files WHERE missing=1 AND settled_missing=1),
+		(SELECT COUNT(*) FROM files WHERE missing=1 AND settled_missing=0)`).Scan(
+		&info.SettledMissingFiles, &info.UnsettledMissingFiles); err != nil {
+		return Info{}, fmt.Errorf("query missing usage source state: %w", err)
+	}
 	return info, nil
+}
+
+func (s *Store) hasSettledMissingColumn() (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(files)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect usage store file schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan usage store file schema: %w", err)
+		}
+		if name == "settled_missing" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read usage store file schema: %w", err)
+	}
+	return false, nil
 }
 
 // UsageRows returns all aggregates in stable key order.
@@ -903,14 +971,14 @@ func (tx *Tx) PutCheckpoint(value Checkpoint) error {
 	if value.ParserState != "" {
 		parserState = value.ParserState
 	}
-	_, err := tx.tx.Exec(`INSERT INTO files(path, provider, size, mtime_unix, byte_offset, tail_hash, parser_state, missing, last_synced_unix)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := tx.tx.Exec(`INSERT INTO files(path, provider, size, mtime_unix, byte_offset, tail_hash, parser_state, missing, settled_missing, last_synced_unix)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET provider=excluded.provider, size=excluded.size,
 		mtime_unix=excluded.mtime_unix, byte_offset=excluded.byte_offset,
 		tail_hash=excluded.tail_hash, parser_state=excluded.parser_state,
-		missing=excluded.missing, last_synced_unix=excluded.last_synced_unix`,
+		missing=excluded.missing, settled_missing=excluded.settled_missing, last_synced_unix=excluded.last_synced_unix`,
 		value.Path, value.Provider, value.Size, value.ModTimeUnix, value.ByteOffset,
-		value.TailHash, parserState, value.Missing, value.LastSyncedUnix)
+		value.TailHash, parserState, value.Missing, value.SettledMissing, value.LastSyncedUnix)
 	return err
 }
 
@@ -956,7 +1024,7 @@ func (tx *Tx) DeleteMeta(key string) error {
 	return err
 }
 
-const schemaSQL = `
+const baseSchemaSQL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY, provider TEXT NOT NULL,
@@ -992,6 +1060,9 @@ CREATE TABLE IF NOT EXISTS vault_files (
   vaulted_at INTEGER NOT NULL, version INTEGER NOT NULL,
   PRIMARY KEY (source_path, version)
 );`
+
+const schemaSQL = baseSchemaSQL + `
+ALTER TABLE files ADD COLUMN settled_missing INTEGER NOT NULL DEFAULT 0 CHECK (settled_missing IN (0, 1));`
 
 const vaultPaginationIndexesSQL = `
 CREATE INDEX IF NOT EXISTS vault_files_provider_last_ts ON vault_files(provider, last_ts, source_path, version);

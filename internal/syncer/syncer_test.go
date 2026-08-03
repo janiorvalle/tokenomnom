@@ -229,6 +229,59 @@ func TestDeletionRetainsUsageAndIdenticalReappearanceSkips(t *testing.T) {
 	}
 }
 
+func TestSettledMissingFilesStopPendingWarningAndClearOnReappearance(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("settle-missing.jsonl")
+	contents := codexModel("settled") + codexUsage("2026-07-18T10:00:00Z", 6, 2)
+	modTime := env.tick()
+	write(t, path, contents, modTime)
+	env.sync(t, false, time.UTC, "UTC")
+	checkpointPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := env.sync(t, false, time.UTC, "UTC")
+	if pending.FilesMissing != 1 || pending.SettledMissingFiles != 0 || pending.UnsettledMissingFiles != 1 {
+		t.Fatalf("pending missing summary = %+v", pending)
+	}
+
+	settled := env.syncSettled(t, false, time.UTC, "UTC")
+	if settled.FilesMissing != 1 || settled.SettledMissingFiles != 1 || settled.UnsettledMissingFiles != 0 {
+		t.Fatalf("settled missing summary = %+v", settled)
+	}
+	info, err := env.database.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MissingFiles != 1 || info.SettledMissingFiles != 1 || info.UnsettledMissingFiles != 0 {
+		t.Fatalf("settled missing info = %+v", info)
+	}
+	checkpoints, err := env.database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checkpoints[checkpointPath].SettledMissing {
+		t.Fatalf("settled checkpoint = %+v", checkpoints[checkpointPath])
+	}
+
+	write(t, path, contents, modTime)
+	reappeared := env.sync(t, false, time.UTC, "UTC")
+	if reappeared.UnsettledMissingFiles != 0 {
+		t.Fatalf("reappeared summary = %+v", reappeared)
+	}
+	info, err = env.database.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MissingFiles != 0 || info.SettledMissingFiles != 0 || info.UnsettledMissingFiles != 0 {
+		t.Fatalf("reappeared info = %+v", info)
+	}
+}
+
 func TestCodexArchiveMoveTransfersContributionOwnership(t *testing.T) {
 	env := newEnvironment(t)
 	livePath := env.codexPath("archived.jsonl")
@@ -1090,6 +1143,22 @@ func (e *environment) tick() time.Time {
 
 func (e *environment) sync(t *testing.T, full bool, location *time.Location, timezone string) syncer.Summary {
 	return e.syncFingerprint(t, full, location, timezone, timezone)
+}
+
+func (e *environment) syncSettled(t *testing.T, full bool, location *time.Location, timezone string) syncer.Summary {
+	t.Helper()
+	summary, err := syncer.Sync(syncer.Options{
+		Store: e.database,
+		Roots: []discover.Root{
+			{Provider: discover.ProviderCodex, Path: filepath.Join(e.root, "codex")},
+			{Provider: discover.ProviderClaude, Path: filepath.Join(e.root, "claude")},
+		},
+		Location: location, Timezone: timezone, TimezoneFingerprint: timezone, Full: full, SettleMissing: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return summary
 }
 
 func (e *environment) syncFingerprint(t *testing.T, full bool, location *time.Location, timezone, fingerprint string) syncer.Summary {
