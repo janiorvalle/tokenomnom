@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -175,8 +176,18 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 	var dailyCounts dashboardDailyCountsCache
 	var dailyPageSessions dashboardDailySessionCache
 	var pageCache dashboardPageCache
+	var historyCache dashboardHistoryCache
 
 	return func(request tui.Request) (tui.Snapshot, error) {
+		refreshHistory := request.Sync || request.RefreshPages
+		historyGeneration := historyCache.begin(refreshHistory)
+		if refreshHistory {
+			sessions.clear()
+			dailyCounts.clear()
+			dailyPageSessions.clear()
+		}
+		timing := newDashboardTiming()
+		defer timing.emit(request)
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return tui.Snapshot{}, fmt.Errorf("find user home directory: %w", err)
@@ -192,6 +203,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}
 		var database *store.Store
 		var release func()
+		finish := timing.section("usage_store_open")
 		if request.Initial && !request.Sync {
 			// Existing usage is safe to read while a sync owns the writer
 			// lock. A missing or uninitialized store is handed to the writer
@@ -217,6 +229,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			}
 			database, err = openUsageStore(cmd, databasePath)
 		}
+		finish()
 		if err != nil {
 			if release != nil {
 				release()
@@ -228,8 +241,12 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		}
 		defer database.Close()
 		if request.Initial && !request.Sync {
-			modelSessions := loadDashboardModelSessionData(filepath.Join(stateDir, historystore.DatabaseName), request)
-			snapshot, err := dashboardSnapshotWithModelSessions(database, request, render, location, syncer.Summary{}, modelSessions)
+			finish = timing.section("model_sessions")
+			modelSessions := historyCache.modelSessions(filepath.Join(stateDir, historystore.DatabaseName), request, historyGeneration)
+			finish()
+			finish = timing.section("dashboard_snapshot")
+			snapshot, err := dashboardSnapshotWithDailySessionsAndModelSessionsTimed(database, request, render, location, syncer.Summary{}, nil, modelSessions, timing)
+			finish()
 			if err != nil {
 				return tui.Snapshot{}, err
 			}
@@ -245,6 +262,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		var syncSummary syncer.Summary
 		var backupWarning string
 		if request.Sync {
+			finish = timing.section("sync_and_maintenance")
 			syncSummary, err = syncer.Sync(syncer.Options{
 				Store: database, Roots: roots, Location: location, Timezone: timezoneName,
 				TimezoneFingerprint: timezoneFingerprint(location), Full: request.FullSync, LockHeld: true,
@@ -263,8 +281,6 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			if err != nil {
 				return tui.Snapshot{}, fmt.Errorf("sync usage: %w", err)
 			}
-			dailyCounts.clear()
-			dailyPageSessions.clear()
 			if err := runDueBackup(cmd, database); err != nil {
 				backupWarning = fmt.Sprintf("backup usage: %v", err)
 			}
@@ -279,6 +295,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 				}
 				backupWarning += strings.Join(maintenance, "; ")
 			}
+			finish()
 		}
 		var actionStatus, actionWarning string
 		if request.Action == tui.VerifyVaultAction {
@@ -288,19 +305,29 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 				return tui.Snapshot{}, err
 			}
 		}
-		modelSessions := loadDashboardModelSessionData(filepath.Join(stateDir, historystore.DatabaseName), request)
-		snapshot, err := dashboardSnapshotWithDailySessionsAndModelSessions(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
+		finish = timing.section("model_sessions")
+		modelSessions := historyCache.modelSessions(filepath.Join(stateDir, historystore.DatabaseName), request, historyGeneration)
+		finish()
+		finish = timing.section("dashboard_snapshot")
+		snapshot, err := dashboardSnapshotWithDailySessionsAndModelSessionsTimed(database, request, render, location, syncSummary, func(date string) tuipages.DailySessionData {
 			return loadDashboardDailySessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, date, codexDir, claudeDir, &dailyCounts, &dailyPageSessions)
-		}, modelSessions)
-		snapshot.Ledger = loadDashboardLedgerHistory(filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location)
-		snapshot.Sessions = sessions.snapshot(request, func() tuipages.SessionPageData {
+		}, modelSessions, timing)
+		finish()
+		finish = timing.section("ledger_history")
+		snapshot.Ledger = loadDashboardLedgerHistoryCached(filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location, &historyCache, historyGeneration, timing)
+		finish()
+		finish = timing.section("history_sessions")
+		snapshot.Sessions = sessions.snapshotAt(request, location, func() tuipages.SessionPageData {
 			return loadDashboardHistoryWithCost(cmd, filepath.Join(stateDir, historystore.DatabaseName), request, location, codexDir, claudeDir)
 		})
+		finish()
 		for _, project := range snapshot.Sessions.ProjectStats {
 			snapshot.Rail.Projects = append(snapshot.Rail.Projects, tui.RailProject{Label: project.Label, Share: project.Share})
 		}
 		if request.Ledger.ExpandedDay != "" {
+			finish = timing.section("ledger_sessions")
 			snapshot.Ledger = loadDashboardLedgerSessions(cmd, filepath.Join(stateDir, historystore.DatabaseName), snapshot.Ledger, request, location, codexDir, claudeDir)
+			finish()
 		}
 		warnings := []string{}
 		if backupWarning != "" {
@@ -316,6 +343,7 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		if err != nil {
 			return snapshot, err
 		}
+		finish = timing.section("ambient_status")
 		snapshot.StatusBar, snapshot.FilesScanned = ambient.snapshot(request, func() (tui.StatusBar, int) {
 			filesScanned := syncSummary.FilesScanned
 			if !request.Sync {
@@ -323,6 +351,8 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 			}
 			return dashboardStatusBar(cmd, database, stateDir, home, roots), filesScanned
 		})
+		finish()
+		finish = timing.section("page_data")
 		pageCache.Lock()
 		if request.RefreshPages || request.Action != "" || !pageCache.loaded {
 			pageCache.vault, pageCache.system = dashboardPageData(cmd, roots, databasePath, timezone)
@@ -332,8 +362,138 @@ func newDashboardLoader(cmd *cobra.Command, codexDir, claudeDir, timezone string
 		pageCache.Unlock()
 		snapshot.ActionStatus = actionStatus
 		snapshot.ActionWarning = actionWarning
+		finish()
 		return snapshot, err
 	}
+}
+
+type dashboardTiming struct {
+	started  time.Time
+	mu       sync.Mutex
+	sections map[string]time.Duration
+}
+
+type dashboardTimingReceipt struct {
+	Event      string           `json:"event"`
+	Provider   string           `json:"provider"`
+	Range      string           `json:"range"`
+	TotalUS    int64            `json:"total_us"`
+	SectionsUS map[string]int64 `json:"sections_us"`
+}
+
+func newDashboardTiming() *dashboardTiming {
+	if os.Getenv("TOKENOMNOM_DASHBOARD_TIMINGS") == "" {
+		return nil
+	}
+	return &dashboardTiming{started: time.Now(), sections: make(map[string]time.Duration)}
+}
+
+func (timing *dashboardTiming) section(name string) func() {
+	if timing == nil {
+		return func() {}
+	}
+	started := time.Now()
+	return func() {
+		timing.mu.Lock()
+		timing.sections[name] += time.Since(started)
+		timing.mu.Unlock()
+	}
+}
+
+func (timing *dashboardTiming) emit(request tui.Request) {
+	if timing == nil {
+		return
+	}
+	timing.mu.Lock()
+	sections := make(map[string]int64, len(timing.sections))
+	for name, duration := range timing.sections {
+		sections[name] = duration.Microseconds()
+	}
+	timing.mu.Unlock()
+	_ = json.NewEncoder(os.Stderr).Encode(dashboardTimingReceipt{
+		Event: "dashboard_load", Provider: request.Provider.String(), Range: request.Range.String(),
+		TotalUS: time.Since(timing.started).Microseconds(), SectionsUS: sections,
+	})
+}
+
+func timedDashboardValue[T any](timing *dashboardTiming, name string, load func() (T, error)) (T, error) {
+	finish := timing.section(name)
+	defer finish()
+	return load()
+}
+
+type dashboardHistoryCache struct {
+	mu              sync.Mutex
+	generation      uint64
+	models          map[dashboardModelSessionCacheKey]dashboardModelSessionData
+	ledgerAnalytics map[dashboardLedgerAnalyticsCacheKey]dashboardLedgerAnalyticsCacheValue
+}
+
+type dashboardModelSessionCacheKey struct {
+	provider   tui.Provider
+	generation uint64
+}
+
+type dashboardLedgerAnalyticsCacheKey struct {
+	provider   tui.Provider
+	since      string
+	until      string
+	zone       string
+	generation uint64
+}
+
+type dashboardLedgerAnalyticsCacheValue struct {
+	profile historystore.LedgerAnalytics
+	counts  historystore.LedgerAnalytics
+}
+
+func (cache *dashboardHistoryCache) begin(refresh bool) uint64 {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if refresh {
+		cache.generation++
+		cache.models = nil
+		cache.ledgerAnalytics = nil
+	}
+	return cache.generation
+}
+
+func (cache *dashboardHistoryCache) modelSessions(path string, request tui.Request, generation uint64) dashboardModelSessionData {
+	key := dashboardModelSessionCacheKey{provider: request.Provider, generation: generation}
+	cache.mu.Lock()
+	if value, ok := cache.models[key]; ok {
+		cache.mu.Unlock()
+		return value
+	}
+	cache.mu.Unlock()
+
+	value := loadDashboardModelSessionData(path, request)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.models == nil {
+		cache.models = make(map[dashboardModelSessionCacheKey]dashboardModelSessionData)
+	}
+	if cached, ok := cache.models[key]; ok {
+		return cached
+	}
+	cache.models[key] = value
+	return value
+}
+
+func (cache *dashboardHistoryCache) ledger(key dashboardLedgerAnalyticsCacheKey) (dashboardLedgerAnalyticsCacheValue, bool) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	value, ok := cache.ledgerAnalytics[key]
+	return value, ok
+}
+
+func (cache *dashboardHistoryCache) setLedger(key dashboardLedgerAnalyticsCacheKey, value dashboardLedgerAnalyticsCacheValue) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.ledgerAnalytics == nil {
+		cache.ledgerAnalytics = make(map[dashboardLedgerAnalyticsCacheKey]dashboardLedgerAnalyticsCacheValue)
+	}
+	cache.ledgerAnalytics[key] = value
 }
 
 func dashboardPendingStatusBar() tui.StatusBar {
@@ -935,6 +1095,24 @@ func dashboardLedgerDayProjects(counts map[string]int, total int) []tuipages.Led
 }
 
 func loadDashboardLedgerHistory(path string, data tuipages.Data, request tui.Request, location *time.Location) tuipages.Data {
+	return loadDashboardLedgerHistoryTimed(path, data, request, location, nil)
+}
+
+func loadDashboardLedgerHistoryTimed(path string, data tuipages.Data, request tui.Request, location *time.Location, timing *dashboardTiming) tuipages.Data {
+	return loadDashboardLedgerHistoryCached(path, data, request, location, nil, 0, timing)
+}
+
+func loadDashboardLedgerHistoryCached(path string, data tuipages.Data, request tui.Request, location *time.Location, cache *dashboardHistoryCache, generation uint64, timing *dashboardTiming) tuipages.Data {
+	since, until := ledgerHistoryWindow(data, request.Ledger, location)
+	cacheKey := dashboardLedgerAnalyticsCacheKey{
+		provider: request.Provider, since: dashboardDailyCacheTime(since), until: dashboardDailyCacheTime(until),
+		zone: dashboardLocationKey(location), generation: generation,
+	}
+	if cache != nil {
+		if value, ok := cache.ledger(cacheKey); ok {
+			return applyDashboardLedgerHistory(data, value.profile, value.counts)
+		}
+	}
 	info, err := historystore.Inspect(path)
 	if err != nil || !info.Exists {
 		return data
@@ -945,16 +1123,30 @@ func loadDashboardLedgerHistory(path string, data tuipages.Data, request tui.Req
 		return data
 	}
 	defer database.Close()
-	since, until := ledgerHistoryWindow(data, request.Ledger, location)
 	baseQuery := historystore.CatalogQuery{Provider: historyProvider(request.Provider), Source: historystore.CatalogSourceAny}
 	profileQuery := baseQuery
 	profileQuery.Since, profileQuery.Until = since, until
-	profile, counts, err := database.LedgerAnalyticsWithCounts(profileQuery, baseQuery, location)
+	analytics, err := timedDashboardValue(timing, "history.ledger_analytics", func() (struct {
+		profile historystore.LedgerAnalytics
+		counts  historystore.LedgerAnalytics
+	}, error) {
+		profile, counts, err := database.LedgerAnalyticsWithCounts(profileQuery, baseQuery, location)
+		return struct {
+			profile historystore.LedgerAnalytics
+			counts  historystore.LedgerAnalytics
+		}{profile: profile, counts: counts}, err
+	})
 	if err != nil {
 		data.Analytics.Warning = "Ledger history profiles could not be read; press R to retry or run tokenomnom history index."
 		return data
 	}
+	if cache != nil {
+		cache.setLedger(cacheKey, dashboardLedgerAnalyticsCacheValue{profile: analytics.profile, counts: analytics.counts})
+	}
+	return applyDashboardLedgerHistory(data, analytics.profile, analytics.counts)
+}
 
+func applyDashboardLedgerHistory(data tuipages.Data, profile, counts historystore.LedgerAnalytics) tuipages.Data {
 	monthSessions := make(map[string]int, len(counts.Months))
 	for _, month := range counts.Months {
 		monthSessions[month.Month] = month.Sessions
@@ -1141,7 +1333,7 @@ type dashboardAmbientCache struct {
 func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func() (tui.StatusBar, int)) (tui.StatusBar, int) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.initialized && !request.Sync {
+	if cache.initialized && !request.Sync && !request.RefreshPages {
 		return cache.status, cache.filesScanned
 	}
 	cache.status, cache.filesScanned = refresh()
@@ -1150,13 +1342,22 @@ func (cache *dashboardAmbientCache) snapshot(request tui.Request, refresh func()
 }
 
 // dashboardSessionCache keeps history I/O out of loads that only change a
-// report page or a selection. Sync is a refresh boundary: it bypasses the
-// cached query and replaces it so the next keypress sees freshly indexed data.
+// report page or a selection. It retains a small set of query variants so
+// cycling provider and range can reuse pages already loaded in this session.
+// Sync is a refresh boundary: it discards every variant before reading again.
 type dashboardSessionCache struct {
-	mu          sync.Mutex
-	key         dashboardSessionCacheKey
-	data        tuipages.SessionPageData
-	initialized bool
+	mu     sync.Mutex
+	values map[dashboardSessionCacheKey]tuipages.SessionPageData
+	order  []dashboardSessionCacheKey
+}
+
+const dashboardSessionCacheLimit = 16
+
+func (cache *dashboardSessionCache) clear() {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.values = nil
+	cache.order = nil
 }
 
 type dashboardDailyCountsCache struct {
@@ -1256,9 +1457,16 @@ func dashboardDailyCacheTime(value *time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+func dashboardLocationKey(location *time.Location) string {
+	if location == nil {
+		return time.Local.String()
+	}
+	return location.String()
+}
+
 // dashboardHistorySearchCache keeps repeated page visits from reopening the
-// history index. Sync is the refresh boundary so a search can still see newly
-// indexed prompts after an explicit refresh.
+// history index. Sync and page refreshes are boundaries so a search can still
+// see newly indexed prompts after an explicit refresh.
 type dashboardHistorySearchCache struct {
 	mu          sync.Mutex
 	key         dashboardHistorySearchCacheKey
@@ -1304,7 +1512,7 @@ func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh 
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.initialized && !request.Sync && cache.key == key {
+	if cache.initialized && !request.Sync && !request.RefreshPages && cache.key == key {
 		return cache.data, cache.err
 	}
 	data, err := refresh()
@@ -1322,6 +1530,11 @@ func (cache *dashboardHistorySearchCache) snapshot(request tui.Request, refresh 
 type dashboardSessionCacheKey struct {
 	provider        tui.Provider
 	dateRange       tui.Range
+	historySince    string
+	historyUntil    string
+	projectSince    string
+	projectUntil    string
+	zone            string
 	project         string
 	projectActive   bool
 	cursor          string
@@ -1333,9 +1546,21 @@ type dashboardSessionCacheKey struct {
 }
 
 func (cache *dashboardSessionCache) snapshot(request tui.Request, refresh func() tuipages.SessionPageData) tuipages.SessionPageData {
+	return cache.snapshotAt(request, time.Local, refresh)
+}
+
+func (cache *dashboardSessionCache) snapshotAt(request tui.Request, location *time.Location, refresh func() tuipages.SessionPageData) tuipages.SessionPageData {
+	now := time.Now()
+	since, until := dashboardHistoryWindow(request.Range, location, now)
+	projectSince, projectUntil := dashboardHistoryWindow(tui.Range30Days, location, now)
 	key := dashboardSessionCacheKey{
 		provider:        request.Provider,
 		dateRange:       request.Range,
+		historySince:    dashboardDailyCacheTime(since),
+		historyUntil:    dashboardDailyCacheTime(until),
+		projectSince:    dashboardDailyCacheTime(projectSince),
+		projectUntil:    dashboardDailyCacheTime(projectUntil),
+		zone:            dashboardLocationKey(location),
 		project:         request.SessionProject,
 		projectActive:   request.SessionProjectActive,
 		cursor:          request.SessionCursor,
@@ -1347,13 +1572,29 @@ func (cache *dashboardSessionCache) snapshot(request tui.Request, refresh func()
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.initialized && !request.Sync && cache.key == key {
-		return cache.data
+	if !request.Sync && !request.RefreshPages {
+		if data, ok := cache.values[key]; ok {
+			return data
+		}
 	}
-	cache.data = refresh()
-	cache.key = key
-	cache.initialized = true
-	return cache.data
+	data := refresh()
+	if request.Sync || request.RefreshPages {
+		cache.values = nil
+		cache.order = nil
+	}
+	if cache.values == nil {
+		cache.values = make(map[dashboardSessionCacheKey]tuipages.SessionPageData)
+	}
+	if _, exists := cache.values[key]; !exists {
+		if len(cache.order) >= dashboardSessionCacheLimit {
+			oldest := cache.order[0]
+			cache.order = cache.order[1:]
+			delete(cache.values, oldest)
+		}
+		cache.order = append(cache.order, key)
+	}
+	cache.values[key] = data
+	return data
 }
 
 func countDashboardFiles(roots []discover.Root) int {
@@ -1792,13 +2033,19 @@ func dashboardSnapshotWithModelSessions(database *store.Store, request tui.Reque
 }
 
 func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, loadDailySessions func(string) tuipages.DailySessionData, modelSessions dashboardModelSessionData) (tui.Snapshot, error) {
-	info, err := database.Info()
+	return dashboardSnapshotWithDailySessionsAndModelSessionsTimed(database, request, render, location, syncSummary, loadDailySessions, modelSessions, nil)
+}
+
+func dashboardSnapshotWithDailySessionsAndModelSessionsTimed(database *store.Store, request tui.Request, render theme.Context, location *time.Location, syncSummary syncer.Summary, loadDailySessions func(string) tuipages.DailySessionData, modelSessions dashboardModelSessionData, timing *dashboardTiming) (tui.Snapshot, error) {
+	info, err := timedDashboardValue(timing, "snapshot.info", database.Info)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
 	now := time.Now().In(location)
 	filter := dashboardFilter(request, now)
-	totals, err := database.Totals(filter)
+	totals, err := timedDashboardValue(timing, "snapshot.totals", func() (store.TotalsResult, error) {
+		return database.Totals(filter)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1806,24 +2053,32 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 	// Models is an explicitly all-time attribution view; the page labels that scope.
 	modelFilter.Since = ""
 	modelFilter.Until = ""
-	models, err := database.ByModel(modelFilter)
+	models, err := timedDashboardValue(timing, "snapshot.models", func() ([]store.ModelRow, error) {
+		return database.ByModel(modelFilter)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	pricingTable, err := loadPricingTable()
+	pricingTable, err := timedDashboardValue(timing, "snapshot.pricing", loadPricingTable)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	costs, err := loadReportCostsWithTable(database, filter, nil, pricingTable)
+	costs, err := timedDashboardValue(timing, "snapshot.costs", func() (reportCosts, error) {
+		return loadReportCostsWithTable(database, filter, nil, pricingTable)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
-	modelUsage, err := database.FilteredUsageRows(modelFilter)
+	modelUsage, err := timedDashboardValue(timing, "snapshot.model_usage", func() ([]store.Usage, error) {
+		return database.FilteredUsageRows(modelFilter)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
 	modelCosts := calculateReportCosts(pricingTable, modelUsage)
-	dailyRows, err := database.Daily(filter)
+	dailyRows, err := timedDashboardValue(timing, "snapshot.daily", func() ([]store.DailyRow, error) {
+		return database.Daily(filter)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1832,11 +2087,15 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 		railRequest := request
 		railRequest.Range = tui.Range30Days
 		railFilter := dashboardFilter(railRequest, now)
-		railRows, err = database.Daily(railFilter)
+		railRows, err = timedDashboardValue(timing, "snapshot.rail_daily", func() ([]store.DailyRow, error) {
+			return database.Daily(railFilter)
+		})
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
-		railCosts, err = loadReportCostsWithTable(database, railFilter, nil, pricingTable)
+		railCosts, err = timedDashboardValue(timing, "snapshot.rail_costs", func() (reportCosts, error) {
+			return loadReportCostsWithTable(database, railFilter, nil, pricingTable)
+		})
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -1845,7 +2104,9 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 	ledgerFilter := filter
 	ledgerFilter.Since = ""
 	ledgerFilter.Until = ""
-	ledgerCosts, err := loadReportCosts(database, ledgerFilter, nil)
+	ledgerCosts, err := timedDashboardValue(timing, "snapshot.ledger_costs", func() (reportCosts, error) {
+		return loadReportCosts(database, ledgerFilter, nil)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1858,7 +2119,9 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 	}
 	snapshot.Summary = dashboardSummary(totals, costs)
 	snapshot.Rail = dashboardRailData(railRows, railCosts, now)
-	dailyView, err := dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render, loadDailySessions)
+	dailyView, err := timedDashboardValue(timing, "snapshot.daily_view", func() (dashboardDailyViewResult, error) {
+		return dashboardDailyView(database, dailyRows, filter, costs, pricingTable, request, render, loadDailySessions)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -1866,13 +2129,17 @@ func dashboardSnapshotWithDailySessionsAndModelSessions(database *store.Store, r
 	snapshot.DailyWindowStart = dailyView.windowStart
 	snapshot.DailyDetailOffset = dailyView.detailOffset
 	snapshot.DailyDetailMaxOffset = dailyView.detailMaxOffset
-	snapshot.Ledger, err = dashboardLedgerData(database, ledgerFilter, ledgerCosts, request)
+	snapshot.Ledger, err = timedDashboardValue(timing, "snapshot.ledger_data", func() (tuipages.Data, error) {
+		return dashboardLedgerData(database, ledgerFilter, ledgerCosts, request)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
 	snapshot.Ledger.Location = location
 	snapshot.Views[tui.ModelsTab] = dashboardModelsView(models, modelCosts, modelUsage, pricingTable, request, dateOnly(now).Format(heatmapDateLayout), modelSessions, render)
-	snapshot.Views[tui.HeatmapTab], err = dashboardHeatmapView(database, filter, request, render, location)
+	snapshot.Views[tui.HeatmapTab], err = timedDashboardValue(timing, "snapshot.heatmap", func() (string, error) {
+		return dashboardHeatmapView(database, filter, request, render, location)
+	})
 	if err != nil {
 		return tui.Snapshot{}, err
 	}

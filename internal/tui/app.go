@@ -966,6 +966,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if quitAfterCommand {
 			return m, tea.Quit
 		}
+		if msg.command.id == CommandHistoryIndexID {
+			request := m.request
+			request.RefreshPages = true
+			m.request = request
+			updated, refresh := m.loadDashboardAndActivePage(request)
+			return updated, refresh
+		}
 		return m, m.resumePendingWork()
 	case tea.KeyMsg:
 		if m.offerState != skillOfferHidden {

@@ -81,8 +81,7 @@ func (s *Store) LedgerAnalyticsWithCounts(profileQuery, countsQuery CatalogQuery
 		COALESCE(NULLIF(s.first_ts,''), NULLIF(s.last_ts,''), ''), s.project,
 		CASE WHEN `+profileCondition+` THEN 1 ELSE 0 END,
 		CASE WHEN `+countsCondition+` THEN 1 ELSE 0 END
-		FROM sessions s WHERE (`+profileCondition+") OR ("+countsCondition+")"+
-		` ORDER BY s.project, s.first_ts, s.last_ts`, args...)
+		FROM sessions s WHERE (`+profileCondition+`) OR (`+countsCondition+`)`, args...)
 	if err != nil {
 		return LedgerAnalytics{}, LedgerAnalytics{}, fmt.Errorf("read ledger history profile: %w", err)
 	}

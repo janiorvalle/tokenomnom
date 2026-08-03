@@ -961,6 +961,64 @@ func TestAdditionalPageOwnsAsyncLoads(t *testing.T) {
 	}
 }
 
+func TestHistoryIndexCompletionRefreshesDashboardAndActivePage(t *testing.T) {
+	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
+	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)
+	model.request.Width, model.request.Height = 100, 30
+	model.request.RefreshPages = false
+	model.router.Select(page.id)
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
+
+	updated, command := model.Update(commandFinishedMsg{
+		command: paletteCommand{id: CommandHistoryIndexID, title: "History index"},
+		result:  CommandResult{Output: "indexed"},
+	})
+	model = updated.(Model)
+	if command == nil || !model.dashboardLoadBusy || !model.request.RefreshPages {
+		t.Fatalf("history index did not schedule a refresh: command=%v busy=%v request=%+v", command != nil, model.dashboardLoadBusy, model.request)
+	}
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("history index refresh commands = %T %v, want dashboard and page loads", message, batch)
+	}
+	for _, refreshCommand := range batch {
+		loadedMessage := refreshCommand()
+		switch value := loadedMessage.(type) {
+		case loadedMsg:
+			if !value.request.RefreshPages {
+				t.Fatalf("dashboard refresh lost RefreshPages: %+v", value.request)
+			}
+		case pageLoadedMsg:
+			if !value.request.RefreshPages {
+				t.Fatalf("active page refresh lost RefreshPages: %+v", value.request)
+			}
+		default:
+			t.Fatalf("history index refresh returned %T", loadedMessage)
+		}
+	}
+}
+
+func TestHistoryIndexCompletionRefreshesBuiltInDashboardPage(t *testing.T) {
+	model := loadedTestModel()
+	model.request.RefreshPages = false
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
+
+	updated, command := model.Update(commandFinishedMsg{
+		command: paletteCommand{id: CommandHistoryIndexID, title: "History index"},
+		result:  CommandResult{Output: "indexed"},
+	})
+	model = updated.(Model)
+	if command == nil || !model.dashboardLoadBusy || !model.request.RefreshPages {
+		t.Fatalf("built-in history index refresh was not retained: command=%v busy=%v request=%+v", command != nil, model.dashboardLoadBusy, model.request)
+	}
+	message := command()
+	loaded, ok := message.(loadedMsg)
+	if !ok || !loaded.request.RefreshPages {
+		t.Fatalf("built-in dashboard refresh request = %T %+v", message, loaded.request)
+	}
+}
+
 func TestPageOnlyLoadDoesNotInvalidateDashboardResponse(t *testing.T) {
 	page := &asyncTestPage{id: "history-search", section: HistorySection, title: "Search"}
 	model := NewWithProviderAndPages(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, SkillOffer{}, AllProviders, page)

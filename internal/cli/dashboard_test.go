@@ -221,6 +221,14 @@ func TestDashboardAmbientCacheRefreshesOnlyForSyncLoads(t *testing.T) {
 	if status.Sessions != 2 || files != 2 || calls != 2 {
 		t.Fatalf("post-sync cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
 	}
+	status, files = cache.snapshot(tui.Request{RefreshPages: true}, refresh)
+	if status.Sessions != 3 || files != 3 || calls != 3 {
+		t.Fatalf("page-refresh ambient snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
+	status, files = cache.snapshot(tui.Request{}, refresh)
+	if status.Sessions != 3 || files != 3 || calls != 3 {
+		t.Fatalf("post-refresh cached snapshot = status=%+v files=%d calls=%d", status, files, calls)
+	}
 }
 
 func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
@@ -278,6 +286,76 @@ func TestDashboardSessionCacheRefreshesWhenQueryChanges(t *testing.T) {
 	}
 }
 
+func TestDashboardSessionCacheRetainsWarmProviderAndRangeVariants(t *testing.T) {
+	cache := dashboardSessionCache{}
+	calls := 0
+	refresh := func() tuipages.SessionPageData {
+		calls++
+		return tuipages.SessionPageData{Warning: fmt.Sprintf("load-%d", calls)}
+	}
+	request := tui.Request{Provider: tui.AllProviders, Range: tui.Range30Days}
+
+	if got := cache.snapshot(request, refresh); got.Warning != "load-1" {
+		t.Fatalf("initial session snapshot = %+v", got)
+	}
+	request.Provider = tui.CodexProvider
+	if got := cache.snapshot(request, refresh); got.Warning != "load-2" {
+		t.Fatalf("provider session snapshot = %+v", got)
+	}
+	request.Provider = tui.AllProviders
+	if got := cache.snapshot(request, refresh); got.Warning != "load-1" || calls != 2 {
+		t.Fatalf("warm provider session snapshot = %+v calls=%d", got, calls)
+	}
+	request.Range = tui.Range90Days
+	if got := cache.snapshot(request, refresh); got.Warning != "load-3" {
+		t.Fatalf("range session snapshot = %+v", got)
+	}
+	request.Range = tui.Range30Days
+	if got := cache.snapshot(request, refresh); got.Warning != "load-1" || calls != 3 {
+		t.Fatalf("warm range session snapshot = %+v calls=%d", got, calls)
+	}
+
+	request.Sync = true
+	if got := cache.snapshot(request, refresh); got.Warning != "load-4" {
+		t.Fatalf("sync session snapshot = %+v", got)
+	}
+	request.Sync = false
+	if got := cache.snapshot(request, refresh); got.Warning != "load-4" || calls != 4 {
+		t.Fatalf("post-sync session snapshot = %+v calls=%d", got, calls)
+	}
+	request.RefreshPages = true
+	if got := cache.snapshot(request, refresh); got.Warning != "load-5" {
+		t.Fatalf("page-refresh session snapshot = %+v", got)
+	}
+	request.RefreshPages = false
+	if got := cache.snapshot(request, refresh); got.Warning != "load-5" || calls != 5 {
+		t.Fatalf("post-refresh session snapshot = %+v calls=%d", got, calls)
+	}
+}
+
+func TestDashboardHistoryCacheInvalidatesDerivedAnalyticsOnSync(t *testing.T) {
+	cache := dashboardHistoryCache{}
+	generation := cache.begin(false)
+	key := dashboardLedgerAnalyticsCacheKey{provider: tui.CodexProvider, generation: generation, zone: "UTC"}
+	cache.setLedger(key, dashboardLedgerAnalyticsCacheValue{
+		profile: historystore.LedgerAnalytics{Hours: []historystore.LedgerProfileStat{{Bucket: 9, Sessions: 2}}},
+	})
+	cache.models = map[dashboardModelSessionCacheKey]dashboardModelSessionData{
+		{provider: tui.CodexProvider, generation: generation}: {Total: 2},
+	}
+	if _, ok := cache.ledger(key); !ok || len(cache.models) != 1 {
+		t.Fatal("derived history values were not cached")
+	}
+
+	nextGeneration := cache.begin(true)
+	if nextGeneration == generation {
+		t.Fatalf("sync did not advance history generation: before=%d after=%d", generation, nextGeneration)
+	}
+	if _, ok := cache.ledger(key); ok || len(cache.models) != 0 {
+		t.Fatal("sync retained stale derived history values")
+	}
+}
+
 func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
 	cache := dashboardHistorySearchCache{}
 	calls := 0
@@ -319,6 +397,11 @@ func TestDashboardHistorySearchCacheRefreshesByQueryAndSync(t *testing.T) {
 	data, err = cache.snapshot(request, refresh)
 	if err != nil || data.Search.Warnings[0] != "load-5" || calls != 5 {
 		t.Fatalf("post-sync cached search snapshot = %+v err=%v calls=%d", data, err, calls)
+	}
+	request.RefreshPages = true
+	data, err = cache.snapshot(request, refresh)
+	if err != nil || data.Search.Warnings[0] != "load-6" || calls != 6 {
+		t.Fatalf("page-refresh search snapshot = %+v err=%v calls=%d", data, err, calls)
 	}
 }
 
