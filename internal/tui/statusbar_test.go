@@ -54,6 +54,19 @@ func TestStatusBarDoesNotClaimFreshBeforeASuccessfulSync(t *testing.T) {
 	}
 }
 
+func TestStatusBarSurfacesDashboardLoadBusyAndQueuedKey(t *testing.T) {
+	model := loadedTestModel()
+	model.dashboardLoadBusy = true
+	model.queuedKey = keyMsg("p")
+	model.queuedKeySet = true
+	view := model.View()
+	for _, fragment := range []string{"load-busy", "p queued"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("busy status missing %q:\n%s", fragment, view)
+		}
+	}
+}
+
 func TestStatusBarKeepsActionCompletionVisibleWithWarning(t *testing.T) {
 	model := loadedTestModel()
 	model.request.Width = 60

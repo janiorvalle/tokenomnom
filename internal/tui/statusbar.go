@@ -55,9 +55,8 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 	if m.warning != "" {
 		return fitRight(m.statusBarWarning(segments[0], layout.innerWidth), layout.innerWidth)
 	}
-	if m.commandBusy && !m.syncing {
-		working := m.spinner.View() + m.render.Palette.Subtle().Render(" working")
-		segments = append(segments, statusBarSegment{text: "working", styled: working})
+	if busy, ok := m.dashboardBusySegment(); ok {
+		segments = append(segments, busy)
 	}
 
 	if history, ok := m.historyStatusSegment(); ok {
@@ -86,6 +85,33 @@ func (m Model) statusBarView(layout cockpitLayout) string {
 	}
 
 	return fitRight(joinStatusBarSegments(segments, layout.innerWidth, m.render.Palette.Subtle()), layout.innerWidth)
+}
+
+func (m Model) dashboardBusySegment() (statusBarSegment, bool) {
+	label := ""
+	switch {
+	case m.commandBusy && !m.syncing:
+		label = "working"
+	case m.dashboardLoadBusy && !m.syncing:
+		label = "load-busy"
+	case m.queuedKeySet:
+		label = "working"
+	}
+	if m.queuedKeySet {
+		queued := m.queuedKey.String()
+		if queued == "" {
+			queued = "key"
+		}
+		label += " · " + queued + " queued"
+	}
+	if label == "" {
+		return statusBarSegment{}, false
+	}
+	text := m.spinner.View() + " " + label
+	return statusBarSegment{
+		text:   text,
+		styled: m.spinner.View() + m.render.Palette.Subtle().Render(" "+label),
+	}, true
 }
 
 func (m Model) syncMetadataSegment() (statusBarSegment, bool) {

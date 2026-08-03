@@ -123,7 +123,17 @@ func (p snapshotPage) View(context PageContext) string {
 	if p.viewIndex < 0 || p.viewIndex >= len(context.Snapshot.Views) {
 		return ""
 	}
+	if context.Snapshot.Pending {
+		return pendingPageView(context.Render, p.title)
+	}
 	return context.Snapshot.Views[p.viewIndex]
+}
+
+func pendingPageView(render theme.Context, title string) string {
+	return strings.Join([]string{
+		render.Palette.Header().Render(strings.ToUpper(title) + " · Loading…"),
+		render.Palette.Subtle().Render("Loading " + strings.ToLower(title) + " data…"),
+	}, "\n")
 }
 
 func (p snapshotPage) Update(context PageContext, key string) (Request, bool) {
@@ -142,6 +152,9 @@ func (ledgerPage) Section() PageSection { return SpendSection }
 func (ledgerPage) Title() string        { return "Ledger" }
 
 func (ledgerPage) View(context PageContext) string {
+	if context.Snapshot.Pending {
+		return pendingPageView(context.Render, "Ledger")
+	}
 	render := context.Render
 	render.Width = context.Width
 	return tuipages.Render(render, context.Snapshot.Ledger, context.Request.Ledger, context.Height)
@@ -180,6 +193,9 @@ func (vaultPage) Section() PageSection { return VaultSection }
 func (vaultPage) Title() string        { return "Vault" }
 
 func (vaultPage) View(context PageContext) string {
+	if context.Snapshot.Pending {
+		return pendingPageView(context.Render, "Vault")
+	}
 	return tuipages.RenderVault(context.Render, context.Snapshot.Vault, context.Width, context.Height, context.Request.VaultOffset)
 }
 
@@ -214,6 +230,9 @@ func (systemPage) Section() PageSection { return SystemSection }
 func (systemPage) Title() string        { return "System" }
 
 func (systemPage) View(context PageContext) string {
+	if context.Snapshot.Pending {
+		return pendingPageView(context.Render, "System")
+	}
 	return tuipages.RenderSystem(context.Render, context.Snapshot.System, context.Width, context.Height, context.Request.SystemOffset)
 }
 
@@ -307,7 +326,11 @@ func (sessionsPage) Section() PageSection { return HistorySection }
 func (sessionsPage) Title() string        { return "Sessions" }
 
 func (sessionsPage) View(context PageContext) string {
-	return tuipages.RenderSessions(context.Render, context.Snapshot.Sessions, tuipages.SessionViewState{
+	data := context.Snapshot.Sessions
+	if context.Snapshot.Pending {
+		data.Pending = true
+	}
+	return tuipages.RenderSessions(context.Render, data, tuipages.SessionViewState{
 		SelectedIndex: context.Request.SessionOffset,
 		DetailID:      context.Request.SessionDetailID,
 		Costs:         context.Snapshot.Sessions.Costs,

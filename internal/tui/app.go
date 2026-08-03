@@ -176,11 +176,13 @@ type RailProject struct {
 	Share float64
 }
 
-// Snapshot is a fully rendered, immutable dashboard data result.
+// Snapshot contains the rendered dashboard data and its transient loading state.
 type Snapshot struct {
-	Summary   Summary
-	Rail      RailData
-	Views     [4]string
+	Summary Summary
+	Rail    RailData
+	Views   [4]string
+	// Pending keeps a dashboard reload from presenting stale page data as fresh.
+	Pending   bool
 	Sessions  tuipages.SessionPageData
 	StatusBar StatusBar
 	Ledger    tuipages.Data
@@ -317,6 +319,9 @@ type Model struct {
 	commandOutputFailure     bool
 	commandOutputHint        string
 	dashboardLoadBusy        bool
+	queuedKey                tea.KeyMsg
+	queuedKeySet             bool
+	queuedKeyPage            PageID
 	initialSnapshotPending   bool
 	progress                 LoadProgress
 	progressSink             ProgressSink
@@ -412,6 +417,9 @@ func (m *Model) startDashboardLoad(request Request) tea.Cmd {
 	request.LoadID = m.loadID
 	m.request.LoadID = request.LoadID
 	m.request.Initial = false
+	if m.loaded && !request.Initial && !request.Sync {
+		m.snapshot.Pending = true
+	}
 	m.dashboardLoadBusy = true
 	return m.loadCmd(request)
 }
@@ -600,7 +608,60 @@ func (m *Model) resumePendingWork() tea.Cmd {
 	if command := m.resumeInitialSync(); command != nil {
 		return command
 	}
-	return m.resumePendingResize()
+	if command := m.resumePendingResize(); command != nil {
+		return command
+	}
+	return m.replayQueuedKey()
+}
+
+func (m Model) dashboardBusy() bool {
+	return m.commandBusy || m.syncing || m.pendingSync || m.dashboardLoadBusy
+}
+
+func (m *Model) queueBlockedKey(binding KeyBinding, key tea.KeyMsg) {
+	switch binding.Action {
+	case keyActionPageCommand, keyActionProvider, keyActionRange, keyActionRefresh:
+		m.queuedKey = key
+		m.queuedKeySet = true
+		m.queuedKeyPage = ""
+		if binding.Action == keyActionPageCommand {
+			if page := m.activePage(); page != nil {
+				m.queuedKeyPage = page.ID()
+			}
+		}
+	}
+}
+
+func (m *Model) clearQueuedKey() {
+	m.queuedKey = tea.KeyMsg{}
+	m.queuedKeySet = false
+	m.queuedKeyPage = ""
+}
+
+func (m *Model) invalidateQueuedPageKey() {
+	if m.queuedKeyPage != "" {
+		m.clearQueuedKey()
+	}
+}
+
+func (m *Model) replayQueuedKey() tea.Cmd {
+	if !m.queuedKeySet || m.dashboardBusy() {
+		return nil
+	}
+	if m.queuedKeyPage != "" {
+		page := m.activePage()
+		if page == nil || page.ID() != m.queuedKeyPage {
+			m.clearQueuedKey()
+			return nil
+		}
+	}
+	key := m.queuedKey
+	m.clearQueuedKey()
+	updated, command := m.updateKey(key)
+	if next, ok := updated.(Model); ok {
+		*m = next
+	}
+	return command
 }
 
 func combineCommands(commands ...tea.Cmd) tea.Cmd {
@@ -664,12 +725,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case loadedMsg:
-		if msg.generation == m.loadGeneration {
-			m.dashboardLoadBusy = false
-		}
 		current := msg.request.LoadID == m.loadID
 		if msg.request.LoadID == 0 && msg.generation == m.loadGeneration {
 			current = true
+		}
+		if current && msg.generation == m.loadGeneration {
+			m.dashboardLoadBusy = false
+			m.snapshot.Pending = false
 		}
 		if msg.request.Action != "" {
 			if msg.err != nil {
@@ -769,7 +831,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		initial := !m.loaded
 		initialStoreLoad := msg.request.Initial && !msg.request.Sync
+		pending := m.snapshot.Pending
 		m.snapshot = msg.snapshot
+		m.snapshot.Pending = pending && !current
 		if requestMatches {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
 			m.request.DailyWindowStart = msg.snapshot.DailyWindowStart
@@ -988,12 +1052,14 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	globalFirst := bound && binding.Action != keyActionPageCommand &&
 		(!interactivePage || !interactive.Editing() || key.Type != tea.KeyRunes)
 	if globalFirst {
-		if (m.commandBusy || m.dashboardLoadBusy || m.pendingSync) && binding.Action != keyActionNavigatePages && binding.Action != keyActionToggleHelp && binding.Action != keyActionQuit {
+		if m.dashboardBusy() && binding.Action != keyActionNavigatePages && binding.Action != keyActionToggleHelp && binding.Action != keyActionQuit {
+			m.queueBlockedKey(binding, key)
 			return m, nil
 		}
 		return m.updateBinding(binding, value)
 	}
-	if bound && interactivePage && binding.Action == keyActionPageCommand && (m.commandBusy || m.dashboardLoadBusy || m.syncing || m.pendingSync) {
+	if bound && interactivePage && binding.Action == keyActionPageCommand && m.dashboardBusy() {
+		m.queueBlockedKey(binding, key)
 		return m, nil
 	}
 	if interactivePage {
@@ -1016,7 +1082,8 @@ func (m Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !bound {
 		return m, nil
 	}
-	if m.commandBusy || m.pendingSync {
+	if m.dashboardBusy() {
+		m.queueBlockedKey(binding, key)
 		return m, nil
 	}
 	return m.updateBinding(binding, value)
@@ -1049,6 +1116,7 @@ func (m Model) updateBinding(binding KeyBinding, value string) (tea.Model, tea.C
 	switch binding.Action {
 	case keyActionNavigatePages:
 		if m.navigatePages(value) {
+			m.invalidateQueuedPageKey()
 			if page := m.activePage(); page != nil {
 				if loader, ok := page.(PageLoader); ok {
 					return m.startPageLoad(loader, m.request)
