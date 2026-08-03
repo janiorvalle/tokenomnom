@@ -101,6 +101,9 @@ func TestUpdatePanningSortingAndSizing(t *testing.T) {
 	if command == nil || model.syncing || !model.loading || model.snapshot.Views[0] != currentSnapshot.Views[0] {
 		t.Fatalf("stale sync was not handed back to the current request: request=%+v snapshot=%+v syncing=%v loading=%v command=%v", model.request, model.snapshot, model.syncing, model.loading, command != nil)
 	}
+	// The handoff command is covered above; release its synthetic busy state
+	// before exercising local cursor normalization below.
+	model.dashboardLoadBusy, model.loading = false, false
 	model.request.DailyDetailOffset = 1
 	model = updateKeyForTest(t, model, "down")
 	if model.request.DailyDetailOffset != 2 {
@@ -199,8 +202,9 @@ func TestSyncRefreshInvalidatesPreSyncLoads(t *testing.T) {
 	if model.snapshot.Views[0] == "stale pre-sync" {
 		t.Fatal("pre-sync load overwrote the post-sync reload")
 	}
+	postSyncRequest := model.request
 	updated, _ = model.Update(loadedMsg{
-		request:    preSyncRequest,
+		request:    postSyncRequest,
 		generation: postSyncGeneration,
 		snapshot:   Snapshot{Views: [4]string{"fresh post-sync"}},
 	})
@@ -315,6 +319,119 @@ func TestSyncProgressViewRendersHonestPhaseCopy(t *testing.T) {
 			t.Fatalf("phase view still rendered a frozen zero:\n%s", view)
 		}
 		t.Log("\n" + view)
+	}
+}
+
+func TestBusyLoadQueuesLatestMutatingKeyAndReplaysAfterCompletion(t *testing.T) {
+	var requests []Request
+	loader := func(request Request) (Snapshot, error) {
+		requests = append(requests, request)
+		return Snapshot{Views: [4]string{fmt.Sprintf("loaded %s", request.Range)}}, nil
+	}
+	model := New(testRender(), loader, SkillOffer{})
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
+	model.snapshot = Snapshot{Views: [4]string{"stale daily", "", "stale models", "stale heatmap"}}
+
+	updated, initialLoad := model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if initialLoad == nil || model.request.Provider != CodexProvider || !model.snapshot.Pending {
+		t.Fatalf("provider load did not become optimistic: request=%+v command=%v pending=%v", model.request, initialLoad != nil, model.snapshot.Pending)
+	}
+	view := model.View()
+	for _, fragment := range []string{"LOCAL  ·  CODEX  ·  30D", "Loading daily data…", "load-busy"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("provider reload omitted %q:\n%s", fragment, view)
+		}
+	}
+
+	updated, command := model.Update(keyMsg("r"))
+	model = updated.(Model)
+	if command != nil || !model.queuedKeySet || model.queuedKey.String() != "r" {
+		t.Fatalf("latest busy key was not queued: command=%v queued=%v key=%q", command != nil, model.queuedKeySet, model.queuedKey.String())
+	}
+	if !strings.Contains(model.View(), "r queued") {
+		t.Fatalf("queued key feedback missing:\n%s", model.View())
+	}
+	t.Logf("FRAME: queued range key during provider load\nSource: internal/tui/app_test.go::TestBusyLoadQueuesLatestMutatingKeyAndReplaysAfterCompletion\n\n%s", model.View())
+
+	if !model.router.Select(SessionsPageID) {
+		t.Fatal("sessions page was not available")
+	}
+	if sessionsView := model.View(); !strings.Contains(sessionsView, "Loading sessions…") {
+		t.Fatalf("pending sessions state missing:\n%s", sessionsView)
+	}
+	if !model.router.Select(DailyPageID) {
+		t.Fatal("daily page was not available")
+	}
+
+	updated, replay := model.Update(initialLoad())
+	model = updated.(Model)
+	if replay == nil || model.queuedKeySet || model.request.Range != Range90Days || !model.snapshot.Pending {
+		t.Fatalf("queued key was not replayed after load: replay=%v queued=%v request=%+v pending=%v", replay != nil, model.queuedKeySet, model.request, model.snapshot.Pending)
+	}
+	if !strings.Contains(model.View(), "LOCAL  ·  CODEX  ·  90D") {
+		t.Fatalf("replayed range did not update the header:\n%s", model.View())
+	}
+
+	updated, _ = model.Update(replay())
+	model = updated.(Model)
+	if model.dashboardLoadBusy || model.snapshot.Pending || len(requests) != 2 || requests[1].Range != Range90Days {
+		t.Fatalf("replayed load did not settle: busy=%v pending=%v requests=%+v", model.dashboardLoadBusy, model.snapshot.Pending, requests)
+	}
+}
+
+func TestBusyPageKeyIsInvalidatedWhenNavigationChangesPage(t *testing.T) {
+	loader := func(request Request) (Snapshot, error) {
+		return Snapshot{Views: [4]string{fmt.Sprintf("loaded %s", request.Range)}}, nil
+	}
+	model := New(testRender(), loader, SkillOffer{})
+	model.request.Width, model.request.Height = 100, 30
+	model.loading, model.loaded, model.dashboardLoadBusy = false, true, false
+	model.snapshot = Snapshot{Views: [4]string{"stale daily", "ledger", "models", "heatmap"}}
+
+	updated, load := model.Update(keyMsg("p"))
+	model = updated.(Model)
+	if load == nil {
+		t.Fatal("provider load did not start")
+	}
+	updated, command := model.Update(keyMsg("f"))
+	model = updated.(Model)
+	if command != nil || !model.queuedKeySet || model.queuedKeyPage != DailyPageID {
+		t.Fatalf("page key was not queued with its origin: command=%v queued=%v page=%q", command != nil, model.queuedKeySet, model.queuedKeyPage)
+	}
+
+	updated, command = model.Update(keyMsg("tab"))
+	model = updated.(Model)
+	if command != nil || model.router.ActivePage().ID() != LedgerPageID || model.queuedKeySet {
+		t.Fatalf("navigation did not invalidate page key: command=%v page=%q queued=%v", command != nil, model.router.ActivePage().ID(), model.queuedKeySet)
+	}
+
+	updated, replay := model.Update(load())
+	model = updated.(Model)
+	if replay != nil || model.request.Provider != CodexProvider || model.dashboardLoadBusy {
+		t.Fatalf("stale page key replayed after navigation: replay=%v request=%+v busy=%v", replay != nil, model.request, model.dashboardLoadBusy)
+	}
+}
+
+func TestStaleLoadDoesNotClearCurrentPendingState(t *testing.T) {
+	model := loadedTestModel()
+	model.loadGeneration = 2
+	model.loadID = 2
+	model.request.LoadID = 2
+	model.dashboardLoadBusy = true
+	model.snapshot = Snapshot{Pending: true, Views: [4]string{"current"}}
+
+	staleRequest := model.request
+	staleRequest.LoadID = 1
+	updated, _ := model.Update(loadedMsg{
+		request:    staleRequest,
+		generation: model.loadGeneration,
+		snapshot:   Snapshot{Views: [4]string{"stale"}},
+	})
+	model = updated.(Model)
+	if !model.dashboardLoadBusy || !model.snapshot.Pending {
+		t.Fatalf("stale load exposed fresh state: busy=%v pending=%v snapshot=%+v", model.dashboardLoadBusy, model.snapshot.Pending, model.snapshot)
 	}
 }
 
@@ -1151,6 +1268,8 @@ func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
 	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomMonth || model.request.Ledger.Year != 2026 {
 		t.Fatalf("ledger year zoom = %+v, command=%v", model.request.Ledger, command != nil)
 	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
 
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomMonth, Year: 2026, Rows: []tuipages.Row{
 		{Key: "2026-07", Label: "Jul 2026"},
@@ -1161,6 +1280,8 @@ func TestLedgerPageHandlesContextualZoomAndSelectionKeys(t *testing.T) {
 	if command == nil || model.request.Ledger.Zoom != tuipages.ZoomDay || model.request.Ledger.Month != "2026-07" {
 		t.Fatalf("ledger month zoom = %+v, command=%v", model.request.Ledger, command != nil)
 	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
 
 	model.snapshot.Ledger = tuipages.Data{Available: true, Zoom: tuipages.ZoomDay, Month: "2026-07", Rows: []tuipages.Row{
 		{Key: "2026-07-14", Label: "Jul 14"},
@@ -1196,6 +1317,8 @@ func TestLedgerPageExpandsDayNavigatesSessionsAndReturnsFromDetail(t *testing.T)
 	if command == nil || model.request.Ledger.ExpandedDay != day.Key {
 		t.Fatalf("ledger expansion = %+v command=%v", model.request.Ledger, command != nil)
 	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
 	model.snapshot.Ledger.SessionDay = day.Key
 	model.snapshot.Ledger.SessionIndexAvailable = true
 	model.snapshot.Ledger.Sessions = []tuipages.LedgerSession{
