@@ -13,6 +13,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 	_ "modernc.org/sqlite"
 )
 
@@ -79,13 +80,18 @@ func TestOpenMigratesSchemaV1ToCurrent(t *testing.T) {
 func TestDevBuildCannotMigrateDefaultStoreWithoutOptIn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("TOKENOMNOM_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	previousVersion := version.Version
 	version.Version = "dev"
 	t.Cleanup(func() { version.Version = previousVersion })
 
-	path := filepath.Join(home, ".local", "state", "tokenomnom", store.DatabaseName)
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDir, store.DatabaseName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

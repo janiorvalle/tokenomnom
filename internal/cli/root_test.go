@@ -11,6 +11,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 )
 
 func TestRootCommandShowsHelpWithNoArguments(t *testing.T) {
@@ -57,6 +58,7 @@ func TestRootCommandShowsVersion(t *testing.T) {
 func TestDevelopmentBuildRequiresExplicitMigrationPermission(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("LOCALAPPDATA", filepath.Join(root, "AppData", "Local"))
 	t.Setenv("TOKENOMNOM_STATE_DIR", "")
 	t.Setenv("TOKENOMNOM_DATA_DIR", filepath.Join(root, "data"))
 	t.Setenv("TOKENOMNOM_CONFIG_DIR", filepath.Join(root, "config"))
@@ -87,7 +89,11 @@ func TestDevelopmentBuildRequiresExplicitMigrationPermission(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("approved migration: %v\n%s", err, output.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, ".local", "state", "tokenomnom", store.DatabaseName)); err != nil {
+	stateDir, err := xdg.StateDir(xdg.Options{Home: root, Getenv: os.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, store.DatabaseName)); err != nil {
 		t.Fatalf("approved migration did not create default store: %v", err)
 	}
 }
