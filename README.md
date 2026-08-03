@@ -18,15 +18,13 @@ reclaim the disk without losing anything.
 
 On top of that archive sits a local history engine: index your sessions once,
 then search years of your own prompts by exact phrase, list and filter
-sessions, separate your work from delegated agent work, and pull
-representative samples — all offline, all bounded. It's how you (or your
-agents) answer "what did I work on in March" or "find where I said do not
-implement" without grepping raw transcript directories. The bundled agent
-skill teaches Codex and Claude Code to do exactly that.
+sessions, and pull representative samples — all offline, all bounded. It's how
+you (or your agents) answer "what did I work on in March" without grepping raw
+transcript directories. The bundled agent skill teaches Codex and Claude Code
+to do exactly that.
 
-Those dollar figures are API list-price equivalents unless you configure a
-`user rate`. User-rate figures are estimates, not your actual Codex or Claude
-subscription bill.
+Dollar figures are API list-price equivalents unless you set a user rate;
+user rates are estimates, not your actual subscription bill.
 
 ## Install
 
@@ -105,13 +103,6 @@ tokenomnom export --out usage.csv
 Every report accepts provider, model, and date filters. `--no-sync` uses the
 stored data immediately when you are making several queries in a row.
 
-Search your own session history — see [History](#history) for the full story:
-
-```sh
-tokenomnom history index
-tokenomnom history search "do not implement" --since 2026-07-01
-```
-
 ## History
 
 Your transcripts are a searchable record of how you work. Build the index
@@ -121,153 +112,116 @@ once, explicitly, then query it:
 tokenomnom history index
 tokenomnom history search "do not implement" --since 2026-07-01
 tokenomnom history search "delegated task" --thread-kind subagent
-tokenomnom history search "worker status" --prompt-kind control
-tokenomnom history search "proposed approach" --role assistant
 tokenomnom history list --root-only
 tokenomnom history show prm_123
 tokenomnom history export ses_123 --out ./session-export/
-tokenomnom history prompts --limit 100
 tokenomnom history stats --project-source git --group-by project --top 20
-tokenomnom history sample --group-by month,project --min-stratum-size 2 --count 25 --min-length 40 --one-per-session
+tokenomnom history sample --group-by month,project --count 25
 tokenomnom history status
 tokenomnom history purge
 ```
 
+### Indexing
+
 Indexing covers Codex live and archived files, Claude Code project files, and
-every verified vault version by default. It resumes growing transcripts and
-detects rewrites and missing sources, so live and vaulted copies of the same
-session show up as one logical session with availability and version counts
-in `history list`.
+every verified vault version. It resumes growing transcripts and reconciles
+rewrites and moves, so live and vaulted copies of the same session show up as
+one logical session.
 
-Normal incremental indexing trusts matching source metadata instead of rereading
-unchanged transcript content. Use `history index --verify` when you need exact
-indexed-prefix continuity checks; use `vault verify --deep` for an explicit deep
-check of archived transcripts.
+Incremental runs trust matching source metadata instead of rereading unchanged
+content, so a run over an unchanged corpus takes seconds. Two explicit deep
+checks exist when you want them:
 
-`history index --format json` groups routine record exclusions under
-`data.exclusion_counts`; it does not emit one warning per excluded record.
-Each exclusion count includes `expected`; expected non-prompt records are
-reported as one summary line, while `unknown` classifications remain visible
-as anomalies. Add `--settle-missing` with `--source provider` or `--source all`
-when an indexed provider file is permanently gone. The command reports how
-many source heads were acknowledged; they remain visible in `history status`
-and `doctor`, and a later successful index clears the acknowledgement.
-The usage store has the same explicit acknowledgement path: run
-`tokenomnom sync --settle-missing` only when a synced transcript is permanently
-gone. Its retained usage stays in the totals and doctor keeps the missing-file
-count; a later sync clears the acknowledgement when the file returns.
-Add `--verbose` only when you need the bounded path-and-line details in
-`data.warnings`. Source and integrity failures remain individually listed in
-`data.errors` in either mode.
+- `history index --verify` recomputes exact indexed-prefix continuity.
+- `vault verify --deep` rechecks every archived transcript.
 
-Search is a literal adjacent-token phrase by default; `--fts-query` explicitly
-enables raw FTS5 syntax. Results are bounded snippets unless you ask for
+When a source file is permanently gone, acknowledge it instead of living with
+a warning: `history index --settle-missing` for indexed sources,
+`tokenomnom sync --settle-missing` for synced usage. Settled files keep their
+usage and stay counted in `doctor`; the acknowledgement clears itself if the
+file comes back. JSON output groups routine record exclusions into
+`data.exclusion_counts` — see [docs/agent-api.md](docs/agent-api.md) for the
+shapes.
+
+### Search
+
+Search is a literal adjacent-token phrase by default; `--fts-query` opts into
+raw FTS5 syntax. Results are bounded snippets unless you ask for
 `--include-text` or `history show`, and raw retrieval revalidates the exact
 indexed bytes before returning them.
 
+### Export
+
 Export a complete session as one artifact when you need to hand it to another
-agent or preserve a readable copy:
+agent or keep a readable copy:
 
 ```sh
 tokenomnom history export ses_123 --out session.md
-tokenomnom history export prm_123 --out ./exports/
 tokenomnom history export ses_123 --as normalized --out session.jsonl
 tokenomnom history export ses_123 --as raw --out ./raw-session/
 ```
 
-The default Markdown export resolves a prompt ID to its owning session and
-includes all recursively related subagent sessions. `--no-subagents` narrows
-the artifact. User and assistant text stays complete; tool calls/results and
-thinking are collapsed unless `--include-tool-output` or `--include-thinking`
-is explicit. Rendering reads and hash-validates the original transcript bytes
-at export time, falls back to a valid vault version, and marks unavailable or
-unrecognized records instead of silently dropping them. Body records remain in
-source file order and are deliberately not re-sorted by timestamp. Each
-Markdown export records a random `structure_nonce`; when consuming an export
-programmatically, trust only renderer structure ending in the matching
-`{#tok-<nonce>}` suffix. The authoritative nonce is in the front-matter block
-beginning on line 1 of the artifact; any later `---` block is transcript
-content, not metadata. JSON export reports also return `structure_nonce` out
-of band. The exporter auto-closes any message body that leaves a Markdown
-fence or explicit raw HTML block open and marks the appended close. Included
-tool and thinking fences have nonce-suffixed boundary markers.
-`raw` writes one byte-exact JSONL file per transcript plus `manifest.json`;
-`normalized` writes provider-neutral JSONL. Because raw is byte-exact,
-`--include-tool-output` and `--include-thinking` are valid only for rendered
-Markdown or normalized exports.
+The default Markdown export resolves a prompt ID to its session and includes
+related subagent sessions (`--no-subagents` narrows it). User and assistant
+text stays complete; tool output and thinking are collapsed unless you ask for
+them. Rendering reads and hash-validates the original bytes, falls back to a
+valid vault version, and marks anything unavailable instead of silently
+dropping it. `raw` writes one byte-exact JSONL file per transcript, plus a
+`manifest.json` when the target is a directory; `normalized` writes
+provider-neutral JSONL.
 
-Without `--out`, Markdown or normalized content goes to stdout and the export
-report goes to stderr so the artifact stays clean. An existing directory or a
-path ending in a separator receives an automatic
-`<provider>-<first-date>-<session-id>.<ext>` name. Existing files are refused
-unless `--force` is passed. Export is an explicit plaintext release from
-tokenomnom's local state model: it can contain prompts, assistant responses,
-paths, system context, and, when requested, tool output or thinking. Review the
-destination and its access controls. Scheduled maintenance never runs exports.
+Without `--out`, Markdown and normalized exports write the artifact to stdout
+and the report to stderr; raw exports always require `--out`. Existing files
+are refused unless you pass `--force`. Markdown exports mark renderer
+structure with a per-export nonce so programmatic consumers can tell renderer
+structure apart from transcript content — the `structure_nonce` contract is in
+[docs/agent-api.md](docs/agent-api.md).
 
-Complete, versioned provider envelopes classify user-role records as `human`,
-`delegation`, `agent_message`, `command`, `control`, or `unknown`. Human prompts
-remain the default corpus. Use `--prompt-kind` for an explicit comma-separated
-selection or `--exclude-control` when combining kinds. Search, prompt, and
-sample JSON use compact provenance by default: exact occurrence counts plus a
-preferred location. `--all-occurrences` opts into bounded occurrence arrays.
+One thing to take seriously: export is an explicit plaintext release from
+tokenomnom's local state model. It can contain prompts, responses, paths, and,
+when requested, tool output or thinking. Review the destination and its access
+controls. Scheduled maintenance never runs exports.
 
-A few honesty rules are built in. `project` is the git-proven repository name
-when available, otherwise the final segment of a known non-temporary cwd,
-otherwise `unknown`; every value is labeled with
-`project_source: git|cwd|unknown`. Cwds under the runtime OS temp directory,
-`/private/tmp`, `/tmp`, `/var/folders`, or standard Windows temp roots stay
-unknown. Grouped statistics and sampling fold project labels seen in fewer
-than two sessions into a visible `other` group without changing stored session
-metadata.
-Use `--project` or `--group-by project` for cross-provider grouping.
-`--project-source git|cwd|any` on stats and sampling restricts the eligible
-corpus by provenance; unknown-project sessions are included only by the default
-`any`. Sampling can additionally fold any eligible stratum smaller than
-`--min-stratum-size` into its visible `other` remainder before stratified
-allocation. Values greater than one require `--group-by`. The
-stricter repository and branch filters remain complete for Codex but partial
-for Claude Code, and repository fields are never inferred from cwd. Root versus
-subagent classification comes from direct provider evidence or versioned
-deterministic rules; when the evidence is missing, sessions stay explicitly
-`unknown` instead of being guessed. For Codex 0.93.0 and newer, the legacy
-`session_meta.source` values `cli`, `vscode`, `exec`, and `mcp` are also
-versioned root evidence because those producers serialize delegated sessions
-with a distinct subagent source shape.
+### What the labels mean
 
-`history status` and doctor perform a metadata-only freshness check. They
-compare current provider file sizes and modification times with the stored
-checkpoints and report changed and new source counts, the newest change, and
-the probe time. Drift is split by a fixed 10-minute settle window: active
-sources are expected running-session churn, while settled sources are old
-enough to act on. `status_reasons` lists every reason a status is not ready;
-settled drift reports `degraded`, while active-only drift and missing-but-
-preserved source heads leave status `ready`. Missing source heads are split
-into pending and settled counts; settling changes cost-attribution warnings,
-not the doctor record of what is gone. The probe never reads transcript
-content or updates the index.
+A few honesty rules are built in:
 
-`history sample` pulls a representative, deterministic sample — same seed,
-same corpus, same sample. It walks indexed SHA-256 keys instead of sorting
-the corpus randomly, defaults to 25 logical prompts, caps at 100, and
-stratifies when you pass `--group-by month,project,thread-kind`.
-`--min-length` filters by cleaned Unicode characters and `--one-per-session`
-prevents one long conversation from dominating a prompt sample.
-Default prompt samples omit relationship and occurrence arrays while retaining
-exact occurrence counts, nonzero availability counts, and an opaque preferred
-location. Default snippets are capped at 140 UTF-8 bytes;
-`--snippet-length N` accepts 32 through 512 bytes.
-`--all-occurrences` restores the bounded full prompt metadata.
+- `project` is the git-proven repository name when available, otherwise the
+  final segment of a known non-temporary cwd, otherwise `unknown` — and every
+  value says which (`project_source: git|cwd|unknown`). Temp-directory cwds
+  stay `unknown`.
+- Root versus subagent classification comes from provider evidence or
+  versioned deterministic rules; missing evidence stays `unknown` instead of
+  being guessed. (For Codex 0.93.0+, the legacy `session_meta.source` values
+  `cli`, `vscode`, `exec`, and `mcp` count as root evidence, since those
+  producers mark delegated sessions with a distinct subagent shape.)
+- Repository and branch filters are complete for Codex but partial for Claude
+  Code, and repository fields are never inferred from cwd.
+- Grouped stats and samples fold rare project labels into a visible `other`
+  group rather than implying precision that isn't there.
+- User-role records are classified (`human`, `delegation`, `agent_message`,
+  `command`, `control`, `unknown`); human prompts are the default corpus, and
+  `--prompt-kind` selects others. Full taxonomy and filter semantics:
+  [docs/agent-api.md](docs/agent-api.md).
 
-On privacy: indexing never runs implicitly from usage reports or normal
-syncs, and user prompts are the only corpus by default. Setting
-`history.index_assistant = true` is explicit consent to store assistant text
-too — expect it to multiply plaintext storage, since assistant output dwarfs
-user prompts. Disabling it prunes assistant rows on the next index run.
-`history.db` can be more sensitive than `usage.db`, so it's excluded from
-automatic backups; protect the state directory as you would the transcripts
-themselves. `history purge` removes all indexed plaintext without touching
-`usage.db`, provider transcripts, vault bundles, or config.
+`history sample` pulls a deterministic, representative sample — same seed,
+same corpus, same sample — with stratification via `--group-by` and guards
+like `--one-per-session` so one long conversation can't dominate.
+
+`history status` and `doctor` run a metadata-only freshness probe: current
+file sizes and mtimes against stored checkpoints, with drift split into
+active (running-session churn) and settled (old enough to act on). The probe
+never reads transcript content.
+
+### Privacy
+
+Indexing never runs implicitly from usage reports or plain syncs, and user
+prompts are the only corpus by default. `history.index_assistant = true` is
+explicit consent to store assistant text too — expect it to multiply plaintext
+storage. `history.db` can be more sensitive than `usage.db`, so it's excluded
+from automatic backups; protect the state directory like the transcripts
+themselves. `history purge` removes all indexed plaintext and touches nothing
+else.
 
 ## Agents
 
@@ -276,21 +230,16 @@ themselves. `history purge` removes all indexed plaintext without touching
 [docs/agent-api.md](docs/agent-api.md).
 
 tokenomnom also ships an opt-in skill that teaches Codex and Claude Code which
-commands answer common token and spend questions, and how to search indexed
-session history for workflow analysis — check readiness with `doctor`, index
-deliberately, search or sample with bounded filters, and retrieve only
-selected evidence:
+commands answer token and spend questions and how to search indexed history:
 
 ```sh
 tokenomnom install-skill
 tokenomnom install-skill --remove
 ```
 
-The dashboard offers this skill once on first run; `install-skill` and
-`install-skill --remove` remain available anytime as the manual path.
-
-The installer only writes under existing agent roots. It refuses to overwrite
-a foreign `SKILL.md` unless you pass `--force`.
+The dashboard offers the skill once on first run. The installer only writes
+under existing agent roots and refuses to overwrite a foreign `SKILL.md`
+unless you pass `--force`.
 
 ## Keep It Fresh
 
@@ -302,20 +251,15 @@ tokenomnom schedule status
 tokenomnom schedule uninstall
 ```
 
-Each tick runs one quiet `sync --scheduled`. Maintenance order is usage sync,
-due database backup, due settled-transcript auto-vault, then due history
-indexing. New installations enable history indexing by default so scheduled
-sync keeps the transcript index fresh. Existing config files that omit
-`history.auto_index` remain opt-in on upgrade; add the key explicitly to enable
-it. Set it to `false` to opt out. History failures produce one warning but do
-not discard successful usage, backup, or vault work. tokenomnom uses launchd on
-macOS, a systemd user timer on Linux, and Windows Task Scheduler on Windows.
-There is no daemon, watcher, or resident tokenomnom process.
+Each tick runs one quiet `sync --scheduled`: usage sync, due backup, due
+auto-vault, then due history indexing. After a successful usage sync, failures
+in backup, vault, or history indexing warn without discarding the earlier
+steps' work. tokenomnom uses launchd on macOS, a systemd user timer on Linux,
+and Task Scheduler on Windows — there is no daemon or resident process.
 
-The installed unit embeds the current absolute binary path and
-`schedule.interval`. Re-run `schedule install` after moving or upgrading the
-binary, or after changing that interval. Other config is read fresh by every
-tick.
+The installed unit embeds the current binary path and `schedule.interval`, so
+re-run `schedule install` after moving or upgrading the binary or changing the
+interval. Everything else is read fresh on every tick.
 
 ## Configuration
 
@@ -365,57 +309,58 @@ providers = ["codex", "claude"]
 interval = "24h"
 ```
 
-An empty discovery directory uses automatic detection. The existing
-`TOKENOMNOM_CODEX_DIR`, `TOKENOMNOM_CLAUDE_DIR`, `CODEX_HOME`, and
-`CLAUDE_CONFIG_DIR` environment variables still work. Reports use the system
-timezone when `sync.timezone` is empty; otherwise it must be an IANA name such
-as `America/New_York`. Changing the stored timezone triggers a safe rebuild
-from the source logs.
+Notes on the keys that need them:
 
-`reports.color` accepts `auto`, `always`, or `never`. Set `NO_COLOR` or pass
-`--no-color` for plain output; `--format json` is always unstyled.
-`reports.charts = false` is the config equivalent of `--no-chart`,
-`reports.daily_last` supplies Daily's default `--last`, and
-`reports.default_provider` may be empty, `codex`, or `claude`.
-`history.index_assistant` has no environment variable or command-line override;
-enable it only in config, then run `history index`.
+- **Discovery**: empty directories use automatic detection.
+  `TOKENOMNOM_CODEX_DIR`, `TOKENOMNOM_CLAUDE_DIR`, `CODEX_HOME`, and
+  `CLAUDE_CONFIG_DIR` still work.
+- **Timezone**: empty uses the system zone; otherwise an IANA name like
+  `America/New_York`. Changing it triggers a safe rebuild from the source
+  logs.
+- **Reports**: `color` accepts `auto`, `always`, or `never` (`NO_COLOR` and
+  `--no-color` also work; `--format json` is always unstyled).
+  `charts = false` matches `--no-chart`; `daily_last` supplies Daily's default
+  `--last`; `default_provider` may be empty, `codex`, or `claude`.
+- **Backups**: after each successful sync, a due online SQLite backup lands in
+  `~/.local/share/tokenomnom/backups` (or the Windows user data directory;
+  `XDG_DATA_HOME`/`TOKENOMNOM_DATA_DIR` replace the base). `keep = 0` keeps
+  every backup. Backup failures warn but never block a report.
+- **Vault**: empty `dir` uses `<data-dir>/vault`; `min_age` is the settle time
+  before archiving; when `auto` is true, successful syncs archive settled
+  files at most once per `auto_interval`. Source transcripts are never
+  deleted.
+- **History auto-index**: defaults to `true` for new installations. Existing
+  config files that omit the key stay opt-in on upgrade — add
+  `history.auto_index = true` explicitly — so upgrading cannot start building
+  a plaintext index without consent. Only `sync --scheduled` runs a due index
+  pass, at most once per `auto_interval`. `index_assistant` has no flag or
+  env override; enable it in config, then run `history index`.
+- **Schedule**: `interval` must be a whole-second Go duration; changing it
+  requires another `schedule install`, and `schedule status` flags drift.
+  Windows Task Scheduler supports 1 minute through 31 days.
 
-After each successful sync, tokenomnom creates a due online SQLite backup.
-The default directory is `~/.local/share/tokenomnom/backups` on macOS and
-Linux, or the OS user-config data directory on Windows. `XDG_DATA_HOME` and
-`TOKENOMNOM_DATA_DIR` replace that base. An empty `backup.dir` uses the
-default; `backup.interval` is a Go duration; `backup.keep = 0` keeps every
-backup. Backup failures warn but never block a report.
+The SQLite store lives at `~/.local/state/tokenomnom/usage.db`
+(`%LOCALAPPDATA%\tokenomnom\usage.db` on Windows); `TOKENOMNOM_STATE_DIR` and
+`XDG_STATE_HOME` replace the directory. The history index uses `history.db`
+beside it and is deliberately excluded from automatic backups.
 
-An empty `vault.dir` uses `<data-dir>/vault`. `vault.min_age` is the settle
-time before a transcript is eligible for archiving, and `vault.providers`
-selects `codex`, `claude`, or both. When `vault.auto` is true, successful syncs
-run a settled-file archive pass at most once per `vault.auto_interval`.
-Failures warn and retry on a later tick; source transcripts are never deleted.
+### Pricing
 
-`history.auto_index` enables scheduled plaintext indexing and defaults to `true`
-for new installations. Existing config files that omit the key remain disabled
-until you explicitly add `history.auto_index = true`, so upgrading cannot begin
-creating a plaintext index without consent. Set the key to `false` to opt out.
-When enabled, only `sync --scheduled` runs a due index pass at most once per
-`history.auto_interval` (default `1h`); ordinary reports and ordinary `sync`
-never do. `history.providers` selects `codex`, `claude`, or both.
+To price a model that has no published rate, set a user rate:
 
-`schedule.interval` controls the installed OS schedule and defaults to 24
-hours. It must be a whole-second Go duration. Changing it requires another
-`schedule install`; `schedule status`
-flags drift between the config and installed unit. Windows Task Scheduler
-supports intervals from 1 minute through 31 days.
+```sh
+tokenomnom pricing set-rate MODEL --input 1.25 --output 8
+tokenomnom pricing set-rate MODEL --clear
+```
 
-The SQLite store lives at `~/.local/state/tokenomnom/usage.db` on macOS and
-Linux, or `%LOCALAPPDATA%\tokenomnom\usage.db` on Windows. Use
-`TOKENOMNOM_STATE_DIR` to replace that directory. `XDG_STATE_HOME` is also
-honored on Unix. The explicit transcript index uses `history.db` beside it and
-is deliberately excluded from automatic usage-database backups.
+User rates live in `user-rates.json` in the config directory, take precedence
+over published rates, and are labeled `user rate` in reports and the
+dashboard (JSON uses `provenance: "user"`; CSV export carries no provenance
+column).
 
-Pricing overrides live at `~/.config/tokenomnom/pricing.json`, or under
-`TOKENOMNOM_CONFIG_DIR`. `XDG_CONFIG_HOME` is honored on Unix. An override
-replaces the complete entry list for each model it names:
+To replace a model's complete published entry instead, `pricing.json` in the
+same directory takes a full entry list per model. Rates are USD per million
+tokens; this file is data and needs no credentials:
 
 ```json
 {
@@ -431,65 +376,37 @@ replaces the complete entry list for each model it names:
 }
 ```
 
-Rates are USD per million tokens. Keep secrets out of this file; pricing
-overrides are data and need no credentials. To add a local estimate without
-replacing the published table, use:
-
-```sh
-tokenomnom pricing set-rate MODEL --input 1.25 --output 8
-tokenomnom pricing set-rate MODEL --clear
-```
-
-User rates are stored in `user-rates.json` in the same config directory, take
-precedence over published rates, and are labeled `user rate` in reports and
-the dashboard. They are estimates, not API list-price equivalents.
-
-`--provider`, `--model`, `--since`, and `--until` narrow reports; `--year`
-selects a heatmap calendar year, and `--no-sync` reports stored data without a
-refresh. Flags remain authoritative when they are set.
-
 Attribution and dedupe rules, day-bucketing semantics, the store schema, the
-JSON contract, pricing math and cost formulas, and disclaimer text are
-deliberately not configurable. Those are correctness contracts, not display
-preferences.
+JSON contract, pricing math, and disclaimer text are deliberately not
+configurable. Those are correctness contracts, not display preferences.
 
-The standalone installer supports
-`TOKENOMNOM_INSTALL_REPO`, `TOKENOMNOM_INSTALL_DIR`,
-`TOKENOMNOM_INSTALL_BASE_URL`, `TOKENOMNOM_INSTALL_VERSION`, and
-`TOKENOMNOM_INSTALL_ARCHIVE` for mirrors and local verification.
+The standalone installer supports `TOKENOMNOM_INSTALL_REPO`,
+`TOKENOMNOM_INSTALL_DIR`, `TOKENOMNOM_INSTALL_BASE_URL`,
+`TOKENOMNOM_INSTALL_VERSION`, and `TOKENOMNOM_INSTALL_ARCHIVE` for mirrors and
+local verification.
 
 ## Vault
 
 Coding agents throw their own history away. The vault is where it survives:
-every archived source is preserved byte-for-byte for later inspection. The
-vault manifest contains provider, source path, archive, version, size, and
-timestamp metadata; it is not yet project or session search. Inspect a bounded
-page of the manifest, then read one archived source with `vault cat`:
+every archived source is preserved byte-for-byte in monthly, provider-specific
+`.tar.zst` bundles, with a versioned manifest in the usage database.
 
 ```sh
+tokenomnom vault archive
 tokenomnom vault list --provider codex --since 2026-06-01 --limit 100 --latest --format json
 tokenomnom vault cat ~/.codex/sessions/2026/06/13/rollout-….jsonl | jq .
+tokenomnom vault verify --deep
+tokenomnom vault status
 ```
 
-Follow `data.page.next_cursor` with the same filters when `has_more` is true.
-JSON `vault cat` returns readable `content` for UTF-8 transcripts and always
-retains the compatible `content_base64` form. The installed agent skill uses
-this bounded flow and explains the temporary live-directory fallback for
-recent transcripts that have not settled or been archived yet.
-
-The transcript vault stores byte-for-byte source content in monthly,
-provider-specific `.tar.zst` bundles while keeping a versioned manifest in the
-usage database. Run `tokenomnom vault archive` for settled files or add `--all`
-to ignore the settle age and recheck source hashes. `vault verify [--deep]`
-checks bundles, `vault list` shows the manifest,
-`vault cat <source-path | rel-path>` restores original
-bytes to stdout, and `vault status` reports compression and reclaimable
-originals.
-
-`doctor` reports usage sync, archive, deep-verification, and status-scan times
-as separate facts, along with vaulted, settled-unvaulted, recent-unsettled, and
-known-broken counts. A missing synced source keeps its usage totals; raw access
-then depends on whether the source was vaulted.
+`archive` handles settled files (`--all` ignores the settle age and rechecks
+hashes), `list` pages the manifest (follow `data.page.next_cursor` when
+`has_more` is true), `cat` restores original bytes to stdout, `verify` checks
+bundles, and `status` reports compression and reclaimable originals. JSON
+`vault cat` returns readable `content` for UTF-8 transcripts alongside
+`content_base64`. `doctor` reports usage-sync, archive, deep-verification, and
+status-scan times as separate facts. A missing synced source keeps its usage
+totals; raw access then depends on whether it was vaulted.
 
 tokenomnom never modifies or deletes source transcripts. Reclaiming a verified
 original listed by `vault status` is always a manual decision.
@@ -499,12 +416,12 @@ original listed by `vault status` is always a manual decision.
 tokenomnom reads local JSONL session logs. Nothing leaves the machine. Codex
 cumulative counters are converted to deltas, rewrites and moved archives are
 reconciled, and Claude's progressive message snapshots are deduplicated across
-files before daily totals are stored. Ambiguous cache writes and unknown models
-stay explicit instead of being guessed.
+files before daily totals are stored. Ambiguous cache writes and unknown
+models stay explicit instead of being guessed.
 
 The local store preserves already-ingested history when an agent deletes or
-archives a source file. See [DESIGN.md](DESIGN.md) for the detailed attribution,
-pricing, and retention rules.
+archives a source file. See [DESIGN.md](DESIGN.md) for the detailed
+attribution, pricing, and retention rules.
 
 ## Development
 
