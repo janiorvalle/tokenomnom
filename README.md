@@ -169,10 +169,12 @@ valid vault version, and marks anything unavailable instead of silently
 dropping it. `raw` writes byte-exact JSONL plus a manifest; `normalized`
 writes provider-neutral JSONL.
 
-Without `--out`, the artifact goes to stdout and the report to stderr.
-Existing files are refused unless you pass `--force`. Exports carry
-tamper-evident structure markers for programmatic consumers — the
-`structure_nonce` contract is in [docs/agent-api.md](docs/agent-api.md).
+Without `--out`, Markdown and normalized exports write the artifact to stdout
+and the report to stderr; raw exports always require `--out`. Existing files
+are refused unless you pass `--force`. Markdown exports mark renderer
+structure with a per-export nonce so programmatic consumers can tell renderer
+structure apart from transcript content — the `structure_nonce` contract is in
+[docs/agent-api.md](docs/agent-api.md).
 
 One thing to take seriously: export is an explicit plaintext release from
 tokenomnom's local state model. It can contain prompts, responses, paths, and,
@@ -249,10 +251,10 @@ tokenomnom schedule uninstall
 ```
 
 Each tick runs one quiet `sync --scheduled`: usage sync, due backup, due
-auto-vault, then due history indexing. Failures in one step warn without
-discarding the others' work. tokenomnom uses launchd on macOS, a systemd user
-timer on Linux, and Task Scheduler on Windows — there is no daemon or resident
-process.
+auto-vault, then due history indexing. After a successful usage sync, failures
+in backup, vault, or history indexing warn without discarding the earlier
+steps' work. tokenomnom uses launchd on macOS, a systemd user timer on Linux,
+and Task Scheduler on Windows — there is no daemon or resident process.
 
 The installed unit embeds the current binary path and `schedule.interval`, so
 re-run `schedule install` after moving or upgrading the binary or changing the
