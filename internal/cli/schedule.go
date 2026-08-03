@@ -163,7 +163,7 @@ func scheduleData(cmd *cobra.Command, status schedule.Status) (jsonScheduleData,
 	} else if err != nil {
 		return result, err
 	}
-	database, err := store.Open(databasePath)
+	database, err := openUsageStore(cmd, databasePath)
 	if err != nil {
 		return result, err
 	}

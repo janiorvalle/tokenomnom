@@ -264,7 +264,7 @@ func runReport(cmd *cobra.Command, codexDir, claudeDir, timezone *string, noSync
 
 func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.Root, timezone string, noSync bool) (*store.Store, []string, error) {
 	if noSync {
-		database, err := store.Open(databasePath)
+		database, err := openUsageStore(cmd, databasePath)
 		return database, nil, err
 	}
 	release, err := store.Lock(databasePath)
@@ -275,10 +275,10 @@ func openReportStore(cmd *cobra.Command, databasePath string, roots []discover.R
 		} else if cmd.Name() == "export" && currentFormat(cmd) == "csv" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %s\n", warning)
 		}
-		database, openErr := store.Open(databasePath)
+		database, openErr := openUsageStore(cmd, databasePath)
 		return database, []string{warning}, openErr
 	}
-	database, err := store.Open(databasePath)
+	database, err := openUsageStore(cmd, databasePath)
 	if err != nil {
 		release()
 		return nil, nil, err

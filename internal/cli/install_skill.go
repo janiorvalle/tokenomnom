@@ -43,7 +43,11 @@ func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 				return err
 			}
 			if !remove && skillInstallSucceeded(results) {
-				if err := setSkillOffer(home, skill.OfferAccepted); err != nil {
+				options, err := usageStoreOpenOptions(cmd)
+				if err != nil {
+					return err
+				}
+				if err := setSkillOfferWithOptions(home, skill.OfferAccepted, options); err != nil {
 					return err
 				}
 			}
@@ -103,11 +107,15 @@ func skillOfferDatabasePath(home string) (string, error) {
 }
 
 func setSkillOffer(home, value string) error {
+	return setSkillOfferWithOptions(home, value, store.OpenOptions{})
+}
+
+func setSkillOfferWithOptions(home, value string, options store.OpenOptions) error {
 	databasePath, err := skillOfferDatabasePath(home)
 	if err != nil {
 		return err
 	}
-	database, err := store.Open(databasePath)
+	database, err := store.OpenWithOptions(databasePath, options)
 	if err != nil {
 		return err
 	}

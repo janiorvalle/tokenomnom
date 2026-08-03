@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/store"
+	"github.com/janiorvalle/tokenomnom/internal/version"
 	_ "modernc.org/sqlite"
 )
 
@@ -72,6 +73,81 @@ func TestOpenMigratesSchemaV1ToCurrent(t *testing.T) {
 	}
 	if files, err := migrated.VaultFiles(); err != nil || len(files) != 0 {
 		t.Fatalf("vault table after migration = %#v, %v", files, err)
+	}
+}
+
+func TestDevBuildCannotMigrateDefaultStoreWithoutOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TOKENOMNOM_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	previousVersion := version.Version
+	version.Version = "dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	path := filepath.Join(home, ".local", "state", "tokenomnom", store.DatabaseName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta(key, value) VALUES ('schema_version', '1');`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Open(path); !errors.Is(err, store.ErrDevMigrationBlocked) {
+		t.Fatalf("unapproved default-store open error = %v", err)
+	}
+	check, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var filesTable bool
+	if err := check.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='files')`).Scan(&filesTable); err != nil {
+		check.Close()
+		t.Fatal(err)
+	}
+	if err := check.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if filesTable {
+		t.Fatal("blocked development open migrated the default store")
+	}
+
+	database, err := store.OpenWithOptions(path, store.OpenOptions{AllowDevMigration: true})
+	if err != nil {
+		t.Fatalf("approved development open: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = store.Open(path)
+	if err != nil {
+		t.Fatalf("development open of current default store: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplicitStateOverrideAllowsDevelopmentMigration(t *testing.T) {
+	t.Setenv("TOKENOMNOM_STATE_DIR", filepath.Join(t.TempDir(), "isolated-state"))
+	previousVersion := version.Version
+	version.Version = "dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	database, err := store.Open(filepath.Join(os.Getenv("TOKENOMNOM_STATE_DIR"), store.DatabaseName))
+	if err != nil {
+		t.Fatalf("development open with explicit state override: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

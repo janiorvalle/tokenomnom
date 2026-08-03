@@ -171,7 +171,7 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 		return autoHistoryResult{}, nil
 	}
 
-	usageDatabase, err := store.Open(filepath.Join(stateDir, store.DatabaseName))
+	usageDatabase, err := openUsageStore(cmd, filepath.Join(stateDir, store.DatabaseName))
 	if err != nil {
 		return autoHistoryResult{}, fmt.Errorf("open usage store for history maintenance: %w", err)
 	}
