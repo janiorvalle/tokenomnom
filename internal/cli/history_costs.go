@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historyindexer "github.com/janiorvalle/tokenomnom/internal/history/indexer"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/ingest"
 	claudeingest "github.com/janiorvalle/tokenomnom/internal/ingest/claude"
@@ -32,7 +35,11 @@ const historyActiveSessionWarning = "session active since last index; refreshes 
 
 const historySessionCostCacheAlgorithmVersion = "history-cost-v1"
 
+const historyVaultCacheIdentityPrefix = "vault:"
+
 const historyFallbackSessionWarning = "the preferred exact transcript location was unavailable; cost uses a fallback indexed location and may omit newer usage; restore the source and rerun `tokenomnom history index`"
+
+const historyChangedSinceIndexWarning = "session bytes changed since last index; rerun `tokenomnom history index` to refresh exact attribution"
 
 type historySessionCostFlags struct {
 	provider   string
@@ -354,6 +361,10 @@ type historySessionCostCache struct {
 	command            *cobra.Command
 	codexDir           string
 	claudeDir          string
+	vaultStateOnce     sync.Once
+	vaultDir           string
+	vaultBroken        map[string]bool
+	vaultStateErr      error
 }
 
 type historySessionCostCacheValue struct {
@@ -363,6 +374,7 @@ type historySessionCostCacheValue struct {
 	TokenSource          string                         `json:"token_source"`
 	RawLocationKind      string                         `json:"raw_location_kind,omitempty"`
 	MissingSourceSettled bool                           `json:"missing_source_settled,omitempty"`
+	FileIdentity         string                         `json:"file_identity,omitempty"`
 	Warnings             []string                       `json:"warnings"`
 	AttributionTimestamp string                         `json:"attribution_timestamp,omitempty"`
 	CostNanodollars      int64                          `json:"cost_nanodollars"`
@@ -487,12 +499,12 @@ func (cache *historySessionCostCache) loadCandidate(session historystore.Session
 	if err != nil || !found {
 		return historySessionCostRow{}, found, err
 	}
-	if !cache.candidateMatchesIndexedBytes(candidate) {
-		return historySessionCostRow{}, false, nil
-	}
 	var value historySessionCostCacheValue
 	if err := json.Unmarshal(payload, &value); err != nil {
 		return historySessionCostRow{}, false, err
+	}
+	if !cache.candidateCacheIdentityMatches(candidate, value.FileIdentity) {
+		return historySessionCostRow{}, false, nil
 	}
 	if value.AttributionStatus == "" || value.TokenSource == "" {
 		return historySessionCostRow{}, false, errors.New("history session cost cache payload is incomplete")
@@ -500,26 +512,16 @@ func (cache *historySessionCostCache) loadCandidate(session historystore.Session
 	return value.row(session), true, nil
 }
 
-func (cache *historySessionCostCache) candidateMatchesIndexedBytes(candidate historystore.RawCandidate) bool {
-	if candidate.Kind == "provider_live" || candidate.Kind == "provider_archive" {
-		return historyCandidateMatchesIndexedBytes(candidate)
-	}
-	if candidate.Kind != "vault" || cache.command == nil {
-		return false
-	}
-	staged, err := readHistoryRawCandidate(cache.command, candidate, cache.codexDir, cache.claudeDir)
-	if err != nil {
-		return false
-	}
-	staged.cleanup()
-	return true
-}
-
-func (cache *historySessionCostCache) save(session historystore.SessionCostSession, candidate historystore.RawCandidate, row historySessionCostRow) {
+func (cache *historySessionCostCache) save(session historystore.SessionCostSession, candidate historystore.RawCandidate, row historySessionCostRow, candidateIdentity string) {
 	if cache == nil || cache.database == nil || len(session.Candidates) == 0 || historyCandidateChangedSinceIndex(candidate) {
 		return
 	}
-	payload, err := json.Marshal(historySessionCostCacheValueFromRow(row))
+	if !cache.candidateCacheIdentityStable(candidate, candidateIdentity) {
+		return
+	}
+	value := historySessionCostCacheValueFromRow(row)
+	value.FileIdentity = candidateIdentity
+	payload, err := json.Marshal(value)
 	if err != nil {
 		cache.stats.storeError()
 		return
@@ -546,6 +548,165 @@ func historySessionCostCacheValueFromRow(row historySessionCostRow) historySessi
 		})
 	}
 	return value
+}
+
+func (cache *historySessionCostCache) candidateCacheIdentityMatches(candidate historystore.RawCandidate, cached string) bool {
+	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
+		if candidate.Kind != "vault" {
+			return true
+		}
+		identity := cache.candidateCacheIdentity(candidate)
+		return identity != "" && identity == cached
+	}
+	identity, reliable := historyCandidateCacheIdentity(candidate)
+	if !reliable {
+		return historyCandidateMatchesIndexedBytes(candidate)
+	}
+	return identity != "" && identity == cached
+}
+
+func (cache *historySessionCostCache) candidateCacheIdentity(candidate historystore.RawCandidate) string {
+	if candidate.Kind == "vault" {
+		cache.vaultStateOnce.Do(func() {
+			if cache.command == nil {
+				cache.vaultStateErr = errors.New("history vault cache state requires a command")
+				return
+			}
+			instance, database, err := openVault(cache.command, cache.codexDir, cache.claudeDir)
+			if err != nil {
+				cache.vaultStateErr = err
+				return
+			}
+			defer database.Close()
+			value, err := database.Meta("vault_broken_archives")
+			if err != nil {
+				cache.vaultStateErr = err
+				return
+			}
+			cache.vaultDir = instance.Dir()
+			cache.vaultBroken = map[string]bool{}
+			if value != "" {
+				var broken []string
+				if err := json.Unmarshal([]byte(value), &broken); err != nil {
+					cache.vaultStateErr = err
+					return
+				}
+				for _, archive := range broken {
+					cache.vaultBroken[archive] = true
+				}
+			}
+		})
+		if cache.vaultStateErr != nil || cache.vaultBroken[candidate.Archive] {
+			return ""
+		}
+		archivePath := filepath.Join(cache.vaultDir, filepath.FromSlash(candidate.Archive))
+		info, err := os.Stat(archivePath)
+		if err != nil || !info.Mode().IsRegular() {
+			return ""
+		}
+		// Vault hits validate the immutable archive with metadata only. A changed
+		// bundle must take the cold exact-member path; re-reading unchanged
+		// compressed bytes defeats the point of caching.
+		return historyVaultCacheIdentity(info)
+	}
+	identity, _ := historyCandidateCacheIdentity(candidate)
+	return identity
+}
+
+func (cache *historySessionCostCache) candidateCacheIdentityStable(candidate historystore.RawCandidate, before string) bool {
+	if candidate.Kind == "provider_live" || candidate.Kind == "provider_archive" {
+		_, reliable := historyCandidateCacheIdentity(candidate)
+		if !reliable {
+			return true
+		}
+	}
+	return before != "" && cache.candidateCacheIdentity(candidate) == before
+}
+
+func historyVaultCacheIdentity(info os.FileInfo) string {
+	if info == nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	identity := historyStableFileIdentity(info)
+	return fmt.Sprintf("%s%s:size=%d:mtime=%d", historyVaultCacheIdentityPrefix, identity, info.Size(), info.ModTime().UnixNano())
+}
+
+func historyCandidateCacheIdentity(candidate historystore.RawCandidate) (string, bool) {
+	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
+		return "", true
+	}
+	if runtime.GOOS == "windows" {
+		return "", false
+	}
+	if !historyFilesystemHasReliableIdentity(candidate.SourcePath) {
+		return "", false
+	}
+	info, err := os.Stat(candidate.SourcePath)
+	if err != nil || info.Sys() == nil {
+		return "", false
+	}
+	// Stat metadata includes the file-instance/change token on supported
+	// providers, catching same-size replacements that preserve mtime without
+	// rereading the transcript.
+	identity := historyStableFileIdentity(info)
+	if identity == "" {
+		return "", false
+	}
+	return identity, true
+}
+
+func historyStableFileIdentity(info os.FileInfo) string {
+	if info == nil || info.Sys() == nil {
+		return ""
+	}
+	value := reflect.ValueOf(info.Sys())
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return ""
+	}
+	fieldNames := []string{
+		"Dev", "Ino", "Ctim", "Ctimespec", "Birthtime", "Birthtimespec",
+		"VolumeSerialNumber", "FileIndexHigh", "FileIndexLow", "CreationTime", "ChangeTime",
+	}
+	fields := make([]string, 0, len(fieldNames))
+	for _, name := range fieldNames {
+		field := value.FieldByName(name)
+		if !field.IsValid() || !field.CanInterface() {
+			continue
+		}
+		fields = append(fields, name+"="+fmt.Sprintf("%#v", field.Interface()))
+	}
+	if len(fields) == 0 {
+		if runtime.GOOS == "windows" {
+			// Windows vault hits are byte-verified below; this metadata only
+			// preserves a persisted row until that check runs.
+			return fmt.Sprintf("%T:%#v", info.Sys(), info.Sys())
+		}
+		return ""
+	}
+	return fmt.Sprintf("%T:%s", info.Sys(), strings.Join(fields, ";"))
+}
+
+func historyCandidateMatchesIndexedBytes(candidate historystore.RawCandidate) bool {
+	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
+		return true
+	}
+	if candidate.ContentSHA256 == "" || historyCandidateChangedSinceIndex(candidate) {
+		return false
+	}
+	source, err := os.Open(candidate.SourcePath)
+	if err != nil {
+		return false
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(hash, source)
+	closeErr := source.Close()
+	return copyErr == nil && closeErr == nil && written == candidate.Size && hex.EncodeToString(hash.Sum(nil)) == candidate.ContentSHA256
 }
 
 func (value historySessionCostCacheValue) row(session historystore.SessionCostSession) historySessionCostRow {
@@ -611,8 +772,15 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 	var events []ingest.UsageEvent
 	var selectedKind string
 	var selectedCandidate historystore.RawCandidate
+	var selectedIdentity string
 	fallbackUsed := false
 	for candidateIndex, candidate := range session.Candidates {
+		// A growing or truncated provider file cannot satisfy the cache key or
+		// exact-byte contract. Skip it before opening the potentially large file.
+		// An mtime-only change still gets a cold exact-byte read below.
+		if historyCandidateSizeChangedSinceIndex(candidate) {
+			continue
+		}
 		if candidateIndex > 0 && cache != nil {
 			cached, found, cacheErr := cache.loadCandidate(session, candidate)
 			if cacheErr != nil {
@@ -623,6 +791,10 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 				addHistoryCandidateTruncationWarning(&cached, session)
 				return cached, nil
 			}
+		}
+		candidateIdentity := ""
+		if cache != nil {
+			candidateIdentity = cache.candidateCacheIdentity(candidate)
 		}
 		staged, err := readHistoryRawCandidate(cmd, candidate, codexDir, claudeDir)
 		if err != nil {
@@ -636,6 +808,7 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 		events = parsed
 		selectedKind = candidate.Kind
 		selectedCandidate = candidate
+		selectedIdentity = candidateIdentity
 		fallbackUsed = candidateIndex > 0
 		break
 	}
@@ -644,6 +817,8 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 		warning := "indexed transcript bytes could not be read or parsed; restore the source or vault snapshot and rerun `tokenomnom history index`"
 		if activeHistorySessionWarning(session.Candidates) != "" {
 			warning = historyActiveSessionWarning
+		} else if historyCandidatesHaveStatDrift(session.Candidates) {
+			warning = historyChangedSinceIndexWarning
 		}
 		row.Warnings = append(row.Warnings, warning)
 		return row, nil
@@ -664,7 +839,7 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 		}
 		row.Warnings = append(row.Warnings, "the exact transcript was read but contained no token-usage records; no cost was calculated")
 		if cache != nil {
-			cache.save(session, selectedCandidate, row)
+			cache.save(session, selectedCandidate, row, selectedIdentity)
 		}
 		return row, nil
 	}
@@ -689,7 +864,7 @@ func priceHistorySessionMatchingCached(cmd *cobra.Command, session historystore.
 		row.Warnings = append(row.Warnings, fmt.Sprintf("%d tokens came from an unknown model; re-index after model metadata is available", row.Tokens.UnknownModelTokens))
 	}
 	if cache != nil {
-		cache.save(session, selectedCandidate, row)
+		cache.save(session, selectedCandidate, row, selectedIdentity)
 	}
 	return row, nil
 }
@@ -713,14 +888,18 @@ func addHistoryFallbackWarning(row *historySessionCostRow, session historystore.
 	}
 	filtered := row.Warnings[:0]
 	for _, warning := range row.Warnings {
-		if warning != historyActiveSessionWarning && warning != historyFallbackSessionWarning {
+		if warning != historyActiveSessionWarning && warning != historyFallbackSessionWarning && warning != historyChangedSinceIndexWarning {
 			filtered = append(filtered, warning)
 		}
 	}
 	row.Warnings = filtered
-	preferredActive := len(session.Candidates) > 0 && historyCandidateIsGrowing(session.Candidates[0])
-	if preferredActive {
+	preferredChanged := len(session.Candidates) > 0 && historyCandidateChangedSinceIndex(session.Candidates[0])
+	if preferredChanged && historyCandidateIsGrowing(session.Candidates[0]) {
 		row.Warnings = append(row.Warnings, historyActiveSessionWarning)
+		return
+	}
+	if preferredChanged && historyCandidateHasStatDrift(session.Candidates[0]) {
+		row.Warnings = append(row.Warnings, historyChangedSinceIndexWarning)
 		return
 	}
 	row.Warnings = append(row.Warnings, historyFallbackSessionWarning)
@@ -790,22 +969,39 @@ func activeHistorySessionWarning(candidates []historystore.RawCandidate) string 
 	return ""
 }
 
+func historyCandidateHasStatDrift(candidate historystore.RawCandidate) bool {
+	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
+		return false
+	}
+	info, err := os.Stat(candidate.SourcePath)
+	if err != nil {
+		return false
+	}
+	if info.Size() != candidate.Size {
+		return true
+	}
+	return candidate.ModTimeUnix != 0 && info.ModTime().UnixNano() != candidate.ModTimeUnix
+}
+
+func historyCandidatesHaveStatDrift(candidates []historystore.RawCandidate) bool {
+	for _, candidate := range candidates {
+		if historyCandidateHasStatDrift(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func historyCandidateIsGrowing(candidate historystore.RawCandidate) bool {
 	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
 		return false
 	}
 	info, err := os.Stat(candidate.SourcePath)
-	if err != nil || info.Size() <= candidate.Size || candidate.Size < 0 || candidate.ContentSHA256 == "" {
+	if err != nil || candidate.Size < 0 || info.Size() <= candidate.Size || candidate.PrefixFingerprint == "" {
 		return false
 	}
-	source, err := os.Open(candidate.SourcePath)
-	if err != nil {
-		return false
-	}
-	defer source.Close()
-	hash := sha256.New()
-	written, err := io.CopyN(hash, source, candidate.Size)
-	return err == nil && written == candidate.Size && hex.EncodeToString(hash.Sum(nil)) == candidate.ContentSHA256
+	prefix, err := historyindexer.PrefixFingerprint(candidate.SourcePath, candidate.Size)
+	return err == nil && prefix == candidate.PrefixFingerprint
 }
 
 func historyCandidateChangedSinceIndex(candidate historystore.RawCandidate) bool {
@@ -819,21 +1015,12 @@ func historyCandidateChangedSinceIndex(candidate historystore.RawCandidate) bool
 	return candidate.ModTimeUnix != 0 && info.ModTime().UnixNano() != candidate.ModTimeUnix
 }
 
-func historyCandidateMatchesIndexedBytes(candidate historystore.RawCandidate) bool {
+func historyCandidateSizeChangedSinceIndex(candidate historystore.RawCandidate) bool {
 	if candidate.Kind != "provider_live" && candidate.Kind != "provider_archive" {
-		return true
-	}
-	if candidate.ContentSHA256 == "" || historyCandidateChangedSinceIndex(candidate) {
 		return false
 	}
-	source, err := os.Open(candidate.SourcePath)
-	if err != nil {
-		return false
-	}
-	hash := sha256.New()
-	written, copyErr := io.Copy(hash, source)
-	closeErr := source.Close()
-	return copyErr == nil && closeErr == nil && written == candidate.Size && hex.EncodeToString(hash.Sum(nil)) == candidate.ContentSHA256
+	info, err := os.Stat(candidate.SourcePath)
+	return err != nil || info.Size() != candidate.Size
 }
 
 func allHistoryUsageEvents(events []ingest.UsageEvent) ([]ingest.UsageEvent, []string) {

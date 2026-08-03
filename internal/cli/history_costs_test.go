@@ -12,6 +12,7 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	historyindexer "github.com/janiorvalle/tokenomnom/internal/history/indexer"
 	historystore "github.com/janiorvalle/tokenomnom/internal/history/store"
 	"github.com/janiorvalle/tokenomnom/internal/ingest"
 	"github.com/janiorvalle/tokenomnom/internal/pricing"
@@ -106,6 +107,27 @@ func TestHistoryCostsPricesExactCodexTranscript(t *testing.T) {
 	}
 	if len(staleData.Sessions) != 1 || staleData.Sessions[0].AttributionStatus != "unavailable" {
 		t.Fatalf("same-size rewritten transcript row = %+v", staleData.Sessions)
+	}
+
+	if err := os.WriteFile(filepath.Join(codexDir, "sessions", "cost.jsonl"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(codexDir, "sessions", "cost.jsonl"), info.ModTime().Add(time.Second), info.ModTime().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	changedOutput, err := executeReport([]string{"history", "costs", "--limit", "1", "--cwd", "/repo", "--project", "repo", "--source", "provider", "--format", "json"}, codexDir, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changedData historySessionCostData
+	if err := json.Unmarshal(decodeEnvelope(t, changedOutput).Data, &changedData); err != nil {
+		t.Fatal(err)
+	}
+	if changedData.Cache.Hits != 0 || changedData.Cache.Misses != 1 || changedData.Cache.Stores != 0 || changedData.Cache.StoreErrors != 0 {
+		t.Fatalf("stat-changed transcript cache receipt = %+v", changedData.Cache)
+	}
+	if len(changedData.Sessions) != 1 || changedData.Sessions[0].AttributionStatus != "complete" || changedData.Sessions[0].Tokens.InputTokens != 100000 {
+		t.Fatalf("stat-changed transcript row = %+v", changedData.Sessions)
 	}
 }
 
@@ -230,6 +252,10 @@ func TestHistoryCostsKeepsActiveFallbackIncomplete(t *testing.T) {
 	writeTextFixture(t, preferredPath, initial+`{"timestamp":"2026-07-20T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"still active"}}`+"\n")
 	writeTextFixture(t, fallbackPath, initial)
 	digest := sha256.Sum256([]byte(initial))
+	prefix, err := historyindexer.PrefixFingerprint(preferredPath, int64(len(initial)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	table, err := pricing.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +263,7 @@ func TestHistoryCostsKeepsActiveFallbackIncomplete(t *testing.T) {
 	row, err := priceHistorySessionMatching(&cobra.Command{}, historystore.SessionCostSession{
 		CatalogSession: historystore.CatalogSession{Provider: history.ProviderCodex},
 		Candidates: []historystore.RawCandidate{
-			{Kind: "provider_live", SourcePath: preferredPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
+			{Kind: "provider_live", SourcePath: preferredPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:]), PrefixFingerprint: prefix},
 			{Kind: "provider_archive", SourcePath: fallbackPath, Size: int64(len(initial)), ContentSHA256: hex.EncodeToString(digest[:])},
 		},
 	}, table, "", "", allHistoryUsageEvents)
@@ -254,12 +280,17 @@ func TestActiveHistoryWarningRequiresIndexedPrefix(t *testing.T) {
 	path := filepath.Join(root, "rewritten.jsonl")
 	indexed := historyCodexFixture("indexed", "before rewrite")
 	current := historyCodexFixture("rewritten", "different prefix") + "extra bytes\n"
+	writeTextFixture(t, path, indexed)
+	prefix, err := historyindexer.PrefixFingerprint(path, int64(len(indexed)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeTextFixture(t, path, current)
 	digest := sha256.Sum256([]byte(indexed))
 	if warning := activeHistorySessionWarning([]historystore.RawCandidate{{
-		Kind: "provider_live", SourcePath: path, Size: int64(len(indexed)), ContentSHA256: hex.EncodeToString(digest[:]),
+		Kind: "provider_live", SourcePath: path, Size: int64(len(indexed)), ContentSHA256: hex.EncodeToString(digest[:]), PrefixFingerprint: prefix,
 	}}); warning != "" {
-		t.Fatalf("rewritten transcript was classified as active: %q", warning)
+		t.Fatalf("changed transcript warning = %q", warning)
 	}
 }
 
