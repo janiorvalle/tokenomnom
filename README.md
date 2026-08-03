@@ -166,8 +166,9 @@ related subagent sessions (`--no-subagents` narrows it). User and assistant
 text stays complete; tool output and thinking are collapsed unless you ask for
 them. Rendering reads and hash-validates the original bytes, falls back to a
 valid vault version, and marks anything unavailable instead of silently
-dropping it. `raw` writes byte-exact JSONL plus a manifest; `normalized`
-writes provider-neutral JSONL.
+dropping it. `raw` writes one byte-exact JSONL file per transcript, plus a
+`manifest.json` when the target is a directory; `normalized` writes
+provider-neutral JSONL.
 
 Without `--out`, Markdown and normalized exports write the artifact to stdout
 and the report to stderr; raw exports always require `--out`. Existing files
