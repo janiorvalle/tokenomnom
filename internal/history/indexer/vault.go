@@ -20,17 +20,18 @@ import (
 
 // VaultOptions configures one explicit immutable-vault indexing pass.
 type VaultOptions struct {
-	Store          *historystore.Store
-	StorePath      string
-	Vault          *vault.Vault
-	Providers      []history.Provider
-	Full           bool
-	Now            func() time.Time
-	LockHeld       bool
-	SkipRunRecord  bool
-	Before         func(*historystore.Store) error
-	After          func(*historystore.Store, VaultSummary) error
-	IndexAssistant bool
+	Store            *historystore.Store
+	StorePath        string
+	StoreOpenOptions historystore.OpenOptions
+	Vault            *vault.Vault
+	Providers        []history.Provider
+	Full             bool
+	Now              func() time.Time
+	LockHeld         bool
+	SkipRunRecord    bool
+	Before           func(*historystore.Store) error
+	After            func(*historystore.Store, VaultSummary) error
+	IndexAssistant   bool
 }
 
 // VaultSummary reports archive-atomic backfill work.
@@ -97,7 +98,7 @@ func IndexVault(options VaultOptions) (VaultSummary, error) {
 		}
 		opened := false
 		if database == nil {
-			database, err = historystore.Open(path)
+			database, err = historystore.OpenWithOptions(path, options.StoreOpenOptions)
 			if err != nil {
 				release()
 				return nil, err

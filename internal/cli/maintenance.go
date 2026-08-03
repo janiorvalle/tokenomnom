@@ -161,6 +161,10 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 		return autoHistoryResult{}, err
 	}
 	historyPath := filepath.Join(stateDir, historystore.DatabaseName)
+	historyOpenOptions, err := historyStoreOpenOptions(cmd)
+	if err != nil {
+		return autoHistoryResult{}, err
+	}
 	health, err := historystore.InspectHealth(historyPath)
 	if err != nil {
 		return autoHistoryResult{}, err
@@ -213,7 +217,7 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 	}
 	if vaultSetupErr == nil {
 		vaultSummary, vaultErr = indexer.IndexVault(indexer.VaultOptions{
-			StorePath: historyPath, Vault: instance, Providers: providers, Now: func() time.Time { return attempt }, SkipRunRecord: true, IndexAssistant: cfg.History.IndexAssistant,
+			StorePath: historyPath, StoreOpenOptions: historyOpenOptions, Vault: instance, Providers: providers, Now: func() time.Time { return attempt }, SkipRunRecord: true, IndexAssistant: cfg.History.IndexAssistant,
 			After: func(database *historystore.Store, current indexer.VaultSummary) error {
 				completedTogether = true
 				runProvider(database, len(providers) > 0 && current.ErrorCount == 0)
@@ -229,7 +233,7 @@ func runDueHistoryIndex(cmd *cobra.Command, roots []discover.Root) (autoHistoryR
 		if lockErr != nil {
 			return autoHistoryResult{}, errors.Join(vaultErr, lockErr)
 		}
-		database, openErr := historystore.Open(historyPath)
+		database, openErr := historystore.OpenWithOptions(historyPath, historyOpenOptions)
 		if openErr != nil {
 			release()
 			return autoHistoryResult{}, errors.Join(vaultErr, openErr)
