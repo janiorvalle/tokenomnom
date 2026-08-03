@@ -125,7 +125,7 @@ list-price equivalents or user rate estimates, not actual bills.`,
 	cmd.PersistentFlags().StringVar(&timezone, "tz", "", "bucket usage in an IANA timezone (default: system local)")
 	cmd.PersistentFlags().StringVar(&format, "format", "pretty", "output format (pretty or json)")
 	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable styled output")
-	cmd.PersistentFlags().BoolVar(&allowMigrate, "allow-migrate", false, "allow a development build to migrate the default usage store")
+	cmd.PersistentFlags().BoolVar(&allowMigrate, "allow-migrate", false, "allow a development build to migrate the default usage or history store")
 	cmd.AddCommand(newDoctorCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSyncCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newSummaryCommand(&codexDir, &claudeDir, &timezone))

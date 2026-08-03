@@ -36,10 +36,10 @@ the overrides set even for commands such as `doctor` that appear read-only;
 health checks may open the usage store and scheduled maintenance may write
 backups or metadata.
 
-When `version` is `dev`, tokenomnom refuses to migrate the default user usage
-store. Use the isolation overrides above, or pass `--allow-migrate` only when
-you intentionally want that development binary to change the default store.
-Released builds do not require this flag.
+When `version` is `dev`, tokenomnom refuses to migrate the default user usage or
+history store. Use the isolation overrides above, or pass `--allow-migrate` only
+when you intentionally want that development binary to change the default
+store. Released builds do not require this flag.
 
 ## Envelope
 

@@ -76,6 +76,10 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			historyOpenOptions, err := historyStoreOpenOptions(cmd)
+			if err != nil {
+				return err
+			}
 			attempt := time.Now()
 			providerSummary := indexer.Summary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
 			vaultSummary := indexer.VaultSummary{Errors: []indexer.Issue{}, Warnings: []indexer.Issue{}, Full: full}
@@ -115,7 +119,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					return err
 				}
 				defer release()
-				database, err := historystore.Open(path)
+				database, err := historystore.OpenWithOptions(path, historyOpenOptions)
 				if err != nil {
 					return err
 				}
@@ -161,7 +165,7 @@ func newHistoryIndexCommand(codexDir, claudeDir *string) *cobra.Command {
 					vaultErr = openErr
 				} else {
 					vaultSummary, vaultErr = indexer.IndexVault(indexer.VaultOptions{
-						StorePath: path, Vault: instance, Providers: providers, Full: full, Now: func() time.Time { return attempt }, SkipRunRecord: source == "all", IndexAssistant: indexAssistant,
+						StorePath: path, StoreOpenOptions: historyOpenOptions, Vault: instance, Providers: providers, Full: full, Now: func() time.Time { return attempt }, SkipRunRecord: source == "all", IndexAssistant: indexAssistant,
 						Before: captureThreadKindBaseline,
 						After: func(database *historystore.Store, current indexer.VaultSummary) (err error) {
 							defer func() {
@@ -513,6 +517,17 @@ func historyDatabasePath(home string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(stateDir, historystore.DatabaseName), nil
+}
+
+func historyStoreOpenOptions(cmd *cobra.Command) (historystore.OpenOptions, error) {
+	if cmd.Flags().Lookup("allow-migrate") == nil {
+		return historystore.OpenOptions{}, nil
+	}
+	allowMigrate, err := cmd.Flags().GetBool("allow-migrate")
+	if err != nil {
+		return historystore.OpenOptions{}, fmt.Errorf("read --allow-migrate: %w", err)
+	}
+	return historystore.OpenOptions{AllowDevMigration: allowMigrate}, nil
 }
 
 type jsonHistoryIndexData struct {

@@ -18,6 +18,8 @@ import (
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
 	"github.com/janiorvalle/tokenomnom/internal/sqliteutil"
+	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,6 +29,15 @@ const (
 )
 
 var ErrStoreInUse = errors.New("history store is busy")
+
+// ErrDevMigrationBlocked indicates that a development build refused to alter
+// the default user history store without an explicit opt-in.
+var ErrDevMigrationBlocked = errors.New("development history-store migration blocked")
+
+// OpenOptions controls safeguards applied while opening a history store.
+type OpenOptions struct {
+	AllowDevMigration bool
+}
 
 // Store owns one history database connection.
 type Store struct {
@@ -55,6 +66,16 @@ type Info struct {
 
 // Open creates or migrates a history database.
 func Open(path string) (*Store, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+// OpenWithOptions creates or migrates a history database with explicit
+// development-build migration policy. An explicit TOKENOMNOM_STATE_DIR is
+// always safe; the default user store requires AllowDevMigration in dev builds.
+func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
+	if err := refuseUnsafeDevMigration(path, options); err != nil {
+		return nil, err
+	}
 	stateDir := filepath.Dir(path)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create history state directory: %w", err)
@@ -82,6 +103,68 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+func refuseUnsafeDevMigration(path string, options OpenOptions) error {
+	if options.AllowDevMigration || version.Version != "dev" || !isDefaultStorePath(path) {
+		return nil
+	}
+	requiresMigration, err := historyStoreRequiresMigration(path)
+	if err != nil {
+		return fmt.Errorf("%w: could not inspect %q before migration; no store changes were made; use TOKENOMNOM_STATE_DIR for an isolated history store or retry with --allow-migrate: %v", ErrDevMigrationBlocked, path, err)
+	}
+	if !requiresMigration {
+		return nil
+	}
+	return fmt.Errorf("%w [TOKENOMNOM_DEV_MIGRATION_BLOCKED]: development build %q cannot migrate the default history store %q; no store changes were made; set TOKENOMNOM_STATE_DIR to an isolated path or retry with --allow-migrate", ErrDevMigrationBlocked, version.Version, path)
+}
+
+func historyStoreRequiresMigration(path string) (bool, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, fmt.Errorf("stat history store: %w", err)
+	}
+	dsn, err := fileDSN(path, true)
+	if err != nil {
+		return false, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return false, fmt.Errorf("open history store read-only: %w", err)
+	}
+	defer db.Close()
+	persisted, _, err := sqliteutil.SchemaVersion(db, "history store")
+	if err != nil {
+		return false, err
+	}
+	if persisted < SchemaVersion || persisted > SchemaVersion {
+		return persisted < SchemaVersion, nil
+	}
+	var extractorVersion int
+	if err := db.QueryRow(`SELECT COALESCE((SELECT value FROM meta WHERE key='extractor_version'), '0')`).Scan(&extractorVersion); err != nil {
+		return false, fmt.Errorf("read history extractor version: %w", err)
+	}
+	return extractorVersion != history.ExtractorVersion, nil
+}
+
+func isDefaultStorePath(path string) bool {
+	if os.Getenv("TOKENOMNOM_STATE_DIR") != "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(absPath) == filepath.Join(filepath.Clean(stateDir), DatabaseName)
 }
 
 // OpenReadOnly opens an existing current-schema database without taking the

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/history"
+	"github.com/janiorvalle/tokenomnom/internal/version"
+	"github.com/janiorvalle/tokenomnom/internal/xdg"
 	_ "modernc.org/sqlite"
 )
 
@@ -154,6 +156,198 @@ func TestOpenCreatesPrivatePermissionsAndIndependentSchema(t *testing.T) {
 				t.Fatalf("mode for %s = %v, %v", candidate, stat.Mode().Perm(), err)
 			}
 		}
+	}
+}
+
+func TestDevBuildCannotMigrateDefaultHistoryStoreWithoutOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("TOKENOMNOM_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	previousVersion := version.Version
+	version.Version = "dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDir, DatabaseName)
+	prepareHistoryStoreAtVersion(t, path, SchemaVersion-1)
+
+	if _, err := Open(path); !errors.Is(err, ErrDevMigrationBlocked) {
+		t.Fatalf("unapproved default history-store open error = %v", err)
+	} else {
+		for _, fragment := range []string{
+			"TOKENOMNOM_DEV_MIGRATION_BLOCKED",
+			"no store changes were made",
+			"TOKENOMNOM_STATE_DIR",
+			"--allow-migrate",
+		} {
+			if !strings.Contains(err.Error(), fragment) {
+				t.Fatalf("blocked history-store error %q does not contain %q", err, fragment)
+			}
+		}
+	}
+	info, err := Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SchemaVersion != SchemaVersion-1 {
+		t.Fatalf("blocked history-store schema version = %d, want %d", info.SchemaVersion, SchemaVersion-1)
+	}
+
+	database, err := OpenWithOptions(path, OpenOptions{AllowDevMigration: true})
+	if err != nil {
+		t.Fatalf("approved development history-store open: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info, err = Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SchemaVersion != SchemaVersion {
+		t.Fatalf("approved history-store schema version = %d, want %d", info.SchemaVersion, SchemaVersion)
+	}
+
+	database, err = Open(path)
+	if err != nil {
+		t.Fatalf("development open of current default history store: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplicitStateOverrideAllowsDevelopmentHistoryMigration(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "isolated-state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	previousVersion := version.Version
+	version.Version = "dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	path := filepath.Join(stateDir, DatabaseName)
+	prepareHistoryStoreAtVersion(t, path, SchemaVersion-1)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("development history-store open with explicit state override: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDevBuildCannotRewriteDefaultHistoryStoreForExtractorMigration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("TOKENOMNOM_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	previousVersion := version.Version
+	version.Version = "dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDir, DatabaseName)
+	prepareHistoryStoreAtMetadata(t, path, SchemaVersion, history.ExtractorVersion-1)
+
+	if _, err := Open(path); !errors.Is(err, ErrDevMigrationBlocked) {
+		t.Fatalf("unapproved extractor migration error = %v", err)
+	} else if !strings.Contains(err.Error(), "no store changes were made") {
+		t.Fatalf("extractor migration error omits no-change contract: %v", err)
+	}
+	info, err := Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SchemaVersion != SchemaVersion || info.ExtractorVersion != history.ExtractorVersion-1 {
+		t.Fatalf("blocked extractor migration changed metadata: %+v", info)
+	}
+
+	database, err := OpenWithOptions(path, OpenOptions{AllowDevMigration: true})
+	if err != nil {
+		t.Fatalf("approved extractor migration: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info, err = Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ExtractorVersion != history.ExtractorVersion {
+		t.Fatalf("approved extractor migration version = %d, want %d", info.ExtractorVersion, history.ExtractorVersion)
+	}
+}
+
+func TestReleasedBuildCanMigrateDefaultHistoryStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("TOKENOMNOM_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	previousVersion := version.Version
+	version.Version = "1.2.3"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	stateDir, err := xdg.StateDir(xdg.Options{Home: home, Getenv: os.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDir, DatabaseName)
+	prepareHistoryStoreAtMetadata(t, path, SchemaVersion-1, history.ExtractorVersion-1)
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("released history-store open: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SchemaVersion != SchemaVersion {
+		t.Fatalf("released history-store schema version = %d, want %d", info.SchemaVersion, SchemaVersion)
+	}
+}
+
+func prepareHistoryStoreAtVersion(t *testing.T, path string, schemaVersion int) {
+	prepareHistoryStoreAtMetadata(t, path, schemaVersion, history.ExtractorVersion)
+}
+
+func prepareHistoryStoreAtMetadata(t *testing.T, path string, schemaVersion, extractorVersion int) {
+	t.Helper()
+	previousVersion := version.Version
+	version.Version = "1.2.3"
+	database, err := Open(path)
+	version.Version = previousVersion
+	if err != nil {
+		t.Fatalf("create history store fixture: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE meta SET value=? WHERE key='schema_version'`, schemaVersion); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE meta SET value=? WHERE key='extractor_version'`, extractorVersion); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
