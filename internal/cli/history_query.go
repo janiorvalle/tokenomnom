@@ -61,7 +61,7 @@ func newHistorySearchPage(cmd *cobra.Command, codexDir, claudeDir string) *tui.H
 				if !request.Sync && request.HistorySessionID == "" && strings.TrimSpace(request.HistoryQuery) == "" {
 					return loadHistorySearchPageWithFreshness(cmd, request, codexDir, claudeDir, nil, true)
 				}
-				warnings := freshness.snapshot(request.Sync, func() []string {
+				warnings := freshness.snapshot(request.Sync || request.RefreshPages, func() []string {
 					home, err := os.UserHomeDir()
 					if err != nil {
 						return []string{"History freshness could not be checked; run `tokenomnom history status` for details."}
