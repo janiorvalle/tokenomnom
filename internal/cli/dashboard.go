@@ -2000,8 +2000,15 @@ func dashboardDailyView(database *store.Store, allRows []store.DailyRow, filter 
 		}
 	}
 	sessions := tuipages.DailySessionData{}
-	if selectedDate != "" && loadDailySessions != nil {
-		sessions = loadDailySessions(selectedDate)
+	if selectedDate != "" {
+		switch {
+		case loadDailySessions != nil:
+			sessions = loadDailySessions(selectedDate)
+		case request.Initial:
+			// The first frame deliberately skips the ambient history index. Keep that
+			// absence distinct from an indexed day with no sessions.
+			sessions.Pending = true
+		}
 	}
 	data := dashboardDailyPageData(allRows, filter, costs, detail, selectedDate, sessions)
 	bodyHeight := tui.ContentHeightFor(request.Width, request.Height)

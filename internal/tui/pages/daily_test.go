@@ -43,6 +43,21 @@ func TestRenderDailyWideTallFillsTheDenseDeskContract(t *testing.T) {
 	}
 }
 
+func TestRenderDailyPendingHistoryShowsLoadingInsteadOfEmptyClaims(t *testing.T) {
+	data := testDailyPageData()
+	data.Sessions = DailySessionData{Pending: true}
+	view := RenderDaily(testDailyRender(168), data, 192, 66, 59, 0)
+
+	if !strings.Contains(view, "Loading sessions…") {
+		t.Fatalf("pending Daily frame omitted the loading state:\n%s", view)
+	}
+	for _, fragment := range []string{"No indexed sessions for this day.", "top 3 by cost of 0", "PROJECTS · 2026-07-30 · 0 sessions"} {
+		if strings.Contains(view, fragment) {
+			t.Fatalf("pending Daily frame made an empty-data claim %q:\n%s", fragment, view)
+		}
+	}
+}
+
 func TestRenderDailyStandardUsesTwoAnalysisPanesAndTopThree(t *testing.T) {
 	data := testDailyPageData()
 	render := testDailyRender(98)

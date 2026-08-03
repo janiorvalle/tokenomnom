@@ -987,7 +987,7 @@ func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.
 		t.Fatal(err)
 	}
 	loader := newDashboardLoader(cmd, codexDir, claudeDir, "", theme.FromContext(cmd.Context()))
-	snapshot, err := loader(tui.Request{Initial: true, Width: 100, Height: 30})
+	snapshot, err := loader(tui.Request{Initial: true, Width: 215, Height: 53})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,6 +999,10 @@ func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.
 	}
 	if snapshot.Vault.Directory != "" || len(snapshot.System.Findings) != 0 || !snapshot.Sessions.Pending || snapshot.Sessions.IndexAvailable {
 		t.Fatalf("initial loader performed ambient work: vault=%#v system=%#v sessions=%#v", snapshot.Vault, snapshot.System, snapshot.Sessions)
+	}
+	daily := snapshot.Views[tui.DailyTab]
+	if !strings.Contains(daily, "LAST 10 DAYS") || !strings.Contains(daily, "Loading sessions…") || strings.Contains(daily, "No indexed sessions for this day.") {
+		t.Fatalf("initial Daily frame confused pending history with an empty index:\n%s", daily)
 	}
 }
 

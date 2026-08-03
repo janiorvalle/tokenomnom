@@ -317,6 +317,7 @@ type Model struct {
 	commandOutputFailure     bool
 	commandOutputHint        string
 	dashboardLoadBusy        bool
+	initialSnapshotPending   bool
 	progress                 LoadProgress
 	progressSink             ProgressSink
 }
@@ -411,6 +412,16 @@ func (m *Model) startDashboardLoad(request Request) tea.Cmd {
 	request.LoadID = m.loadID
 	m.request.LoadID = request.LoadID
 	m.request.Initial = false
+	m.dashboardLoadBusy = true
+	return m.loadCmd(request)
+}
+
+func (m *Model) startInitialStoreLoad(request Request) tea.Cmd {
+	request.Initial = true
+	request.Sync = false
+	request.LoadID = 0
+	m.request.Initial = true
+	m.request.LoadID = 0
 	m.dashboardLoadBusy = true
 	return m.loadCmd(request)
 }
@@ -616,6 +627,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.request.Width, m.request.Height = msg.Width, msg.Height
 		m.render.Width = msg.Width
 		m.palette.resize(msg.Width)
+		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && m.initialSnapshotPending && !m.commandBusy && !m.syncing && !m.pendingSync && !m.dashboardLoadBusy {
+			m.pendingResize = false
+			return m, m.startInitialStoreLoad(m.request)
+		}
 		if msg.Width >= minimumWidth && msg.Height >= minimumHeight && !m.commandBusy && !m.syncing && !m.pendingSync && !m.dashboardLoadBusy {
 			m.pendingResize = false
 			return m, m.startDashboardLoad(m.request)
@@ -721,15 +736,19 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.generation != m.loadGeneration {
 			return m, nil
 		}
-		// The first store-only load does not depend on terminal dimensions, but a
-		// resize can update the live request before its result arrives. Keep that
-		// result so the current request can start the initial sync.
+		// The first store-only load contains pre-rendered page strings and can finish
+		// against startup dimensions. Keep its result long enough to repaint at the
+		// live dimensions before the ambient sync begins.
 		initialLoad := !m.loaded && msg.request.Initial && msg.request.LoadID == 0
 		requestMatches := initialLoad || sameRequestIgnoringSync(msg.request, m.request)
 		if !requestMatches {
 			return m, m.resumePendingWork()
 		}
 		if msg.err != nil {
+			if msg.request.Initial {
+				m.initialSnapshotPending = false
+				m.request.Initial = false
+			}
 			m.loading, m.syncFresh = false, false
 			m.commandBusy = false
 			if m.syncCompletionPending && msg.generation == m.syncCompletionGeneration {
@@ -749,9 +768,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumePendingWork()
 		}
 		initial := !m.loaded
-		if initial {
-			m.request.Initial = false
-		}
+		initialStoreLoad := msg.request.Initial && !msg.request.Sync
 		m.snapshot = msg.snapshot
 		if requestMatches {
 			m.request.DailyCursor = msg.snapshot.DailyCursor
@@ -762,6 +779,24 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loaded = true
 		m.request.RefreshPages = false
 		m.warning = msg.snapshot.Warning
+		if initialStoreLoad {
+			currentSizeReady := m.request.Width >= minimumWidth && m.request.Height >= minimumHeight
+			currentSizeMatches := msg.request.Width == m.request.Width && msg.request.Height == m.request.Height
+			if !msg.snapshot.Empty && (!currentSizeReady || !currentSizeMatches) {
+				m.initialSnapshotPending = true
+				m.request.Initial = true
+				m.syncing = false
+				m.loading = msg.snapshot.Empty
+				if !currentSizeReady {
+					m.pendingResize = true
+					return m, nil
+				}
+				m.pendingResize = false
+				return m, m.startInitialStoreLoad(m.request)
+			}
+			m.initialSnapshotPending = false
+			m.request.Initial = false
+		}
 		if msg.request.Sync {
 			m.syncCompletionPending = false
 			m.syncInFlight = false
@@ -796,7 +831,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, combineCommands(m.maybeCheckSkillOffer(), m.resumePendingWork())
 		}
 		m.applyPendingActionOutcome()
-		if !initial {
+		if !initial && !initialStoreLoad {
 			return m, m.resumePendingWork()
 		}
 		// Render stored data immediately, then quietly refresh it. Empty stores

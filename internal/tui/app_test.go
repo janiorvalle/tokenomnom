@@ -387,26 +387,70 @@ func TestInitialSnapshotSurvivesResizeBeforeLoadCompletes(t *testing.T) {
 		return Snapshot{}, nil
 	}, SkillOffer{})
 	initialRequest := model.request
+	initialGeneration := model.loadGeneration
 
-	updated, command := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	model = updated.(Model)
-	if command != nil || model.request.Height != 30 {
-		t.Fatalf("resize while initial load is busy = request=%+v command=%v", model.request, command != nil)
-	}
-
-	updated, command = model.Update(loadedMsg{
+	updated, command := model.Update(loadedMsg{
 		request:    initialRequest,
-		generation: model.loadGeneration,
-		snapshot:   Snapshot{Empty: true},
+		generation: initialGeneration,
+		snapshot:   Snapshot{Views: [4]string{"initial store render"}},
 	})
 	model = updated.(Model)
-	if command == nil || !model.loaded || !model.loading || !model.syncing {
+	if command != nil || !model.initialSnapshotPending || !model.loaded {
+		t.Fatalf("initial store snapshot state = pending=%v loaded=%v command=%v", model.initialSnapshotPending, model.loaded, command != nil)
+	}
+
+	updated, command = model.Update(tea.WindowSizeMsg{Width: 215, Height: 53})
+	model = updated.(Model)
+	if command == nil || model.request.Width != 215 || model.request.Height != 53 || model.loadGeneration == initialGeneration {
+		t.Fatalf("resize after initial snapshot = request=%+v generation=%d command=%v", model.request, model.loadGeneration, command != nil)
+	}
+
+	initialResult, ok := command().(loadedMsg)
+	if !ok || !initialResult.request.Initial || initialResult.request.Width != 215 || initialResult.request.Height != 53 {
+		t.Fatalf("resized store-only request = %#v", initialResult)
+	}
+	updated, command = model.Update(initialResult)
+	model = updated.(Model)
+	if command == nil || !model.loaded || model.loading || !model.syncing {
 		t.Fatalf("initial load after resize = loaded=%v loading=%v syncing=%v command=%v", model.loaded, model.loading, model.syncing, command != nil)
 	}
 	message := command()
 	loaded, ok := message.(loadedMsg)
-	if !ok || loaded.request.Height != 30 {
+	if !ok || loaded.request.Height != 53 || loaded.request.Width != 215 {
 		t.Fatalf("initial sync used stale dimensions: message=%T request=%+v", message, loaded.request)
+	}
+}
+
+func TestInitialSnapshotRepaintsWhenResizeArrivesFirst(t *testing.T) {
+	loader := func(request Request) (Snapshot, error) {
+		return Snapshot{Views: [4]string{fmt.Sprintf("DAILY_RENDER_REQUEST=%dx%d", request.Width, request.Height)}}, nil
+	}
+	model := New(testRender(), loader, SkillOffer{})
+	initialRequest := model.request
+	initialGeneration := model.loadGeneration
+	updated, command := model.Update(tea.WindowSizeMsg{Width: 215, Height: 53})
+	model = updated.(Model)
+	if command != nil {
+		t.Fatal("resize unexpectedly started a second load before the initial result")
+	}
+
+	updated, command = model.Update(loadedMsg{
+		request:    initialRequest,
+		generation: initialGeneration,
+		snapshot:   Snapshot{Views: [4]string{"STALE_INITIAL_RENDER"}},
+	})
+	model = updated.(Model)
+	if command == nil || !model.initialSnapshotPending {
+		t.Fatalf("initial result did not schedule a current-size repaint: pending=%v command=%v", model.initialSnapshotPending, command != nil)
+	}
+	currentResult, ok := command().(loadedMsg)
+	if !ok || currentResult.request.Width != 215 || currentResult.request.Height != 53 {
+		t.Fatalf("current-size repaint request = %#v", currentResult)
+	}
+	updated, _ = model.Update(currentResult)
+	model = updated.(Model)
+	if model.snapshot.Views[DailyTab] != "DAILY_RENDER_REQUEST=215x53" || model.initialSnapshotPending || model.request.Initial {
+		t.Fatalf("current-size repaint state = view=%q pending=%v initial=%v", model.snapshot.Views[DailyTab], model.initialSnapshotPending, model.request.Initial)
 	}
 }
 
@@ -1374,6 +1418,16 @@ func TestSkillOfferCheckWaitsForInitialData(t *testing.T) {
 	populatedOffer := SkillOffer{Check: func() (SkillOfferCheck, error) { return SkillOfferCheck{HasRoots: true}, nil }}
 	model = New(testRender(), func(Request) (Snapshot, error) { return Snapshot{}, nil }, populatedOffer)
 	updated, command = model.Update(loadedMessage(model, model.request, Snapshot{Empty: false}))
+	model = updated.(Model)
+	if command != nil || !model.initialSnapshotPending {
+		t.Fatalf("populated store startup waiting for terminal size = pending %v command %v", model.initialSnapshotPending, command != nil)
+	}
+	updated, command = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("terminal size did not start the current-size store render")
+	}
+	updated, command = model.Update(command())
 	model = updated.(Model)
 	if !model.offerChecked || !model.pendingSync || command == nil {
 		t.Fatalf("populated store startup = checked %v, pending sync %v, command %v", model.offerChecked, model.pendingSync, command != nil)
