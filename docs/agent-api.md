@@ -353,6 +353,14 @@ bucket, output, reasoning, total, priced, unpriced, unknown-model, and rounded
 model, with a maximum of 32 detail rows; session totals include omitted detail
 rows.
 
+`data.cache` receipts report `hits`, `misses`, `stores`, and `store_errors` for
+the page. A cached row is reusable only for the same session, physical indexed
+location and content digest/size, versioned pricing/attribution fingerprint
+(including effective user rates), ordered candidate context, and attribution
+window. Mutable provider files and vault locations are verified before a cache
+hit; re-indexing a changed transcript or changing a pricing/user-rate entry
+selects a new key.
+
 Costs are calculated from exact indexed transcript bytes. The bytes are
 re-read only from indexed locations and must still match the indexed size and
 SHA-256 before provider usage parsing. `attribution_status` is `complete`,

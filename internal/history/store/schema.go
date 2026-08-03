@@ -322,6 +322,22 @@ CREATE TABLE IF NOT EXISTS vault_prompt_tombstones (
 	PRIMARY KEY(archive, provider, session_public_id, logical_key)
 );
 
+CREATE TABLE IF NOT EXISTS session_cost_cache (
+	session_id TEXT NOT NULL,
+	location_id TEXT NOT NULL,
+	content_sha256 TEXT NOT NULL,
+	content_size INTEGER NOT NULL CHECK (content_size >= 0),
+	pricing_fingerprint TEXT NOT NULL,
+	candidate_context TEXT NOT NULL,
+	window_since TEXT NOT NULL DEFAULT '',
+	window_until TEXT NOT NULL DEFAULT '',
+	payload BLOB NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY(session_id, location_id, content_sha256, content_size, pricing_fingerprint, candidate_context, window_since, window_until)
+);
+
+CREATE INDEX IF NOT EXISTS session_cost_cache_session_idx ON session_cost_cache(session_id);
+
 CREATE INDEX IF NOT EXISTS source_heads_session_idx ON source_heads(session_id);
 CREATE INDEX IF NOT EXISTS snapshots_session_idx ON preserved_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS session_relation_supports_source_idx ON session_relation_supports(source_head_id);
