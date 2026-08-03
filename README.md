@@ -353,7 +353,9 @@ tokenomnom pricing set-rate MODEL --clear
 ```
 
 User rates live in `user-rates.json` in the config directory, take precedence
-over published rates, and are labeled `user rate` everywhere they appear.
+over published rates, and are labeled `user rate` in reports and the
+dashboard (JSON uses `provenance: "user"`; CSV export carries no provenance
+column).
 
 To replace a model's complete published entry instead, `pricing.json` in the
 same directory takes a full entry list per model. Rates are USD per million
@@ -401,9 +403,9 @@ hashes), `list` pages the manifest (follow `data.page.next_cursor` when
 `has_more` is true), `cat` restores original bytes to stdout, `verify` checks
 bundles, and `status` reports compression and reclaimable originals. JSON
 `vault cat` returns readable `content` for UTF-8 transcripts alongside
-`content_base64`. `doctor` reports sync, archive, and verification times as
-separate facts. A missing synced source keeps its usage totals; raw access
-then depends on whether it was vaulted.
+`content_base64`. `doctor` reports usage-sync, archive, deep-verification, and
+status-scan times as separate facts. A missing synced source keeps its usage
+totals; raw access then depends on whether it was vaulted.
 
 tokenomnom never modifies or deletes source transcripts. Reclaiming a verified
 original listed by `vault status` is always a manual decision.
