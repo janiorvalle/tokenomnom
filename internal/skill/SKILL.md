@@ -16,7 +16,7 @@ Use `--format json` for every query. `nomnom` is an alias for `tokenomnom`.
 `--no-sync` is supported only by `summary`, `daily`, `monthly`, `models`,
 `heatmap`, and `export`. Use it for fast repeated report queries after the first
 query has refreshed the usage store. Do not pass `--no-sync` to `doctor`,
-`sync`, `vault`, `schedule`, or `install-skill`. If neither binary is available,
+`sync`, `vault`, `schedule`, `install-skill`, or `upgrade`. If neither binary is available,
 say that tokenomnom is not installed instead of guessing numbers.
 
 ## Task Map
@@ -33,6 +33,7 @@ say that tokenomnom is not installed instead of guessing numbers.
 - Discovery and store health: `tokenomnom doctor --format json`; read `data.providers`, `data.skills`, and `data.store`.
 - Refresh stored usage: `tokenomnom sync --format json`; read the scan and ingestion counters in `data`. Use `--settle-missing` only for transcript files that are permanently gone; read `settled_missing_files` and `unsettled_missing_files` and confirm the total remains visible in doctor.
 - Install or update this skill: `tokenomnom install-skill --format json`; read `data.providers`.
+- Check for a release without changing anything: `tokenomnom upgrade --check --format json`; exit 1 and `data.update_available: true` mean an update exists. Run `tokenomnom upgrade` only when the user asks to update the installed binary.
 - Freshness schedule: `tokenomnom schedule status --format json`; read `data.installed`, `mechanism`, interval fields, binary validity, and maintenance timestamps.
 - Transcript search: `tokenomnom history search "literal phrase" --limit 50 --format json`; inspect bounded snippets and compact provenance, then retrieve selected evidence with `history show`. Add `--all-occurrences` only when every bounded location is needed.
 - Whole-session artifact or agent handoff: find a `ses_` or `prm_` ID with list/search, then use `tokenomnom history export <id> --out PATH --format json`. The default Markdown includes delegated subagent sessions; use `--no-subagents` only when the target alone is intended. Disclose that exports are full plaintext, and that `--include-tool-output` or `--include-thinking` can expose additional secrets.

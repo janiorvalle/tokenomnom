@@ -138,6 +138,25 @@ func TestInstallSkillSkipsMissingRoots(t *testing.T) {
 	}
 }
 
+func TestInstallSkillCanSkipOfferStateDuringUpgradeRefresh(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	t.Setenv("TOKENOMNOM_STATE_DIR", stateDir)
+	codexDir := filepath.Join(root, "codex")
+	if err := os.Mkdir(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeReport([]string{"install-skill", "--skip-offer-state", "--format", "json"}, codexDir, filepath.Join(root, "missing-claude")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(skill.Path(codexDir)); err != nil {
+		t.Fatalf("skill was not installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, store.DatabaseName)); !os.IsNotExist(err) {
+		t.Fatalf("upgrade refresh touched usage state: %v", err)
+	}
+}
+
 func TestDoctorReportsSkillStatusPrettyAndJSON(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")

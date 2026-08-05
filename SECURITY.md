@@ -9,11 +9,17 @@ target the latest release.
 
 ## Trust Model
 
-tokenomnom is local software. At runtime it reads local Codex and Claude Code
-logs and writes a local SQLite database. It makes no network calls and sends
-no session content, token counts, model names, or pricing data anywhere.
+tokenomnom is local software. Reports, sync, history, and the dashboard read
+local Codex and Claude Code logs and write local SQLite databases without
+making network calls. They send no session content, token counts, model names,
+or pricing data anywhere.
 
-`install.sh` is the only network touchpoint: it downloads release archives and
+`upgrade` and `upgrade --check` are explicit network operations. They contact
+the GitHub releases API and GitHub release download URLs, send the installed
+tokenomnom version in the HTTP User-Agent, and optionally send `GITHUB_TOKEN`
+as authorization. They do not read or send transcript, usage, or pricing data.
+
+`install.sh` is another explicit network touchpoint: it downloads release archives and
 checksums from GitHub (or an explicit mirror), verifies SHA-256, and installs
 two binaries without sudo. The Go installer for the optional agent skill
 writes only under existing Codex and Claude skill directories.
