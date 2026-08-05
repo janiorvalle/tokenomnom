@@ -241,6 +241,17 @@ The dashboard offers the skill once on first run. The installer only writes
 under existing agent roots and refuses to overwrite a foreign `SKILL.md`
 unless you pass `--force`.
 
+Upgrade an installer-managed macOS or Linux binary in place:
+
+```sh
+tokenomnom upgrade --check
+tokenomnom upgrade
+```
+
+The upgrade verifies the published checksum before atomically replacing the
+running binary. When the tokenomnom agent skill is already installed, the new
+binary refreshes it too; an absent skill stays absent.
+
 ## Keep It Fresh
 
 Install a per-user maintenance schedule, inspect it, or remove it:

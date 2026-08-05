@@ -2,7 +2,7 @@
 
 `tokenomnom` exposes a stable machine-readable contract for coding agents. Use
 `--format json` with `summary`, `daily`, `monthly`, `models`, `heatmap`,
-`pricing`, `doctor`, `sync`, `export`, `install-skill`, `config show`, every
+`pricing`, `doctor`, `sync`, `export`, `install-skill`, `upgrade`, `config show`, every
 `vault` subcommand, every `history` subcommand, and every `schedule` subcommand. The top-level usage `export` command defaults to CSV;
 all other commands default to the human-readable `pretty` format.
 
@@ -146,6 +146,24 @@ JSON mutation errors use stable `data.error.code` values such as
 `UNKNOWN_MODEL`, `MISSING_RATE`, `INVALID_RATE`, and `INVALID_FLAGS`. The same
 object includes a receiver-ready `message`, a corrected `example`, and, for
 unknown models, up to three `suggestions`.
+
+## Upgrade
+
+`tokenomnom upgrade --check --format json` makes a release check without
+downloading an archive or changing the binary or installed agent skills. Its
+`data` contains `current_version`, `latest_version`, `update_available`,
+`release_url`, `skill_refreshed`, and an omitted `installed` field. It exits 0
+when current. When an update exists it still writes exactly one valid envelope,
+sets `update_available` to `true`, and exits 1 so scripts can branch directly.
+
+`tokenomnom upgrade --format json` installs an available release or confirms
+the current release. After an install, `data.installed` contains
+`previous_version`, `version`, `release_url`, and `executable_path`. When an
+owned tokenomnom skill was present before the command, `skill_refreshed` is
+`true` after the new binary refreshes only those provider roots. An absent
+skill stays absent. Network, release metadata, checksum, filesystem, binary
+smoke-test, and skill-refresh failures exit nonzero and identify a stable
+`TOKENOMNOM_UPGRADE_*` code in the error text.
 
 ## Doctor
 

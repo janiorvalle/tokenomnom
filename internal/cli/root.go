@@ -136,6 +136,7 @@ list-price equivalents or user rate estimates, not actual bills.`,
 	cmd.AddCommand(newPricingCommand(&timezone))
 	cmd.AddCommand(newExportCommand(&codexDir, &claudeDir, &timezone))
 	cmd.AddCommand(newInstallSkillCommand(&codexDir, &claudeDir))
+	cmd.AddCommand(newUpgradeCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newVaultCommand(&codexDir, &claudeDir))
 	cmd.AddCommand(newHistoryCommand(&codexDir, &claudeDir))

@@ -29,6 +29,7 @@ type jsonInstallSkillData struct {
 func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 	var force bool
 	var remove bool
+	var skipOfferState bool
 	cmd := &cobra.Command{
 		Use:   "install-skill",
 		Short: "Install the tokenomnom agent skill",
@@ -42,7 +43,7 @@ func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !remove && skillInstallSucceeded(results) {
+			if !remove && !skipOfferState && skillInstallSucceeded(results) {
 				options, err := usageStoreOpenOptions(cmd)
 				if err != nil {
 					return err
@@ -62,6 +63,8 @@ func newInstallSkillCommand(codexDir, claudeDir *string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "replace or remove a foreign skill file")
 	cmd.Flags().BoolVar(&remove, "remove", false, "remove the installed tokenomnom skill")
+	cmd.Flags().BoolVar(&skipOfferState, "skip-offer-state", false, "skip recording dashboard offer state")
+	_ = cmd.Flags().MarkHidden("skip-offer-state")
 	return cmd
 }
 
