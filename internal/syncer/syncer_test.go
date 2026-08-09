@@ -1,6 +1,7 @@
 package syncer_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/janiorvalle/tokenomnom/internal/discover"
+	"github.com/janiorvalle/tokenomnom/internal/ingest/codex"
 	"github.com/janiorvalle/tokenomnom/internal/store"
 	"github.com/janiorvalle/tokenomnom/internal/syncer"
 )
@@ -36,6 +38,165 @@ func TestInitialSyncNoChangeAndCodexAppendRestoresModel(t *testing.T) {
 	rows := env.rows(t)
 	if len(rows) != 1 || rows[0].Model != "gpt-right" || rows[0].Input != 17 || rows[0].Output != 3 {
 		t.Fatalf("rows after append = %+v", rows)
+	}
+}
+
+func TestSyncRepairsLegacyForkContribution(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("fork.jsonl")
+	contents := `{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}` + "\n" +
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"parent"}}` + "\n" +
+		codexModel("copied-model") +
+		codexUsage("2026-08-01T05:00:00.010Z", 100, 20) +
+		codexUsage("2026-08-01T05:00:00.030Z", 50, 10) +
+		codexModel("child-model") +
+		codexUsage("2026-08-01T05:00:06.000Z", 10, 2)
+	write(t, path, contents, env.tick())
+
+	first := env.sync(t, false, time.UTC, "UTC")
+	if first.EventsApplied != 1 {
+		t.Fatalf("initial fork sync = %+v", first)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := env.database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := checkpoints[resolvedPath]
+	var state codex.State
+	if err := json.Unmarshal([]byte(checkpoint.ParserState), &state); err != nil {
+		t.Fatal(err)
+	}
+	state.Version = 0
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.ParserState = string(encoded)
+	if err := env.database.Transaction(func(tx *store.Tx) error {
+		if err := tx.ApplyUsage(store.Usage{
+			Date: "2026-08-01", Provider: discover.ProviderCodex, Model: "copied-model", Input: 150, Output: 30,
+		}, resolvedPath); err != nil {
+			return err
+		}
+		return tx.PutCheckpoint(checkpoint)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rows := env.rows(t); len(rows) != 2 {
+		t.Fatalf("legacy over-count setup = %+v", rows)
+	}
+
+	repaired := env.sync(t, false, time.UTC, "UTC")
+	rows := env.rows(t)
+	if repaired.FilesRewritten != 1 || len(rows) != 1 || rows[0].Model != "child-model" || rows[0].Input != 10 || rows[0].Output != 2 {
+		t.Fatalf("fork repair failed: summary=%+v rows=%+v", repaired, rows)
+	}
+}
+
+func TestSyncRepairsLegacyForkWhenOnlyAliasSurvives(t *testing.T) {
+	env := newEnvironment(t)
+	livePath := env.codexPath("surviving-fork.jsonl")
+	archivePath := filepath.Join(env.root, "codex", "archived_sessions", "surviving-fork.jsonl")
+	contents := `{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}` + "\n" +
+		codexModel("copied-model") +
+		codexUsage("2026-08-01T05:00:00.010Z", 100, 20) +
+		codexModel("child-model") +
+		codexUsage("2026-08-01T05:00:06.000Z", 10, 2)
+	write(t, livePath, contents, env.tick())
+	write(t, archivePath, contents, env.tick())
+	env.sync(t, false, time.UTC, "UTC")
+
+	checkpoints, err := env.database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ownerPath string
+	updated := make([]store.Checkpoint, 0, 2)
+	for _, checkpoint := range checkpoints {
+		var state codex.State
+		if err := json.Unmarshal([]byte(checkpoint.ParserState), &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.AliasOf == "" {
+			ownerPath = checkpoint.Path
+		}
+		state.Version = 0
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkpoint.ParserState = string(encoded)
+		updated = append(updated, checkpoint)
+	}
+	if ownerPath == "" || len(updated) != 2 {
+		t.Fatalf("owner/alias checkpoints = %+v", checkpoints)
+	}
+	if err := env.database.Transaction(func(tx *store.Tx) error {
+		for _, checkpoint := range updated {
+			if err := tx.PutCheckpoint(checkpoint); err != nil {
+				return err
+			}
+		}
+		return tx.ApplyUsage(store.Usage{
+			Date: "2026-08-01", Provider: discover.ProviderCodex, Model: "copied-model", Input: 100, Output: 20,
+		}, ownerPath)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(ownerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired := env.sync(t, false, time.UTC, "UTC")
+	rows := env.rows(t)
+	if repaired.FilesRewritten != 1 || len(rows) != 1 || rows[0].Model != "child-model" || rows[0].Input != 10 || rows[0].Output != 2 {
+		t.Fatalf("surviving alias repair failed: summary=%+v rows=%+v", repaired, rows)
+	}
+}
+
+func TestSyncMigratesOrdinaryCodexStateWithoutReparse(t *testing.T) {
+	env := newEnvironment(t)
+	path := env.codexPath("ordinary.jsonl")
+	write(t, path, codexModel("ordinary")+codexUsage("2026-08-01T05:00:00Z", 10, 2), env.tick())
+	env.sync(t, false, time.UTC, "UTC")
+
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := env.database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := checkpoints[resolvedPath]
+	var state codex.State
+	if err := json.Unmarshal([]byte(checkpoint.ParserState), &state); err != nil {
+		t.Fatal(err)
+	}
+	state.Version = 0
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.ParserState = string(encoded)
+	if err := env.database.Transaction(func(tx *store.Tx) error { return tx.PutCheckpoint(checkpoint) }); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := env.sync(t, false, time.UTC, "UTC")
+	if summary.FilesSkipped != 1 || summary.FilesRewritten != 0 || summary.EventsApplied != 0 {
+		t.Fatalf("ordinary migration reparsed the file: %+v", summary)
+	}
+	checkpoints, err = env.database.Checkpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(checkpoints[resolvedPath].ParserState), &state); err != nil || state.Version != codex.ParserStateVersion {
+		t.Fatalf("migrated parser state = %+v, err %v", state, err)
 	}
 }
 

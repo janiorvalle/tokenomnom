@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -163,6 +164,130 @@ func TestAdapterParseFileOpenError(t *testing.T) {
 	if err == nil {
 		t.Fatal("ParseFile() error = nil, want an open error")
 	}
+}
+
+func TestParserSuppressesCopiedForkHistory(t *testing.T) {
+	t.Parallel()
+
+	const forkedAt = "2026-08-01T05:00:00.000Z"
+	lines := []string{
+		fmt.Sprintf(`{"timestamp":%q,"type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}`, forkedAt),
+		fmt.Sprintf(`{"timestamp":%q,"type":"session_meta","payload":{"id":"parent"}}`, forkedAt),
+		fmt.Sprintf(`{"timestamp":%q,"type":"turn_context","payload":{"model":"copied-model"}}`, forkedAt),
+		codexUsageLine("2026-08-01T05:00:00.010Z", 100, 20),
+		codexUsageLine("2026-08-01T05:00:00.030Z", 50, 10),
+		`{"timestamp":"2026-08-01T05:00:05.000Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		codexUsageLine("2026-08-01T05:00:06.000Z", 10, 2),
+	}
+
+	var got []ingest.UsageEvent
+	parser := codex.NewParser(codex.State{}, func(value ingest.UsageEvent) {
+		got = append(got, value)
+	})
+	for _, line := range lines {
+		parser.ParseLine([]byte(line))
+	}
+
+	want := []ingest.UsageEvent{event("2026-08-01T05:00:06.000Z", "child-model", 10, 0, 0, 0, 2, 0)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fork events = %#v, want %#v", got, want)
+	}
+}
+
+func TestParserSuppressesCopiedSubagentHistory(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}`,
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"turn_context","payload":{"model":"copied-model"}}`,
+		codexUsageLine("2026-08-01T05:00:00.020Z", 100, 20),
+		`{"timestamp":"2026-08-01T05:00:05.000Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		codexUsageLine("2026-08-01T05:00:06.000Z", 7, 1),
+	}
+
+	got, _ := parseCodexLines(codex.State{}, lines)
+	want := []ingest.UsageEvent{event("2026-08-01T05:00:06.000Z", "child-model", 7, 0, 0, 0, 1, 0)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("subagent events = %#v, want %#v", got, want)
+	}
+}
+
+func TestParserForkSuppressionSurvivesIncrementalResume(t *testing.T) {
+	t.Parallel()
+
+	firstEvents, state := parseCodexLines(codex.State{}, []string{
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}`,
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"turn_context","payload":{"model":"copied-model"}}`,
+		codexUsageLine("2026-08-01T05:00:00.020Z", 100, 20),
+	})
+	if len(firstEvents) != 0 || !state.SuppressingForkCopies || state.ForkCopyAnchorUnixNano == 0 {
+		t.Fatalf("first incremental parse = events %#v, state %+v", firstEvents, state)
+	}
+
+	got, state := parseCodexLines(state, []string{
+		codexUsageLine("2026-08-01T05:00:00.040Z", 50, 10),
+		`{"timestamp":"2026-08-01T05:00:05.000Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		codexUsageLine("2026-08-01T05:00:06.000Z", 8, 2),
+	})
+	want := []ingest.UsageEvent{event("2026-08-01T05:00:06.000Z", "child-model", 8, 0, 0, 0, 2, 0)}
+	if !reflect.DeepEqual(got, want) || state.SuppressingForkCopies || state.ForkCopyAnchorUnixNano != 0 {
+		t.Fatalf("resumed fork parse = events %#v, state %+v; want %#v", got, state, want)
+	}
+}
+
+func TestParserCountsForkUsageAtSuppressionBoundary(t *testing.T) {
+	t.Parallel()
+
+	got, _ := parseCodexLines(codex.State{}, []string{
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}`,
+		`{"timestamp":"2026-08-01T05:00:00.000Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		codexUsageLine("2026-08-01T05:00:01.000Z", 9, 2),
+	})
+	want := []ingest.UsageEvent{event("2026-08-01T05:00:01.000Z", "child-model", 9, 0, 0, 0, 2, 0)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("boundary events = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartsForkedSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "explicit fork", line: `{"type":"session_meta","payload":{"forked_from_id":"parent"}}`, want: true},
+		{name: "subagent source", line: `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}`, want: true},
+		{name: "subagent thread source", line: `{"type":"session_meta","payload":{"thread_source":"subagent"}}`, want: true},
+		{name: "ordinary session", line: `{"type":"session_meta","payload":{"source":"cli"}}`},
+		{name: "other record", line: `{"type":"turn_context","payload":{"model":"gpt"}}`},
+		{name: "malformed", line: `{`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := codex.StartsForkedSession([]byte(tt.line)); got != tt.want {
+				t.Fatalf("StartsForkedSession() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func parseCodexLines(state codex.State, lines []string) ([]ingest.UsageEvent, codex.State) {
+	var events []ingest.UsageEvent
+	parser := codex.NewParser(state, func(value ingest.UsageEvent) {
+		events = append(events, value)
+	})
+	for _, line := range lines {
+		parser.ParseLine([]byte(line))
+	}
+	return events, parser.State()
+}
+
+func codexUsageLine(timestamp string, input, output int64) string {
+	return fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d},"last_token_usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}}}`,
+		timestamp, input, output, input+output, input, output, input+output)
 }
 
 func event(timestamp, model string, input, cacheRead, cacheWrite5m, cacheWrite1h, output, reasoning int64) ingest.UsageEvent {

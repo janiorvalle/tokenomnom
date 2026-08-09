@@ -2,6 +2,7 @@
 package syncer
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding"
 	"encoding/hex"
@@ -246,12 +247,21 @@ func Sync(options Options) (Summary, error) {
 					}
 				}
 			}
-			if ownerMissing && full && kind == fileUnchanged && !splitContribution {
-				checkpoint, err = promoteCodexAlias(options.Store, file, checkpoint, aliasOf, true, checkpoints)
-				if err != nil {
-					return summary, err
+			if ownerMissing && kind == fileUnchanged && !splitContribution {
+				promoteForRepair := full
+				if !promoteForRepair {
+					promoteForRepair, err = codexCheckpointNeedsForkRepair(file, checkpoint)
+					if err != nil {
+						return summary, err
+					}
 				}
-				aliasOf = ""
+				if promoteForRepair {
+					checkpoint, err = promoteCodexAlias(options.Store, file, checkpoint, aliasOf, true, checkpoints)
+					if err != nil {
+						return summary, err
+					}
+					aliasOf = ""
+				}
 			}
 			if ownerMissing && kind == fileAppended {
 				checkpoint, err = markCheckpointSplit(checkpoint)
@@ -397,6 +407,16 @@ func Sync(options Options) (Summary, error) {
 				}
 			}
 		}
+		if found && file.Provider == discover.ProviderCodex && checkpointAlias(checkpoint) == "" {
+			checkpoint, needsRewrite, migrationErr := migrateCodexParserState(options.Store, file, checkpoint)
+			if migrationErr != nil {
+				return summary, migrationErr
+			}
+			checkpoints[file.Path] = checkpoint
+			if needsRewrite {
+				kind = fileRewritten
+			}
+		}
 		if full && found && !preserveKindOnFull {
 			kind = fileRewritten
 		}
@@ -532,6 +552,61 @@ func Sync(options Options) (Summary, error) {
 	summary.UnsettledMissingFiles = info.UnsettledMissingFiles
 	summary.Duration = time.Since(started)
 	return summary, nil
+}
+
+func migrateCodexParserState(database *store.Store, file discover.SourceFile, checkpoint store.Checkpoint) (store.Checkpoint, bool, error) {
+	var state codex.State
+	if checkpoint.ParserState == "" || json.Unmarshal([]byte(checkpoint.ParserState), &state) != nil {
+		return checkpoint, true, nil
+	}
+	if state.Version == codex.ParserStateVersion {
+		return checkpoint, false, nil
+	}
+
+	forked, err := codexFileStartsForkedSession(file.Path)
+	if err != nil {
+		return checkpoint, false, err
+	}
+	if forked {
+		return checkpoint, true, nil
+	}
+
+	// Ordinary rollouts do not need a 50 GB corpus-wide replay merely because
+	// the fork detector was added. Stamp their resumable state in place; only
+	// the bounded set of affected fork/subagent files is reparsed.
+	state.Version = codex.ParserStateVersion
+	state.SawSessionMeta = true
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return checkpoint, false, fmt.Errorf("encode migrated Codex parser state for %q: %w", file.Path, err)
+	}
+	checkpoint.ParserState = string(encoded)
+	if err := database.Transaction(func(tx *store.Tx) error { return tx.PutCheckpoint(checkpoint) }); err != nil {
+		return checkpoint, false, fmt.Errorf("persist migrated Codex parser state for %q: %w", file.Path, err)
+	}
+	return checkpoint, false, nil
+}
+
+func codexCheckpointNeedsForkRepair(file discover.SourceFile, checkpoint store.Checkpoint) (bool, error) {
+	var state codex.State
+	if checkpoint.ParserState != "" && json.Unmarshal([]byte(checkpoint.ParserState), &state) == nil && state.Version == codex.ParserStateVersion {
+		return false, nil
+	}
+	return codexFileStartsForkedSession(file.Path)
+}
+
+func codexFileStartsForkedSession(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open Codex session header %q: %w", path, err)
+	}
+	defer file.Close()
+
+	line, err := bufio.NewReader(file).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read Codex session header %q: %w", path, err)
+	}
+	return codex.StartsForkedSession(line), nil
 }
 
 func promoteCodexAlias(database *store.Store, file discover.SourceFile, alias store.Checkpoint, ownerPath string, ownerMissing bool, checkpoints map[string]store.Checkpoint) (store.Checkpoint, error) {
