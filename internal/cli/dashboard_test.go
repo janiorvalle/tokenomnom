@@ -1102,9 +1102,12 @@ func TestDashboardInitialLoaderReturnsStoreSnapshotBeforeAmbientData(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The initial request covers the last 30 days in local time, so the
+	// stored day sits a week back from the test's clock and never ages out.
+	storedDay := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
 	if err := database.Transaction(func(tx *store.Tx) error {
 		return tx.ApplyUsage(store.Usage{
-			Date: "2026-08-01", Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 25,
+			Date: storedDay, Provider: discover.ProviderCodex, Model: "gpt-5.2", Input: 100, Output: 25,
 		}, "")
 	}); err != nil {
 		database.Close()
