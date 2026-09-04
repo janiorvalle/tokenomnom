@@ -35,9 +35,13 @@ and never uses sudo:
 curl -fsSL https://raw.githubusercontent.com/janiorvalle/tokenomnom/main/install.sh | sh
 ```
 
-Windows - download the zip from
-[Releases](https://github.com/janiorvalle/tokenomnom/releases) and put both
-executables on your `PATH`.
+Windows - the same checks in PowerShell, and both executables land in
+`%LOCALAPPDATA%\Programs\tokenomnom` on your user PATH (override with
+`TOKENOMNOM_INSTALL_DIR`):
+
+```powershell
+irm https://raw.githubusercontent.com/janiorvalle/tokenomnom/main/install.ps1 | iex
+```
 
 Go users:
 
