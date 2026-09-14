@@ -1,6 +1,6 @@
 module github.com/janiorvalle/tokenomnom
 
-go 1.25.6
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.5.0
@@ -12,7 +12,7 @@ require (
 	github.com/klauspost/compress v1.19.1
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.4
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.54.0
 )
